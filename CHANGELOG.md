@@ -30,7 +30,7 @@
 
 - The CLI has its own tests: exit codes, `--json`, `--only`, `--strict`, `openapi`, `routes`
   and the usage errors. ([#17](https://github.com/vxnsin/inkan/issues/17))
-- One GitHub release publishes to npmjs.com (with provenance) and to GitHub Packages, and
+- One GitHub release publishes to npmjs.com (trusted publishing, with provenance) and to GitHub Packages, and
   only when the tag matches `package.json`. ([#4](https://github.com/vxnsin/inkan/issues/4))
 
 ## 0.1.0

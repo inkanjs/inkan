@@ -1,7 +1,8 @@
 name: publish
 
 # One GitHub release publishes the same build to npmjs.com (the main registry,
-# with provenance) and to GitHub Packages. The tag has to match package.json.
+# trusted publishing with provenance) and to GitHub Packages. The tag has to
+# match package.json.
 
 on:
   release:
@@ -49,9 +50,8 @@ jobs:
           registry-url: https://registry.npmjs.org
       - run: npm ci
       - run: npm run build
-      - run: npm publish --provenance --access public --ignore-scripts
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      # trusted publishing: npm checks this workflow via OIDC, no token involved
+      - run: npm publish --access public --ignore-scripts
 
   github-packages:
     needs: verify
