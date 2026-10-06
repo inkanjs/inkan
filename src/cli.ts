@@ -10,20 +10,6 @@ import type { App } from "./app.ts";
 import { formatReport } from "./check.ts";
 import { paint, useColor } from "./color.ts";
 
-const HELP = `
-  印 inkan
-
-  inkan check   <entry> [--only <text>] [--json] [--strict]
-                                                   run every example against its contract;
-                                                   --strict fails on promised statuses no example covers
-  inkan openapi <entry> [-o <file>]                write the OpenAPI 3.1 document
-  inkan routes  <entry>                            list the routes
-
-  <entry> is the file that builds the app and exports it,
-  as \`export default app\` or \`export const app\`.
-  It may also export \`beforeEach\`, which check runs before every example.
-`;
-
 const args = process.argv.slice(2);
 const command = args.shift();
 const option = (...names: string[]) => {
@@ -62,6 +48,20 @@ async function load(entry: string | undefined) {
 
 const color = useColor();
 const c = paint(color);
+
+const HELP = `
+  ${c.seal("印")} ${c.bold("inkan")}
+
+  ${c.bold("inkan check")}   ${c.dim("<entry> [--only <text>] [--json] [--strict]")}
+                ${c.dim("run every example against its contract;")}
+                ${c.dim("--strict fails on promised statuses no example covers")}
+  ${c.bold("inkan openapi")} ${c.dim("<entry> [-o <file>]")}   ${c.dim("write the OpenAPI 3.1 document")}
+  ${c.bold("inkan routes")}  ${c.dim("<entry>")}               ${c.dim("list the routes")}
+
+  ${c.dim("<entry>")} is the file that builds the app and exports it,
+  as ${c.link("`export default app`")} or ${c.link("`export const app`")}.
+  It may also export ${c.link("`beforeEach`")}, which check runs before every example.
+`;
 
 switch (command) {
   case "check": {

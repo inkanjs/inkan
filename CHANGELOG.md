@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- The help text is coloured, and so are logs in GitHub Actions (`NO_COLOR` still turns it off).
+
 ## 0.2.0
 
 ### New

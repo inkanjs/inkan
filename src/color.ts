@@ -1,5 +1,7 @@
+// GitHub Actions logs render ANSI colours, though stdout is not a TTY there.
 export const useColor = (stream: { isTTY?: boolean } = process.stdout) =>
-  !process.env.NO_COLOR && (Boolean(process.env.FORCE_COLOR) || Boolean(stream.isTTY));
+  !process.env.NO_COLOR &&
+  (Boolean(process.env.FORCE_COLOR) || Boolean(process.env.GITHUB_ACTIONS) || Boolean(stream.isTTY));
 
 export type Paint = ReturnType<typeof paint>;
 
