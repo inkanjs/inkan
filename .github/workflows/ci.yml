@@ -33,4 +33,4 @@ jobs:
       - run: npm test
       - run: npm run build
       - name: every example keeps its promise
-        run: node src/cli.ts check examples/shop.ts
+        run: node src/cli.ts check examples/shop.ts --strict

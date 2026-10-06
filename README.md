@@ -173,7 +173,12 @@ gives JSON Schema 2020-12.
 npx inkan check src/app.ts            # every route
 npx inkan check src/app.ts --only /teas
 npx inkan check src/app.ts --json     # for CI
+npx inkan check src/app.ts --strict   # a promised status without an example fails too
 ```
+
+A route that promises a 404 no example ever shows is listed under the route,
+and on the docs page. Nothing tests that 404 yet; `--strict` turns it into a
+failure.
 
 The entry file exports the app (`export default app` or `export const app`).
 `app.listen()` stays quiet while the CLI loads it. If the examples change data,
@@ -223,6 +228,24 @@ app.mount("/admin", admin);
 `ctx.state` carries things from middleware to the handler. A thrown
 `problem()` stops everything, wherever it is thrown.
 
+### CORS
+
+`OPTIONS` answers on its own with an `Allow` header. For browsers on another
+origin, add `cors()`:
+
+```ts
+import { cors } from "@vxnsin/inkan";
+
+app.use(cors());                                                  // any origin
+app.use(cors({ origin: "https://shop.example", credentials: true })); // one origin, with cookies
+app.use(cors({ origin: ["https://a.example", "https://b.example"], maxAge: 600 }));
+app.use(cors({ origin: (o) => o.endsWith(".shop.example") }));
+```
+
+Preflights are answered before routing, and error answers carry the headers
+too, so the page can read a 404 instead of a CORS error. `allowHeaders`,
+`exposeHeaders` and `methods` are there when the defaults are not enough.
+
 ## Running it
 
 `app.listen()` takes the port from its argument, then `$PORT`, then 3000. So it
@@ -264,10 +287,14 @@ inkan({
 ## CLI
 
 ```sh
-npx inkan check   src/app.ts [--only <text>] [--json]
+npx inkan check   src/app.ts [--only <text>] [--json] [--strict]
 npx inkan openapi src/app.ts [-o openapi.json]
 npx inkan routes  src/app.ts
 ```
+
+Exit codes: `0` everything sealed, `1` something broke, `2` the command was
+used wrong. Colours turn off when the output is not a terminal or `NO_COLOR`
+is set; `FORCE_COLOR` turns them on.
 
 ## Try the example
 
@@ -279,10 +306,11 @@ node src/cli.ts check examples/shop.ts
 
 ## Not yet
 
-What comes next lives in the [issues](https://github.com/vxnsin/inkan/issues), and the
-[v0.2.0 milestone](https://github.com/vxnsin/inkan/milestone/1) is what comes first:
-`inkan examples` to pull explained example projects into your folder, CORS, editable
-requests on the docs page, turning inspector traffic into examples. Issues marked
+What comes next lives in the [issues](https://github.com/vxnsin/inkan/issues) and the
+[milestones](https://github.com/vxnsin/inkan/milestones): `inkan examples` to pull
+explained example projects into your folder, editable requests on the docs page,
+turning inspector traffic into examples, more schema power. What changed lives in the
+[changelog](CHANGELOG.md). Issues marked
 [good first issue](https://github.com/vxnsin/inkan/labels/good%20first%20issue) are a good place to start.
 
 ## License

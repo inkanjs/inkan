@@ -96,6 +96,7 @@ export function buildOpenAPI(records: RouteRecord[], info: OpenAPIInfo = {}) {
       responses["400"] = {
         description: "The input does not match the contract",
         content: { "application/problem+json": { schema: problemRef() } },
+        "x-inkan-implied": true,
       };
     }
     if (!Object.keys(responses).length) responses["200"] = { description: "OK" };

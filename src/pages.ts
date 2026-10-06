@@ -2,6 +2,8 @@
 // Plain HTML, CSS and JS in one string each. No CDN, nothing to fetch but the
 // app's own JSON, so they work offline and behind any firewall.
 
+//it's a complete mess but it works lol, gonna clean it up later or maybe never, but let's see, shall we? ~ vxnsin
+
 const css = /* css */ `
 :root{--paper:#f6f0e4;--paper-2:#ede3cf;--card:#fbf7ef;--ink:#2b2420;--ink-2:#74675b;--line:#d8c9b0;
 --seal:#c4381f;--seal-soft:#f4d8cc;--ok:#3d7a4b;--warn:#a26d12;--get:#3d7a4b;--post:#2e5e9c;--put:#a26d12;
@@ -145,14 +147,16 @@ function card(path, method, op, idx) {
     h += "</table>";
   }
   if (op.requestBody) h += "<h5>body</h5>" + block(firstContent(op.requestBody.content));
+  var exs = op["x-inkan-examples"] || [];
+  var covered = exs.map(function (ex) { return expected(op, ex); });
   h += "<h5>responses</h5><table>";
   Object.keys(op.responses || {}).forEach(function (s) {
     var r = op.responses[s], sc = firstContent(r.content);
-    h += '<tr><td style="width:60px"><span class="status s' + s[0] + '">' + esc(s) + "</span></td><td>" + esc(r.description || "") +
+    var gap = exs.length && !r["x-inkan-implied"] && covered.indexOf(Number(s)) < 0 ? ' <span class="muted" title="inkan check --strict fails on this">· no example answers with it</span>' : "";
+    h += '<tr><td style="width:60px"><span class="status s' + s[0] + '">' + esc(s) + "</span></td><td>" + esc(r.description || "") + gap +
       (sc ? '<pre class="type" style="margin-top:6px">' + render(sc, "") + "</pre>" : "") + "</td></tr>";
   });
   h += "</table>";
-  var exs = op["x-inkan-examples"] || [];
   if (exs.length) {
     h += "<h5>examples · each one is also a test</h5>";
     exs.forEach(function (ex, i) {

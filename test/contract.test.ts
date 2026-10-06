@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { inkan, partialMatch, t } from "../src/index.ts";
+import { formatReport, inkan, partialMatch, t } from "../src/index.ts";
 
 process.env.INKAN_NO_LISTEN = "1"; // the example calls listen(); here it only gets read
 const { app: shop, beforeEach } = await import("../examples/shop.ts");
@@ -36,6 +36,27 @@ test("check catches a handler that drifted from its examples", async () => {
   assert.match(report.results[0].problems[0], /body\.name: expected "Mio", got "Rin"/);
   assert.match(report.results[1].problems[0], /answered 200, expected 404/);
   assert.deepEqual(report.unchecked, ["GET /untested"]);
+});
+
+test("check lists promised statuses no example covers, and --strict fails on them", async () => {
+  const app = inkan(quiet).get(
+    "/teas/:id",
+    {
+      params: t.object({ id: t.int() }),
+      response: { 200: t.object({ id: t.int() }), 400: t.problem(), 404: t.problem() },
+      examples: [{ name: "found", params: { id: 1 } }],
+    },
+    ({ params }) => ({ id: params.id }),
+  );
+  const report = await app.check();
+  assert.equal(report.ok, true);
+  assert.deepEqual(report.uncovered, [
+    { method: "GET", path: "/teas/:id", status: 400 },
+    { method: "GET", path: "/teas/:id", status: 404 },
+  ]);
+  assert.match(formatReport(report), /404 is in the contract, but no example answers with it/);
+  assert.match(formatReport(report), /2 statuses uncovered/);
+  assert.equal((await app.check({ strict: true })).ok, false);
 });
 
 test("partialMatch compares only what the example names", () => {

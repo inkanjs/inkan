@@ -65,7 +65,7 @@ test("404 and 405 are problems too", async () => {
   assert.equal(missing.body.type, "not-found");
   const wrong = await app.inject({ method: "PUT", url: "/only-get" });
   assert.equal(wrong.status, 405);
-  assert.equal(wrong.headers.allow, "GET, HEAD");
+  assert.equal(wrong.headers.allow, "GET, HEAD, OPTIONS");
 });
 
 test("problem() and thrown errors", async () => {

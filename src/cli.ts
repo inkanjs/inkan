@@ -8,11 +8,14 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { App } from "./app.ts";
 import { formatReport } from "./check.ts";
+import { paint, useColor } from "./color.ts";
 
 const HELP = `
   印 inkan
 
-  inkan check   <entry> [--only <text>] [--json]   run every example against its contract
+  inkan check   <entry> [--only <text>] [--json] [--strict]
+                                                   run every example against its contract;
+                                                   --strict fails on promised statuses no example covers
   inkan openapi <entry> [-o <file>]                write the OpenAPI 3.1 document
   inkan routes  <entry>                            list the routes
 
@@ -35,7 +38,8 @@ const has = (name: string) => {
 };
 
 function fail(msg: string): never {
-  console.error(`\n  inkan: ${msg}\n`);
+  const c = paint(useColor(process.stderr));
+  console.error(`\n  ${c.seal("inkan:")} ${msg}\n`);
   process.exit(2);
 }
 
@@ -56,14 +60,16 @@ async function load(entry: string | undefined) {
   return { app, beforeEach: mod.beforeEach as (() => unknown) | undefined };
 }
 
-const color = Boolean(process.stdout.isTTY) && !process.env.NO_COLOR;
+const color = useColor();
+const c = paint(color);
 
 switch (command) {
   case "check": {
     const only = option("--only");
     const json = has("--json");
+    const strict = has("--strict");
     const { app, beforeEach } = await load(args[0]);
-    const report = await app.check({ only, beforeEach });
+    const report = await app.check({ only, beforeEach, strict });
     if (json) console.log(JSON.stringify(report, null, 2));
     else console.log(formatReport(report, [app.options.title, app.options.version].filter(Boolean).join(" "), color));
     process.exit(report.ok ? 0 : 1);
@@ -74,7 +80,7 @@ switch (command) {
     const doc = JSON.stringify(app.openapi(), null, 2) + "\n";
     if (out) {
       writeFileSync(out, doc);
-      console.log(`  wrote ${out}`);
+      console.log(`  ${c.ok("wrote")} ${out}`);
     } else process.stdout.write(doc);
     process.exit(0);
   }
@@ -82,8 +88,9 @@ switch (command) {
     const { app } = await load(args[0]);
     for (const r of app.routes()) {
       const n = r.spec.examples?.length ?? 0;
-      const tail = [r.spec.summary, n ? `${n} example${n === 1 ? "" : "s"}` : "no examples"].filter(Boolean).join("  ·  ");
-      console.log(`  ${r.method.padEnd(7)} ${r.path.padEnd(32)} ${tail}`);
+      const examples = n ? c.dim(`${n} example${n === 1 ? "" : "s"}`) : c.warn("no examples");
+      const tail = [r.spec.summary, examples].filter(Boolean).join(c.dim("  ·  "));
+      console.log(`  ${c.method(r.method, r.method.padEnd(7))} ${r.path.padEnd(32)} ${tail}`);
     }
     process.exit(0);
   }

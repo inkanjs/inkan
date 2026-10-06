@@ -3,12 +3,15 @@
 // schema and whatever the example says it `expect`s.
 
 import { contractFor, type App, type Example, type RouteRecord } from "./app.ts";
+import { paint } from "./color.ts";
 
 export type CheckOptions = {
   /** Runs before every example, e.g. to reset an in-memory store. */
   beforeEach?: () => unknown;
   /** Only routes whose `METHOD /path` contains this text. */
   only?: string;
+  /** A promised status that no example answers with fails the check. */
+  strict?: boolean;
 };
 
 export type CheckResult = {
@@ -28,6 +31,8 @@ export type CheckReport = {
   results: CheckResult[];
   /** Routes without a single example: nothing holds them to their contract. */
   unchecked: string[];
+  /** Statuses a route promises that none of its examples answers with. */
+  uncovered: { method: string; path: string; status: number }[];
 };
 
 function fill(path: string, params: Record<string, unknown> = {}): string {
@@ -124,6 +129,7 @@ async function runOne(app: App, r: RouteRecord, ex: Example, i: number): Promise
 export async function runChecks(app: App, opts: CheckOptions = {}): Promise<CheckReport> {
   const results: CheckResult[] = [];
   const unchecked: string[] = [];
+  const uncovered: CheckReport["uncovered"] = [];
   const log = app.options.log;
   app.options.log = false;
   try {
@@ -132,6 +138,12 @@ export async function runChecks(app: App, opts: CheckOptions = {}): Promise<Chec
       if (opts.only && !label.includes(opts.only)) continue;
       const examples = r.spec.examples ?? [];
       if (!examples.length) unchecked.push(label);
+      else {
+        const covered = new Set(examples.map((ex) => expectedStatus(r, ex)));
+        for (const s of Object.keys(r.spec.response ?? {}).map(Number)) {
+          if (!covered.has(s)) uncovered.push({ method: r.method, path: r.path, status: s });
+        }
+      }
       for (const [i, ex] of examples.entries()) {
         await opts.beforeEach?.();
         results.push(await runOne(app, r, ex, i));
@@ -141,34 +153,46 @@ export async function runChecks(app: App, opts: CheckOptions = {}): Promise<Chec
     app.options.log = log;
   }
   const failed = results.filter((r) => !r.ok).length;
-  return { ok: failed === 0, passed: results.length - failed, failed, results, unchecked };
+  const ok = failed === 0 && !(opts.strict && uncovered.length);
+  return { ok, passed: results.length - failed, failed, results, unchecked, uncovered };
 }
 
 export function formatReport(report: CheckReport, title = "", color = false): string {
-  const c = (code: string, s: string) => (color ? `\x1b[${code}m${s}\x1b[0m` : s);
-  const lines: string[] = ["", `  ${c("31", "印")} inkan check${title ? "  ·  " + title : ""}`, ""];
+  const c = paint(color);
+  const lines: string[] = ["", `  ${c.seal("印")} ${c.bold("inkan check")}${title ? c.dim("  ·  " + title) : ""}`, ""];
+  const gaps = (route: string) => {
+    for (const u of report.uncovered) {
+      if (`${u.method} ${u.path}` === route) lines.push(`    ${c.warn("·")} ${c.warn(String(u.status))} is in the contract, but no example answers with it`);
+    }
+  };
   let last = "";
   for (const r of report.results) {
     const route = `${r.method} ${r.path}`;
     if (route !== last) {
-      lines.push(`  ${c("1", r.method.padEnd(6))} ${r.path}`);
+      if (last) gaps(last);
+      lines.push(`  ${c.method(r.method, r.method.padEnd(6))} ${c.bold(r.path)}`);
       last = route;
     }
-    const mark = r.ok ? c("32", "✓") : c("31", "✗");
-    lines.push(`    ${mark} ${r.example.padEnd(34)} ${String(r.status || "---").padEnd(4)} ${c("2", r.ms + "ms")}`);
-    for (const p of r.problems) lines.push(`        ${c("31", p)}`);
+    const mark = r.ok ? c.ok("✓") : c.seal("✗");
+    const status = r.status ? c.status(r.status) + " ".repeat(Math.max(0, 4 - String(r.status).length)) : "--- ";
+    lines.push(`    ${mark} ${r.example.padEnd(34)} ${status} ${c.dim(r.ms + "ms")}`);
+    for (const p of r.problems) lines.push(`        ${c.seal(p)}`);
   }
+  if (last) gaps(last);
   if (report.unchecked.length) {
-    lines.push("", `  ${c("33", "no examples, so nothing holds them to their contract:")}`);
-    for (const u of report.unchecked) lines.push(`    · ${u}`);
+    lines.push("", `  ${c.warn("no examples, so nothing holds them to their contract:")}`);
+    for (const u of report.unchecked) lines.push(`    ${c.dim("·")} ${u}`);
   }
   const total = report.results.length;
   const summary = [
     `${total} example${total === 1 ? "" : "s"}`,
-    c("32", `${report.passed} sealed`),
-    report.failed ? c("31", `${report.failed} broken`) : "",
-    report.unchecked.length ? c("33", `${report.unchecked.length} unchecked`) : "",
+    c.ok(`${report.passed} sealed`),
+    report.failed ? c.seal(`${report.failed} broken`) : "",
+    report.unchecked.length ? c.warn(`${report.unchecked.length} unchecked`) : "",
+    report.uncovered.length
+      ? (report.ok || report.failed ? c.warn : c.seal)(`${report.uncovered.length} status${report.uncovered.length === 1 ? "" : "es"} uncovered`)
+      : "",
   ].filter(Boolean);
-  lines.push("", "  " + summary.join(" · "), "");
+  lines.push("", "  " + summary.join(c.dim(" · ")), "");
   return lines.join("\n");
 }

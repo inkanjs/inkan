@@ -5,6 +5,7 @@ import { t, type Infer, type Issue, type Schema } from "./schema.ts";
 import { buildOpenAPI, type OpenAPIInfo } from "./openapi.ts";
 import { docsPage, inspectorPage } from "./pages.ts";
 import { runChecks, type CheckOptions, type CheckReport } from "./check.ts";
+import { paint, useColor } from "./color.ts";
 
 // ---------- types ----------
 
@@ -352,8 +353,14 @@ export class App extends Routes {
       const m = this.router.match(raw.method, url.pathname);
       if (m.kind === "none") throw problem(404, "not-found", `No route for ${raw.method} ${url.pathname}`);
       if (m.kind === "method") {
+        const allow = [...m.allow, "OPTIONS"].join(", ");
+        if (raw.method === "OPTIONS") {
+          out.status = 204;
+          out.headers.allow = allow;
+          return;
+        }
         const p = problem(405, "method-not-allowed", `${url.pathname} does not take ${raw.method}`);
-        p.headers.allow = m.allow.join(", ");
+        p.headers.allow = allow;
         throw p;
       }
       const r = m.route;
@@ -370,14 +377,15 @@ export class App extends Routes {
       await compose(this.global, dispatch)(ctx);
       res = this.respond(result, out, route, notes);
     } catch (err) {
-      res = this.fail(err, ctx, url.pathname, notes);
+      res = this.fail(err, ctx, url.pathname, notes, out.headers);
     }
     if (raw.method === "HEAD") res.body = undefined;
 
     const ms = Math.round((performance.now() - started) * 10) / 10;
     if (this.options.log) {
-      const flag = notes.length ? `  ! ${notes.join("; ")}` : "";
-      console.log(`  ${raw.method.padEnd(6)} ${url.pathname}${url.search}  ${res.status}  ${ms}ms${flag}`);
+      const c = paint(useColor());
+      const flag = notes.length ? c.seal(`  ! ${notes.join("; ")}`) : "";
+      console.log(`  ${c.method(raw.method, raw.method.padEnd(6))} ${url.pathname}${url.search}  ${c.status(res.status)}  ${c.dim(ms + "ms")}${flag}`);
     }
     if (this.options.inspector) this.remember(raw, url, res, route, ms, notes, headers);
     return res;
@@ -423,7 +431,13 @@ export class App extends Routes {
     return encode(status, body, headers);
   }
 
-  private fail(err: unknown, ctx: Context<any, any, any, any, any>, path: string, notes: string[]): RawResponse {
+  private fail(
+    err: unknown,
+    ctx: Context<any, any, any, any, any>,
+    path: string,
+    notes: string[],
+    set: Record<string, string>,
+  ): RawResponse {
     let p: HttpProblem;
     if (err instanceof HttpProblem) p = err;
     else {
@@ -436,7 +450,7 @@ export class App extends Routes {
     const body: ProblemBody = { ...p.toJSON(), instance: path };
     return {
       status: p.status,
-      headers: { "content-type": "application/problem+json", ...lower(p.headers) },
+      headers: { ...set, "content-type": "application/problem+json", ...lower(p.headers) },
       body: JSON.stringify(body),
     };
   }
@@ -566,10 +580,11 @@ export class App extends Routes {
     const n = this._records.length;
     const ex = this._records.reduce((s, r) => s + (r.spec.examples?.length ?? 0), 0);
     const name = [this.options.title, this.options.version].filter(Boolean).join(" ");
-    const lines = [`  印 inkan${name ? "  ·  " + name : ""}`, `  ├ ${base}`];
-    if (this.options.docs) lines.push(`  ├ docs       ${base}${this.options.docs}`);
-    if (this.options.inspector) lines.push(`  ├ inspector  ${base}${this.options.inspector}`);
-    lines.push(`  └ ${n} route${n === 1 ? "" : "s"}, ${ex} example${ex === 1 ? "" : "s"}`);
+    const c = paint(useColor());
+    const lines = [`  ${c.seal("印")} ${c.bold("inkan")}${name ? c.dim("  ·  ") + name : ""}`, `  ${c.dim("├")} ${c.link(base)}`];
+    if (this.options.docs) lines.push(`  ${c.dim("├")} docs       ${c.link(base + this.options.docs)}`);
+    if (this.options.inspector) lines.push(`  ${c.dim("├")} inspector  ${c.link(base + this.options.inspector)}`);
+    lines.push(`  ${c.dim("└")} ${n} route${n === 1 ? "" : "s"}, ${ex} example${ex === 1 ? "" : "s"}`);
     console.log("\n" + lines.join("\n") + "\n");
   }
 }
@@ -682,7 +697,7 @@ function shutdownOnSignal(server: Server, onClose: (() => void | Promise<void>)[
   const stop = (signal: string) => {
     if (shuttingDown) process.exit(1); // a second ctrl+c means now
     shuttingDown = true;
-    console.log(`\n  ${signal}: finishing open requests…`);
+    console.log(`\n  ${paint(useColor()).warn(signal)}: finishing open requests…`);
     server.close(async () => {
       for (const hook of onClose) await hook();
       process.exit(0);
