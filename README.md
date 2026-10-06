@@ -237,6 +237,15 @@ On SIGINT or SIGTERM it lets open requests finish (up to ten seconds) before it
 exits. `app.listener` is a plain `(req, res)` function for your own
 `http.createServer`.
 
+Hooks open and close what the app needs around that:
+
+```ts
+app.onListen(() => db.connect()); // awaited before listen() resolves; a throw rejects it
+app.onClose(() => db.end());      // awaited after the last request, within the ten seconds
+```
+
+`onClose` runs on SIGINT or SIGTERM while `gracefulShutdown` is on.
+
 ```ts
 inkan({
   title: "Tea Shop", version: "1.0.0", description: "…", servers: [{ url: "https://api.example.com" }],

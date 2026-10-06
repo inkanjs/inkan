@@ -241,6 +241,8 @@ export class App extends Routes {
   private log: LogEntry[] = [];
   private logId = 0;
   private spec?: Record<string, unknown>;
+  private _onListen: (() => void | Promise<void>)[] = [];
+  private _onClose: (() => void | Promise<void>)[] = [];
 
   constructor(options: AppOptions = {}) {
     super();
@@ -260,6 +262,16 @@ export class App extends Routes {
   /** Middleware for every request, before routing. */
   override use(...mw: Middleware[]): this {
     this.global.push(...mw);
+    return this;
+  }
+
+  onListen(fn: () => void | Promise<void>): this {
+    this._onListen.push(fn);
+    return this;
+  }
+
+  onClose(fn: () => void | Promise<void>): this {
+    this._onClose.push(fn);
     return this;
   }
 
@@ -537,9 +549,12 @@ export class App extends Routes {
       server.once("error", reject);
       server.listen(p, h, () => {
         server.off("error", reject);
-        if (this.options.log) this.banner(server);
-        if (this.options.gracefulShutdown) shutdownOnSignal(server);
-        resolve(server);
+        (async () => {
+          for (const hook of this._onListen) await hook();
+          if (this.options.log) this.banner(server);
+          if (this.options.gracefulShutdown) shutdownOnSignal(server, this._onClose);
+          resolve(server);
+        })().catch((err) => server.close(() => reject(err)));
       });
     });
   }
@@ -663,12 +678,15 @@ function encode(status: number, body: unknown, headers: Record<string, string>):
 }
 
 let shuttingDown = false;
-function shutdownOnSignal(server: Server) {
+function shutdownOnSignal(server: Server, onClose: (() => void | Promise<void>)[]) {
   const stop = (signal: string) => {
     if (shuttingDown) process.exit(1); // a second ctrl+c means now
     shuttingDown = true;
     console.log(`\n  ${signal}: finishing open requests…`);
-    server.close(() => process.exit(0));
+    server.close(async () => {
+      for (const hook of onClose) await hook();
+      process.exit(0);
+    });
     server.closeIdleConnections();
     setTimeout(() => {
       server.closeAllConnections();
