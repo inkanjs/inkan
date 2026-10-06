@@ -547,12 +547,14 @@ export class App extends Routes {
     const h = host ?? process.env.HOST;
     return new Promise((resolve, reject) => {
       server.once("error", reject);
-      server.listen(p, h, async () => {
+      server.listen(p, h, () => {
         server.off("error", reject);
-        if (this.options.log) this.banner(server);
-        for (const hook of this._onListen) await hook();
-        if (this.options.gracefulShutdown) shutdownOnSignal(server, this._onClose);
-        resolve(server);
+        (async () => {
+          for (const hook of this._onListen) await hook();
+          if (this.options.log) this.banner(server);
+          if (this.options.gracefulShutdown) shutdownOnSignal(server, this._onClose);
+          resolve(server);
+        })().catch((err) => server.close(() => reject(err)));
       });
     });
   }
@@ -688,6 +690,7 @@ function shutdownOnSignal(server: Server, onClose: (() => void | Promise<void>)[
     server.closeIdleConnections();
     setTimeout(() => {
       server.closeAllConnections();
+      process.exit(0);
     }, 10_000).unref();
   };
   process.once("SIGINT", () => stop("SIGINT"));

@@ -44,3 +44,11 @@ test("lifecycle hooks: onListen and onClose, with fake resource", async () => {
   assert.deepEqual(events, ["connect", "onListen", "close", "onClose"]);
   assert.equal(exitCode, 0);
 });
+
+test("lifecycle hooks: a failing onListen rejects listen()", async () => {
+  const app = inkan({ log: false, gracefulShutdown: false });
+  app.onListen(() => {
+    throw new Error("db down");
+  });
+  await assert.rejects(app.listen(0), /db down/);
+});
