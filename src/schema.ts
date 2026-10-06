@@ -16,7 +16,7 @@ export class ValidationError extends Error {
 }
 
 /** Collects component schemas while a document is written. */
-export type RefContext = { components: Map<string, JsonSchema> };
+export type RefContext = { components: Map<string, JsonSchema>; refPrefix?: string; active?: Set<Schema<any>> };
 
 const FAIL: unique symbol = Symbol("fail");
 type Fail = typeof FAIL;
@@ -53,14 +53,24 @@ export abstract class Schema<T = unknown> {
 
   /** @internal */
   _schema(ctx?: RefContext): JsonSchema {
+    if (ctx && !this.meta.name) {
+      ctx.active ??= new Set();
+      if (ctx.active.has(this)) throw new Error("Name recursive schemas with .named() before exporting JSON Schema");
+      ctx.active.add(this);
+      try { return this.inlineSchema(ctx); } finally { ctx.active.delete(this); }
+    }
     if (ctx && this.meta.name) {
       if (!ctx.components.has(this.meta.name)) {
         ctx.components.set(this.meta.name, {}); // reserve first, so recursive shapes terminate
         ctx.components.set(this.meta.name, this.decorate(this.json(ctx)));
       }
-      const ref = { $ref: `#/components/schemas/${this.meta.name}` };
+      const ref = { $ref: `${ctx.refPrefix ?? "#/components/schemas/"}${this.meta.name.replace(/~/g, "~0").replace(/\//g, "~1")}` };
       return this.meta.nullable ? { anyOf: [ref, { type: "null" }] } : ref;
     }
+    return this.inlineSchema(ctx);
+  }
+
+  private inlineSchema(ctx?: RefContext): JsonSchema {
     const out = this.decorate(this.json(ctx));
     return this.meta.nullable ? { anyOf: [out, { type: "null" }] } : out;
   }
@@ -100,6 +110,17 @@ export abstract class Schema<T = unknown> {
   deprecated(): this {
     return this.clone({ deprecated: true });
   }
+  /** Runs after validation. Custom rules have no JSON Schema representation. */
+  refine(fn: (value: T) => boolean, message: string): Schema<T> {
+    return new EffectSchema(this, (value, path, issues) => {
+      if (!fn(value)) issues.push({ path, message });
+      return value;
+    });
+  }
+  /** Changes the parsed value, while documenting the original wire schema. */
+  transform<U>(fn: (value: T) => U): Schema<U> {
+    return new EffectSchema(this, fn);
+  }
   /** Names the schema, so OpenAPI lists it once under components and refers to it. */
   named(name: string): this {
     return this.clone({ name });
@@ -119,7 +140,58 @@ export abstract class Schema<T = unknown> {
   }
 
   toJSONSchema(): JsonSchema {
-    return this._schema();
+    const ctx: RefContext = { components: new Map(), refPrefix: "#/$defs/" };
+    const schema = this._schema(ctx);
+    return ctx.components.size ? { ...schema, $defs: Object.fromEntries(ctx.components) } : schema;
+  }
+}
+
+class EffectSchema<T, U> extends Schema<U> {
+  private source: Schema<T>;
+  private effect: (value: T, path: string, issues: Issue[]) => U;
+  private outerOptional = false;
+  private outerNullable = false;
+  private outerDefault = false;
+  constructor(source: Schema<T>, effect: (value: T, path: string, issues: Issue[]) => U) {
+    super();
+    this.source = source;
+    this.effect = effect;
+    this.meta = { ...source.meta };
+  }
+  override optional(): Schema<U | undefined> {
+    const copy = this.clone({ optional: true });
+    copy.outerOptional = true;
+    return copy;
+  }
+  override nullable(): Schema<U | null> {
+    const copy = this.clone({ nullable: true });
+    copy.outerNullable = true;
+    return copy;
+  }
+  override default(value: Exclude<U, undefined>): Schema<Exclude<U, undefined>> {
+    const copy = this.clone({ hasDefault: true, default: value });
+    copy.outerDefault = true;
+    return copy as never;
+  }
+  override _run(value: unknown, path: string, coerce: boolean, issues: Issue[]): U | Fail {
+    if (value === undefined) {
+      if (this.outerDefault) return structuredClone(this.meta.default) as U;
+      if (this.outerOptional) return undefined as U;
+    }
+    if (value === null && this.outerNullable) return null as U;
+    return this.check(value, path, coerce, issues);
+  }
+  protected check(value: unknown, path: string, coerce: boolean, issues: Issue[]) {
+    const count = issues.length;
+    const parsed = this.source._run(value, path, coerce, issues);
+    if (parsed === FAIL || issues.length !== count) return FAIL;
+    return this.effect(parsed, path, issues);
+  }
+  protected json(ctx?: RefContext) {
+    // The wrapper owns the name; avoid a self-reference to that same component.
+    const source = Object.create(this.source) as Schema<T>;
+    source.meta = { ...this.source.meta, name: undefined, nullable: false };
+    return source._schema(ctx);
   }
 }
 
@@ -226,6 +298,22 @@ export class BooleanSchema extends Schema<boolean> {
   protected json() {
     return { type: "boolean" };
   }
+}
+
+export class DateSchema extends Schema<Date> {
+  protected check(value: unknown, path: string, _coerce: boolean, issues: Issue[]) {
+    if (value instanceof Date && Number.isFinite(value.getTime())) return new Date(value.getTime());
+    if (typeof value === "string" && FORMATS["date-time"].test(value)) {
+      const date = new Date(value);
+      const [year, month, day] = value.slice(0, 10).split("-").map(Number);
+      const calendar = new Date(0);
+      calendar.setUTCFullYear(year!, month! - 1, day!);
+      if (Number.isFinite(date.getTime()) && calendar.getUTCMonth() === month! - 1 && calendar.getUTCDate() === day) return date;
+    }
+    issues.push({ path, message: "expected a valid ISO date-time or Date" });
+    return FAIL;
+  }
+  protected json() { return { type: "string", format: "date-time" }; }
 }
 
 export class EnumSchema<const V extends string | number | boolean> extends Schema<V> {
@@ -405,6 +493,57 @@ export class UnionSchema<S extends Schema<any>[]> extends Schema<Infer<S[number]
 
 // ---------- the builder ----------
 
+export class LazySchema<T> extends Schema<T> {
+  private resolve: () => Schema<T>;
+  constructor(resolve: () => Schema<T>) { super(); this.resolve = resolve; }
+  protected check(value: unknown, path: string, coerce: boolean, issues: Issue[]) {
+    return this.resolve()._run(value, path, coerce, issues);
+  }
+  protected json(ctx?: RefContext) {
+    const target = this.resolve();
+    return target._schema(ctx);
+  }
+}
+
+export class DiscriminatedSchema<K extends string, S extends Record<string, ObjectSchema<any>>>
+  extends Schema<{ [V in keyof S]: Infer<S[V]> & Record<K, V> }[keyof S]> {
+  private key: K;
+  private options: S;
+  constructor(key: K, options: S) {
+    super();
+    this.key = key;
+    this.options = options;
+    if (!Object.keys(options).length) throw new Error("A discriminated union needs at least one option");
+    for (const [tag, option] of Object.entries(options)) {
+      const field = option.shape[key];
+      if (!(field instanceof EnumSchema) || field.values.length !== 1 || field.values[0] !== tag || field.meta.optional || field.meta.nullable || field.meta.hasDefault) {
+        throw new Error(`Option ${tag} must declare ${key}: t.literal(${JSON.stringify(tag)})`);
+      }
+    }
+  }
+  protected check(value: unknown, path: string, coerce: boolean, issues: Issue[]) {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+      issues.push({ path, message: "expected an object" });
+      return FAIL;
+    }
+    const tag = (value as Record<string, unknown>)[this.key];
+    if (typeof tag !== "string" || !Object.hasOwn(this.options, tag)) {
+      issues.push({ path: path ? `${path}.${this.key}` : this.key, message: `must be one of ${Object.keys(this.options).map(x => JSON.stringify(x)).join(", ")}` });
+      return FAIL;
+    }
+    return this.options[tag]!._run(value, path, coerce, issues) as this["_type"] | Fail;
+  }
+  protected json(ctx?: RefContext) {
+    const mapping: Record<string, string> = {};
+    const oneOf = Object.entries(this.options).map(([tag, option]) => {
+      const schema = option._schema(ctx);
+      if (typeof schema.$ref === "string") mapping[tag] = schema.$ref;
+      return schema;
+    });
+    return { oneOf, discriminator: { propertyName: this.key, ...(Object.keys(mapping).length ? { mapping } : {}) } };
+  }
+}
+
 const problemShape = {
   type: new StringSchema().describe("A stable code for this kind of problem"),
   title: new StringSchema(),
@@ -418,6 +557,9 @@ export const t = {
   number: () => new NumberSchema(false),
   int: () => new NumberSchema(true),
   boolean: () => new BooleanSchema(),
+  date: () => new DateSchema(),
+  lazy: <T>(resolve: () => Schema<T>) => new LazySchema(resolve),
+  discriminated: <K extends string, S extends Record<string, ObjectSchema<any>>>(key: K, options: S) => new DiscriminatedSchema(key, options),
   literal: <const V extends string | number | boolean>(value: V) => new EnumSchema<V>([value]),
   enum: <const V extends string | number | boolean>(values: readonly V[]) => new EnumSchema<V>(values),
   array: <S extends Schema<any>>(item: S) => new ArraySchema(item),

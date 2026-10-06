@@ -167,6 +167,36 @@ t.object({ … }).strict() .passthrough() .pick() .omit() .extend() .partial()
 `ValidationError`, `Tea.safeParse(x)` does not, and `Tea.toJSONSchema()`
 gives JSON Schema 2020-12.
 
+`t.date()` accepts ISO date-time strings (including a timezone) or valid `Date`
+instances and returns a `Date`. Responses serialize dates back to ISO strings;
+the wire schema is `{ type: "string", format: "date-time" }`.
+
+```ts
+const Even = t.int().refine(n => n % 2 === 0, "must be even");
+const Length = t.string().transform(text => text.length); // Infer: number
+const Pet = t.discriminated("kind", {
+  cat: t.object({ kind: t.literal("cat"), lives: t.int() }).named("Cat"),
+  dog: t.object({ kind: t.literal("dog"), bark: t.boolean() }).named("Dog"),
+});
+
+type Node = { name: string; children: Node[] };
+const Node: Schema<Node> = t.object({
+  name: t.string(), children: t.array(t.lazy(() => Node)),
+}).named("Node"); // import type { Schema } from "@vxnsin/inkan"
+```
+
+Refinements and transforms are synchronous, run in chain order after successful
+validation, and remain outside JSON Schema. Transforms document their original
+input shape; use them on request schemas when the parsed handler value differs
+from the wire value. Optional, nullable and default modifiers added after an effect
+bypass that effect for their missing/null/default values. Modifiers before an
+effect supply its input.
+
+Each discriminated branch declares its matching literal tag. OpenAPI uses
+`oneOf` and a `discriminator`, with mappings for named branches. Name recursive
+shapes so OpenAPI can reference components; `toJSONSchema()` includes named
+schemas in `$defs`, making its references self-contained.
+
 ## Examples are tests
 
 ```sh
