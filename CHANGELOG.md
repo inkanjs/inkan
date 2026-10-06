@@ -2,7 +2,20 @@
 
 ## Unreleased
 
+### New
+
+- **More schema power.** `t.date()` takes ISO date-time strings (or `Date`s) and hands the
+  handler a `Date`; answers send it back as an ISO string. `.refine(fn, message)` adds your
+  own rules, `.transform(fn)` changes the parsed value, `t.discriminated(key, options)` picks
+  one branch by its tag (OpenAPI `oneOf` with a `discriminator`), and `t.lazy(() => schema)`
+  makes recursive shapes possible. Thanks [@AndrewCMD](https://github.com/AndrewCMD)!
+  ([#13](https://github.com/vxnsin/inkan/issues/13), [#22](https://github.com/vxnsin/inkan/pull/22))
 - The help text is coloured, and so are logs in GitHub Actions (`NO_COLOR` still turns it off).
+
+### Changed
+
+- `toJSONSchema()` keeps named schemas in `$defs` and refers to them, instead of writing them
+  out inline, so recursive schemas work there too.
 
 ## 0.2.0
 
