@@ -104,6 +104,19 @@ The package is scoped because npm keeps the plain name `inkan` free of look-alik
 Node 20 or newer. On Node 22.18 and newer, `.ts` files run as they are,
 with no build step and no loader.
 
+**New here? Start with the tutorial.** It runs in your terminal, offline:
+
+```sh
+npx @vxnsin/inkan learn
+```
+
+It sets up a small tea shop and gives you twelve quests, one idea each: a first
+route, typed params, rules for a body, examples as tests, problems, groups,
+security, hooks, the docs page, changes that break clients, the seal and plugins.
+inkan checks your work every time you save, says what is still missing, and
+gives a hint (then a clearer one) when you press `h`. It keeps your progress, so
+`npx @vxnsin/inkan learn` again goes on where you stopped.
+
 ## What it does
 
 | | |

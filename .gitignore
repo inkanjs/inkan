@@ -19,3 +19,5 @@ assets/release/*
 !assets/release/release-template.html
 bench/inkan.seal.js
 bench/inkan.seal.d.ts
+assets/social/*
+!assets/social/social-template.html
