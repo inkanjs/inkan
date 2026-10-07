@@ -15,7 +15,7 @@ on:
         description: Rounds (the median is shown)
         default: "3"
       servers:
-        description: Servers, comma separated (node, fastify, hono, inkan, inkan-sealed, inkan-dev, express)
+        description: Servers, comma separated (node, fastify, hono, inkan, inkan-sealed, inkan-cluster, inkan-dev, express)
         default: "node,fastify,hono,inkan,express"
       kind:
         description: "http: req/s, latency and memory · cpu: what one request costs the server · both"

@@ -65,6 +65,12 @@
   runs in order with the plugins, `listen` waits for it, and in a plugin the routes go under
   its prefix. Files starting with `_`, `.d.ts` and test files are left alone. A file that
   exports no route says so by name. ([#6](https://github.com/inkanjs/inkan/issues/6))
+- **Every core: `workers`.** `inkan({ workers: "auto" })` (or a number) runs one process per
+  core on one port with `node:cluster`. The first process only looks after them: it replaces
+  a worker that dies, stops instead of looping when they keep dying, and on SIGINT or SIGTERM
+  asks every worker to finish its open requests and run its `onClose`. Log lines, the
+  `listening` line and the inspector say which worker answered. The bench has an
+  `inkan-cluster` entry next to the one-core ones. ([#24](https://github.com/inkanjs/inkan/issues/24))
 - **`bench/cpu.mjs`**: the CPU time one request costs the server, next to the others, which
   does not depend on how fast the load generator is. The bench workflow runs it with
   `kind: cpu` (or `both`).
