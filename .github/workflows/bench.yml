@@ -15,7 +15,7 @@ on:
         description: Rounds (the median is shown)
         default: "3"
       servers:
-        description: Servers, comma separated (node, fastify, hono, inkan, inkan-dev, express)
+        description: Servers, comma separated (node, fastify, hono, inkan, inkan-sealed, inkan-dev, express)
         default: "node,fastify,hono,inkan,express"
       kind:
         description: "http: req/s, latency and memory · cpu: what one request costs the server · both"
@@ -38,6 +38,9 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm install --no-audit --no-fund
+        working-directory: bench
+      - name: the seal for inkan-sealed
+        run: node ../src/cli.ts seal seal-entry.mjs -o inkan.seal.js
         working-directory: bench
       - name: inkan alone, without a network
         run: node inproc.mjs

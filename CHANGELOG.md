@@ -29,6 +29,20 @@
 - **`rateLimit({ max, window, key })`**, a plugin built on nothing but these APIs: a 429
   problem with `retry-after` after `max` requests per client, and `x-ratelimit-remaining` on
   every answer. Registered in a plugin, it limits only that plugin's routes.
+- **`inkan seal`: contracts as plain code.** `npx inkan seal src/app.ts` writes every contract
+  out as code of its own into `inkan.seal.js` (with a `.d.ts`), and `inkan({ seal })` runs on
+  it. The engine can tune code that only ever sees one shape: checking a body of 50 objects
+  and writing an answer of 100 both take about half the time. A sealed contract does exactly
+  what its schema does: the same values, the same messages and paths, and it keeps back every
+  key the contract does not list. No eval and no `new Function`: what is in the file is what
+  runs. At start the app writes the code again from the live contract and uses an entry only
+  while the hashes match, so a contract that changed since runs unsealed and inkan says
+  which; a seal of another format is not used at all. Equal contracts share one entry.
+  `refine`, `transform`, unions, records, dates and lazy schemas run unsealed for now.
+  ([#18](https://github.com/inkanjs/inkan/issues/18))
+- **`bench/cpu.mjs`**: the CPU time one request costs the server, next to the others, which
+  does not depend on how fast the load generator is. The bench workflow runs it with
+  `kind: cpu` (or `both`).
 
 ### Fixed
 

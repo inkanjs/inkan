@@ -4,7 +4,7 @@
 // and reads it, without opening a port.
 
 import { readFileSync, writeFileSync } from "node:fs";
-import { relative, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { pathToFileURL } from "node:url";
 import type { App } from "./core/app.ts";
@@ -12,6 +12,7 @@ import { formatReport } from "./testing/check.ts";
 import { paint, useColor } from "./core/color.ts";
 import { diffOpenAPI, formatDiff } from "./openapi/diff.ts";
 import { copyExample, EXAMPLES, ExampleError } from "./cli/examples.ts";
+import { writeSeal } from "./seal/seal.ts";
 
 const version = (): string => JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 
@@ -65,6 +66,7 @@ const HELP = `
   ${c.bold("inkan routes")}  ${c.dim("<entry>")}               ${c.dim("list the routes")}
   ${c.bold("inkan diff")}    ${c.dim("<before> <after> [--json]")}
                 ${c.dim("what would break a client; each side a .json file or an app")}
+  ${c.bold("inkan seal")}    ${c.dim("<entry> [-o <file>]")}   ${c.dim("stamp the contracts into plain code, for speed")}
   ${c.bold("inkan examples")} ${c.dim("[name] [folder] [--list] [--force]")}
                 ${c.dim("copy an explained example project into a folder")}
 
@@ -102,6 +104,23 @@ switch (command) {
       const tail = [r.spec.summary, examples].filter(Boolean).join(c.dim("  ·  "));
       console.log(`  ${c.method(r.method, r.method.padEnd(7))} ${r.path.padEnd(32)} ${tail}`);
     }
+    process.exit(0);
+  }
+  case "seal": {
+    const given = option("--out", "-o");
+    const entry = args[0];
+    const { app } = await load(entry);
+    const out = given ?? join(dirname(entry), "inkan.seal.js");
+    const slash = (p: string) => p.replaceAll("\\", "/");
+    const report = writeSeal(app.routes(), slash(relative(process.cwd(), resolve(entry))));
+    writeFileSync(out, report.code);
+    const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).name;
+    writeFileSync(out.replace(/\.js$/, ".d.ts"), `declare const seal: import("${pkg}").Seal;\nexport default seal;\n`);
+    const n = report.sealed;
+    console.log(`\n  ${c.seal("印")} ${c.bold("sealed")} ${n} contract${n === 1 ? "" : "s"} ${c.dim(`(${report.entries} entries)`)} ${c.dim("→")} ${slash(out)}`);
+    for (const u of report.unsealable) console.log(`  ${c.dim("·")} ${u.label} ${c.dim(`runs unsealed: the seal cannot write ${u.reason} yet`)}`);
+    const rel = slash(relative(dirname(resolve(entry)), resolve(out)));
+    console.log(`\n  ${c.dim("use it:")} import seal from "${rel.startsWith(".") ? rel : "./" + rel}";  inkan({ seal })\n`);
     process.exit(0);
   }
   case "diff": {

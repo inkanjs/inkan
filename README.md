@@ -425,6 +425,33 @@ A name the context already has is refused, so a decoration cannot hide `params`
 or another decoration. A route with no hooks anywhere above it takes the same
 path it took before there were hooks: they cost nothing until you use them.
 
+## Sealed: contracts as plain code
+
+inkan checks and writes every route through the same few functions. That keeps it
+small, but the engine cannot tune them for any one route. `inkan seal` stamps every
+contract into code of its own, ahead of time, into a file you can read and commit:
+
+```sh
+npx inkan seal src/app.ts        # writes src/inkan.seal.js
+```
+
+```ts
+import seal from "./inkan.seal.js";
+const app = inkan({ seal });
+```
+
+Big bodies and big answers get the most out of it: checking a body of 50 objects
+and writing an answer of 100 both take about half the time. A sealed contract does
+exactly what the schema does, the same values and the same messages, and keeps
+back every key the contract does not list.
+
+No `eval`, no `new Function`: the code is in the file, and the file is what runs.
+At start inkan writes the code for every contract again and compares hashes, so a
+contract that changed since the seal was made is never checked by the old code. It
+runs unsealed, as it would without the file, and inkan says which one and to run
+`inkan seal` again. `refine`, `transform`, unions, records, dates and lazy schemas
+run unsealed for now; `inkan seal` lists them.
+
 ## Running it
 
 `app.listen()` takes the port from its argument, then `$PORT`, then 3000. So it
@@ -477,6 +504,7 @@ npx inkan check   src/app.ts [--only <text>] [--json] [--strict]
 npx inkan openapi src/app.ts [-o openapi.json]
 npx inkan routes  src/app.ts
 npx inkan diff    openapi.json src/app.ts [--json]
+npx inkan seal    src/app.ts [-o src/inkan.seal.js]
 npx inkan examples [name] [folder] [--list] [--force]
 ```
 

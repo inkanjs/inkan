@@ -19,3 +19,4 @@ export { rateLimit } from "./plugins/rate-limit.ts";
 export type { RateLimitOptions } from "./plugins/rate-limit.ts";
 export { formatReport, partialMatch } from "./testing/check.ts";
 export type { CheckOptions, CheckReport, CheckResult } from "./testing/check.ts";
+export type { Seal } from "./seal/compile.ts";
