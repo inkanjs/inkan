@@ -311,6 +311,37 @@ app.post(
 Fields next to the file are coerced like a query (`"1"` becomes `1`). A file that is too big
 or of the wrong type is a 400 that says which, and `bodyLimit` still caps the whole upload.
 
+## A typed client
+
+The contract already knows every path, input and answer, so a client can take its types
+from the app itself. No code generation, no OpenAPI step in between:
+
+```ts
+// server.ts: define the routes in a chain, so the type of `api` sees them
+export const api = inkan()
+  .get("/teas/:id", { params: t.object({ id: t.int() }), response: { 200: Tea, 404: t.problem() } }, getTea)
+  .post("/teas", { body: NewTea, response: { 201: Tea } }, addTea)
+  .mount("/admin", admin);
+
+// web.ts: only the type crosses over, none of the server
+import type { api } from "./server.ts";
+import { client } from "@vxnsin/inkan/client";
+
+const shop = client<typeof api>("https://shop.example.com", { headers: () => ({ authorization: `Bearer ${token}` }) });
+
+const res = await shop.get("/teas/:id", { params: { id: 1 } });
+if (res.ok) res.data.name;               // typed as the contract's Tea, Dates as strings
+else if (res.status === 404) res.problem; // every failure is a problem document, never a throw
+```
+
+A wrong path, a missing param or a body of the wrong shape does not compile. Check `ok`
+first: any status can also come from a proxy on the way, so `status` alone cannot promise
+which answer it is. The client is a few lines around `fetch` and runs anywhere fetch does;
+pass your own with `{ fetch }`.
+
+Routes written one statement at a time (`app.get(...);`) work as always, but their type
+cannot collect them: a type only grows along a chain.
+
 ## Middleware and groups
 
 ```ts
@@ -441,9 +472,9 @@ node src/cli.ts check examples/shop.ts
 ## Not yet
 
 What comes next lives in the [issues](https://github.com/vxnsin/inkan/issues) and the
-[milestones](https://github.com/vxnsin/inkan/milestones): a typed client that reads the
-routes with no codegen, streaming answers and uploads, examples that build on each other. What changed lives in the
-[changelog](CHANGELOG.md). Issues marked
+[milestones](https://github.com/vxnsin/inkan/milestones): routes from the file tree,
+`app.fetch()` for Bun, Deno and serverless, security schemes in OpenAPI, honest benchmarks.
+What changed lives in the [changelog](CHANGELOG.md). Issues marked
 [good first issue](https://github.com/vxnsin/inkan/labels/good%20first%20issue) are a good place to start.
 
 ## License

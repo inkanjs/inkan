@@ -119,7 +119,27 @@ export type RouteRecord = {
   use: Middleware[];
 };
 
-type RouteMethod<Self> = {
+/** What the type of an app remembers about one route, for the typed client. */
+export type RouteDef = { params: unknown; query: unknown; body: unknown; headers: unknown; response: Responses };
+/** Every route of an app or group, by `"METHOD /path"`. */
+export type RouteDefs = { [route: string]: RouteDef };
+
+// A table with more routes: the same kind of table, remembering them.
+type WithRoutes<Self, More extends RouteDefs> =
+  Self extends App<infer D> ? App<D & More> : Self extends Routes<infer D> ? Routes<D & More> : Self;
+
+type TrimEnd<S extends string> = S extends `${infer A}/` ? TrimEnd<A> : S;
+/** `/teas` + `/:id` is `/teas/:id`, `/teas` + `/` is `/teas`, `/` + `/me` is `/me`. */
+type JoinPath<A extends string, B extends string> = `${TrimEnd<A>}${B extends "/" ? "" : B}` extends ""
+  ? "/"
+  : `${TrimEnd<A>}${B extends "/" ? "" : B}`;
+type Prefixed<D extends RouteDefs, Pre extends string> = {
+  [K in keyof D & string as K extends `${infer M} ${infer P}` ? `${M} ${JoinPath<Pre, P>}` : never]: D[K];
+};
+
+type MountMethod<Self> = <Pre extends string, G extends RouteDefs>(prefix: Pre, group: Routes<G>) => WithRoutes<Self, Prefixed<G, Pre>>;
+
+type RouteMethod<Self, M extends string> = {
   <
     Path extends string,
     P = PathParams<Path>,
@@ -131,16 +151,24 @@ type RouteMethod<Self> = {
     path: Path,
     spec: RouteSpec<P, Q, B, H, R>,
     handler: Handler<P, Q, B, H, R>,
-  ): Self;
-  <Path extends string>(path: Path, handler: Handler<PathParams<Path>, RawQuery, unknown, RawHeaders, {}>): Self;
+  ): WithRoutes<Self, { [K in `${M} ${Path}`]: { params: P; query: Q; body: B; headers: H; response: R } }>;
+  <Path extends string>(
+    path: Path,
+    handler: Handler<PathParams<Path>, RawQuery, unknown, RawHeaders, {}>,
+  ): WithRoutes<Self, { [K in `${M} ${Path}`]: { params: PathParams<Path>; query: RawQuery; body: unknown; headers: RawHeaders; response: {} } }>;
 };
 
 // ---------- route tables ----------
 
 const joinPath = (a: string, b: string) => "/" + [a, b].join("/").split("/").filter(Boolean).join("/");
 
-/** A set of routes that can be mounted under a prefix. */
-export class Routes {
+/**
+ * A set of routes that can be mounted under a prefix. Its type remembers every route
+ * defined on it in a chain, which is what the typed client reads.
+ */
+export class Routes<Defs extends RouteDefs = any> {
+  /** Only a type: the routes this table knows. There is nothing here at runtime. */
+  declare readonly _defs: Defs;
   /** @internal */
   _records: RouteRecord[] = [];
   /** @internal */
@@ -164,19 +192,20 @@ export class Routes {
     this._records.push({ ...r, use: [...this._use, ...r.use] });
   }
 
-  get: RouteMethod<this> = ((p: string, a: unknown, b?: unknown) => this.define("GET", p, a, b)) as never;
-  post: RouteMethod<this> = ((p: string, a: unknown, b?: unknown) => this.define("POST", p, a, b)) as never;
-  put: RouteMethod<this> = ((p: string, a: unknown, b?: unknown) => this.define("PUT", p, a, b)) as never;
-  patch: RouteMethod<this> = ((p: string, a: unknown, b?: unknown) => this.define("PATCH", p, a, b)) as never;
-  delete: RouteMethod<this> = ((p: string, a: unknown, b?: unknown) => this.define("DELETE", p, a, b)) as never;
+  get: RouteMethod<this, "GET"> = ((p: string, a: unknown, b?: unknown) => this.define("GET", p, a, b)) as never;
+  post: RouteMethod<this, "POST"> = ((p: string, a: unknown, b?: unknown) => this.define("POST", p, a, b)) as never;
+  put: RouteMethod<this, "PUT"> = ((p: string, a: unknown, b?: unknown) => this.define("PUT", p, a, b)) as never;
+  patch: RouteMethod<this, "PATCH"> = ((p: string, a: unknown, b?: unknown) => this.define("PATCH", p, a, b)) as never;
+  delete: RouteMethod<this, "DELETE"> = ((p: string, a: unknown, b?: unknown) => this.define("DELETE", p, a, b)) as never;
 
-  mount(prefix: string, group: Routes): this {
+  /** Puts a group's routes under a prefix. In a chain, the type knows them under their new paths. */
+  mount: MountMethod<this> = ((prefix: string, group: Routes) => {
     for (const r of group._records) this.add({ ...r, path: joinPath(prefix, r.path) });
     return this;
-  }
+  }) as never;
 }
 
-export const routes = () => new Routes();
+export const routes = (): Routes<{}> => new Routes();
 
 // ---------- the app ----------
 
@@ -281,7 +310,7 @@ const clip = (s: string, n = CLIP) => (s.length > n ? s.slice(0, n) + `… (${s.
 const isLoopback = (addr?: string) =>
   !addr || addr === "127.0.0.1" || addr === "::1" || addr === "::ffff:127.0.0.1";
 
-export class App extends Routes {
+export class App<Defs extends RouteDefs = any> extends Routes<Defs> {
   options: AppOptions;
   dev: boolean;
   private router = new Router<RouteRecord>();
@@ -731,7 +760,7 @@ export class App extends Routes {
   }
 }
 
-export const inkan = (options?: AppOptions) => new App(options);
+export const inkan = (options?: AppOptions): App<{}> => new App(options);
 
 /**
  * The schema a status answers with. A route that takes input also promises

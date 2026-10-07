@@ -73,6 +73,14 @@
   that is too big or of the wrong type is a 400 that says which. `fileExample(name, content,
   type)` puts a file into an example; `inject` takes a `FormData` too.
   ([#5](https://github.com/vxnsin/inkan/issues/5))
+- **A typed client, with no codegen.** `client<typeof api>(baseUrl)` from
+  `@vxnsin/inkan/client` takes its types from the app: paths, params, query, body and every
+  answer per status, with Dates as the strings they arrive as. A wrong path, a missing param
+  or a body of the wrong shape does not compile. Failures come back as problem documents,
+  never as thrown errors. It is a few lines around `fetch` with no server code in it, so it
+  runs in a browser too; `{ fetch }` and `{ headers }` (also as a function, for fresh tokens)
+  are optional. The routes have to be defined in a chain (`inkan().get(…).post(…)`, also
+  `mount`) for the type to see them. ([#2](https://github.com/vxnsin/inkan/issues/2))
 
 ### Changed
 
