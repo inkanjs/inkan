@@ -5,7 +5,7 @@
 [![npm](https://img.shields.io/npm/v/@vxnsin/inkan?color=c4381f&labelColor=2b2420&label=npm)](https://www.npmjs.com/package/@vxnsin/inkan)
 [![CI](https://img.shields.io/github/actions/workflow/status/vxnsin/inkan/ci.yml?branch=main&color=3d7a4b&labelColor=2b2420&label=ci)](https://github.com/vxnsin/inkan/actions/workflows/ci.yml)
 [![dependencies](https://img.shields.io/badge/dependencies-0-ece1cf?labelColor=2b2420)](package.json)
-[![License](https://img.shields.io/badge/license-MIT-a87fe0?labelColor=2b2420)](LICENSE)
+[![License](https://img.shields.io/badge/license-non--sale-a87fe0?labelColor=2b2420)](LICENSE)
 [![supports warden](https://raw.githubusercontent.com/vxnsin/warden/main/assets/supports-warden.svg)](https://github.com/vxnsin/warden)
 
 <!-- cozy:cards -->
