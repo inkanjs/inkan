@@ -81,10 +81,13 @@ for (let round = 0; round < rounds; round++) {
       await cannon({ ...opts, duration: warmup }); // warm the JIT
       const r = await cannon({ ...opts, duration: seconds });
       const codes = Object.keys(r.statusCodeStats ?? {}).map(Number);
-      if (r.errors || codes.some((c) => c !== s.status)) {
-        throw new Error(`${name} · ${s.name}: ${r.errors} errors, statuses ${JSON.stringify(r.statusCodeStats)}`);
+      // A wrong status means a wrong answer: stop. Dropped sockets under heavy load are a
+      // result, not a bug in the bench: they are counted and shown next to the numbers.
+      if (codes.some((c) => c !== s.status)) {
+        throw new Error(`${name} · ${s.name}: statuses ${JSON.stringify(r.statusCodeStats)}`);
       }
-      const cell = ((results[s.name] ??= {})[name] ??= { rps: [], p99: [] });
+      const cell = ((results[s.name] ??= {})[name] ??= { rps: [], p99: [], errors: 0 });
+      cell.errors += r.errors + r.timeouts;
       cell.rps.push(r.requests.average);
       cell.p99.push(r.latency.p99);
       process.stderr.write(`round ${round + 1}/${rounds}  ${name.padEnd(10)} ${s.name.padEnd(26)} ${Math.round(r.requests.average)} req/s\n`);
@@ -105,7 +108,8 @@ const throughput = header("req/s (median)");
 for (const s of scenarios) {
   const best = Math.max(...servers.map((n) => rps(s, n)));
   const cells = servers.map((n) => {
-    const text = `${fmt(rps(s, n))}${n === base ? "" : ` (${Math.round((rps(s, n) / rps(s, base)) * 100)} %)`}`;
+    const errors = results[s.name][n].errors;
+    const text = `${fmt(rps(s, n))}${n === base ? "" : ` (${Math.round((rps(s, n) / rps(s, base)) * 100)} %)`}${errors ? ` ⚠ ${errors} dropped` : ""}`;
     return rps(s, n) === best ? `**${text}**` : text;
   });
   throughput.push(`| ${s.name} | ${cells.join(" | ")} |`);

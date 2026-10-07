@@ -81,16 +81,16 @@ drifts, the check goes red before anyone reads something false.
 Express gets out of the way, FastAPI writes your docs. inkan wants both, plus
 the one thing neither does: holding the server to what its docs say.
 
-| | Express | Fastify | FastAPI | inkan |
-| --- | :-: | :-: | :-: | :-: |
-| Handler types come from the schema | – | with a type provider | ✓ | ✓ |
-| OpenAPI document | plugin | plugin | ✓ | ✓ |
-| Docs page | plugin | plugin | ✓ | ✓ no CDN, works offline |
-| Answers trimmed to the contract | – | ✓ | ✓ | ✓ and checked in dev |
-| **Examples run as tests** | – | – | – | ✓ `inkan check` |
-| **Live request inspector** | – | – | – | ✓ `/_inkan` |
-| Every error in one shape ([RFC 9457](https://www.rfc-editor.org/rfc/rfc9457)) | – | – | – | ✓ |
-| Runtime dependencies | several | several | several | **none** |
+| | Express | Fastify | Hono | FastAPI | inkan |
+| --- | :-: | :-: | :-: | :-: | :-: |
+| Handler types come from the schema | – | with a type provider | with a validator | ✓ | ✓ |
+| OpenAPI document | plugin | plugin | plugin | ✓ | ✓ |
+| Docs page | plugin | plugin | plugin | ✓ | ✓ no CDN, works offline |
+| Answers trimmed to the contract | – | ✓ | – | ✓ | ✓ and checked in dev |
+| **Examples run as tests** | – | – | – | – | ✓ `inkan check` |
+| **Live request inspector** | – | – | – | – | ✓ `/_inkan` |
+| Every error in one shape ([RFC 9457](https://www.rfc-editor.org/rfc/rfc9457)) | – | – | – | – | ✓ |
+| Runtime dependencies | several | several | none | several | **none** |
 
 ## Install
 
