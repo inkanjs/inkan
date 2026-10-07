@@ -1,6 +1,6 @@
 <picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/inkanjs/inkan/main/assets/wordmark-dark.svg"><img src="https://raw.githubusercontent.com/inkanjs/inkan/main/assets/wordmark-light.svg" alt="inkan" width="340"></picture>
 
-**An API server for Node where the docs can't lie.**
+**An API framework for Node where the docs can't lie.** It runs on `node:http`, and on Bun, Deno and serverless through `app.fetch`.
 
 [![npm](https://img.shields.io/npm/v/@vxnsin/inkan?color=c4381f&labelColor=2b2420&label=npm)](https://www.npmjs.com/package/@vxnsin/inkan)
 [![CI](https://img.shields.io/github/actions/workflow/status/inkanjs/inkan/ci.yml?branch=main&color=3d7a4b&labelColor=2b2420&label=ci)](https://github.com/inkanjs/inkan/actions/workflows/ci.yml)
@@ -91,6 +91,11 @@ server to what its docs say.
 | **Examples run as tests** | – | – | – | ✓ `inkan check` |
 | **Live request inspector** | – | – | – | ✓ `/_inkan` |
 | Every error in one shape ([RFC 9457](https://www.rfc-editor.org/rfc/rfc9457)) | – | – | – | ✓ |
+| Credentials in the contract, refused with a 401 when missing | middleware | plugin | middleware | ✓ `security`, in OpenAPI too |
+| Contracts as compiled code | – | at runtime, with `new Function` | – | ✓ ahead of time, `inkan seal`, no eval |
+| Hooks, plugins, decorators | middleware | ✓ | middleware | ✓ |
+| Bun, Deno, serverless | – | – | ✓ | ✓ `app.fetch` |
+| **A tutorial in the terminal** | – | – | – | ✓ `inkan learn` |
 | Runtime dependencies | several | several | none | **none** |
 
 ## Install
@@ -675,9 +680,8 @@ node src/cli.ts check examples/shop.ts
 ## Not yet
 
 What comes next lives in the [issues](https://github.com/inkanjs/inkan/issues) and the
-[milestones](https://github.com/inkanjs/inkan/milestones): routes from the file tree,
-`app.fetch()` for Bun, Deno and serverless, security schemes in OpenAPI, honest benchmarks.
-What changed lives in the [changelog](CHANGELOG.md). Issues marked
+[milestones](https://github.com/inkanjs/inkan/milestones). What changed lives in the
+[changelog](CHANGELOG.md). Issues marked
 [good first issue](https://github.com/inkanjs/inkan/labels/good%20first%20issue) are a good place to start.
 
 Where things live:
