@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Script } from "node:vm";
-import { docsPage, inspectorPage } from "../src/pages.ts";
+import { docsPage } from "../src/pages/docs.ts";
+import { inspectorPage } from "../src/pages/inspector.ts";
 
 const scripts = (html: string) => [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
 

@@ -2,7 +2,7 @@
 // a stable `type` code to switch on, and a human `detail`.
 
 import { STATUS_CODES } from "node:http";
-import type { Issue } from "./schema.ts";
+import type { Issue } from "../schema/schema.ts";
 
 export type ProblemBody = {
   type: string;

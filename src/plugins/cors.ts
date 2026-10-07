@@ -1,4 +1,4 @@
-import type { Middleware } from "./app.ts";
+import type { Middleware } from "../core/route.ts";
 
 export type CorsOptions = {
   /** Which origins may call: `"*"` (the default), one origin, a list, or a function that decides. */

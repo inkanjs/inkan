@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { inkan, t, type Example, type LogEntry } from "../src/index.ts";
-import { exampleFrom, literal } from "../src/record.ts";
+import { exampleFrom, literal } from "../src/testing/record.ts";
 
 const quiet = { log: false, gracefulShutdown: false } as const;
 const lastEntry = async (app: ReturnType<typeof inkan>): Promise<LogEntry> => {

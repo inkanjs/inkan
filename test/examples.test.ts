@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { App } from "../src/index.ts";
-import { copyExample, EXAMPLES, ExampleError, templatesDir } from "../src/examples.ts";
+import { copyExample, EXAMPLES, ExampleError, templatesDir } from "../src/cli/examples.ts";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const scratch = mkdtempSync(join(tmpdir(), "inkan-examples-"));

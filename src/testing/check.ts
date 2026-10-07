@@ -2,9 +2,10 @@
 // app and holds the answer against the contract: the status, the response
 // schema and whatever the example says it `expect`s.
 
-import { contractFor, type App, type Example, type InjectResponse, type RouteRecord } from "./app.ts";
-import { paint } from "./color.ts";
-import { EventsSchema } from "./schema.ts";
+import { contractFor, type App, type InjectResponse } from "../core/app.ts";
+import type { Example, RouteRecord } from "../core/route.ts";
+import { paint } from "../core/color.ts";
+import { EventsSchema } from "../schema/schema.ts";
 
 export type CheckOptions = {
   /** Runs before every example, e.g. to reset an in-memory store. */

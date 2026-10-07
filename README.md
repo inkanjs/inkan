@@ -478,6 +478,20 @@ What comes next lives in the [issues](https://github.com/vxnsin/inkan/issues) an
 What changed lives in the [changelog](CHANGELOG.md). Issues marked
 [good first issue](https://github.com/vxnsin/inkan/labels/good%20first%20issue) are a good place to start.
 
+Where things live:
+
+```
+src/
+  index.ts  client.ts  cli.ts    the three entry points: the package, /client and the inkan command
+  core/       the server: app, routes, context, input, router, problems, streams
+  schema/     t, validation and the writers that keep answers to their contract
+  openapi/    the OpenAPI document and inkan diff
+  testing/    inkan check, examples that build on each other, examples from real requests
+  pages/      the docs page and the inspector
+  plugins/    cors, and more to come
+  cli/        inkan examples
+```
+
 ## License
 
 [MIT](LICENSE)

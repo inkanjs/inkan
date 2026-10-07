@@ -7,11 +7,11 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { relative, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { pathToFileURL } from "node:url";
-import type { App } from "./app.ts";
-import { formatReport } from "./check.ts";
-import { paint, useColor } from "./color.ts";
-import { diffOpenAPI, formatDiff } from "./diff.ts";
-import { copyExample, EXAMPLES, ExampleError } from "./examples.ts";
+import type { App } from "./core/app.ts";
+import { formatReport } from "./testing/check.ts";
+import { paint, useColor } from "./core/color.ts";
+import { diffOpenAPI, formatDiff } from "./openapi/diff.ts";
+import { copyExample, EXAMPLES, ExampleError } from "./cli/examples.ts";
 
 const version = (): string => JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 

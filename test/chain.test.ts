@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { inkan, problem, t, type Example } from "../src/index.ts";
-import { substitute } from "../src/check.ts";
+import { substitute } from "../src/testing/check.ts";
 
 const quiet = { log: false, gracefulShutdown: false } as const;
 

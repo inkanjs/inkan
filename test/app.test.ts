@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { inkan, problem, reply, routes, t } from "../src/index.ts";
-import { Router } from "../src/router.ts";
+import { Router } from "../src/core/router.ts";
 
 const quiet = { log: false, gracefulShutdown: false } as const;
 

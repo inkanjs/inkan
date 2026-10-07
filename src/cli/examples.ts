@@ -19,7 +19,7 @@ export const EXAMPLES: ExampleInfo[] = [
 ];
 
 /** Where the templates live: next to src/ in the repo, next to dist/ in the package. */
-export const templatesDir = () => fileURLToPath(new URL("../templates/", import.meta.url));
+export const templatesDir = () => fileURLToPath(new URL("../../templates/", import.meta.url));
 
 // npm leaves dotfiles like .gitignore out of a package, so they travel with an underscore.
 const RENAME: Record<string, string> = { _gitignore: ".gitignore", _dockerignore: ".dockerignore", _github: ".github" };

@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { inkan } from "../src/index.ts";
-import { docsPage, inspectorPage } from "../src/pages.ts";
+import { docsPage } from "../src/pages/docs.ts";
+import { inspectorPage } from "../src/pages/inspector.ts";
 
 const quiet = { log: false, gracefulShutdown: false } as const;
 

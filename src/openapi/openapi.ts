@@ -2,8 +2,8 @@
 // the schemas that validate a request are the ones that describe it.
 
 import { STATUS_CODES } from "node:http";
-import type { RouteRecord } from "./app.ts";
-import { ArraySchema, EventsSchema, FileSchema, ObjectSchema, t, type JsonSchema, type RefContext, type Schema } from "./schema.ts";
+import type { RouteRecord } from "../core/route.ts";
+import { ArraySchema, EventsSchema, FileSchema, ObjectSchema, t, type JsonSchema, type RefContext, type Schema } from "../schema/schema.ts";
 
 /** A body with a file anywhere at its top level goes as multipart/form-data. */
 const carriesFiles = (s: Schema<any>) =>

@@ -1,29 +1,17 @@
-export { inkan, App, Routes, routes, reply, Reply } from "./app.ts";
-export type {
-  AppOptions,
-  Context,
-  Example,
-  Handler,
-  InjectOptions,
-  InjectResponse,
-  LogEntry,
-  RequestLog,
-  Middleware,
-  PathParams,
-  Responses,
-  RouteRecord,
-  RouteSpec,
-} from "./app.ts";
-export { t, Schema, ValidationError } from "./schema.ts";
-export type { Infer, Issue, JsonSchema, SafeResult, ServerEvent, UploadedFile } from "./schema.ts";
-export { sse, fileExample, EventStream } from "./stream.ts";
-export type { SseEvent } from "./stream.ts";
-export { problem, HttpProblem } from "./problem.ts";
-export type { ProblemBody } from "./problem.ts";
-export { buildOpenAPI } from "./openapi.ts";
-export { diffOpenAPI, formatDiff } from "./diff.ts";
-export type { Change } from "./diff.ts";
-export { cors } from "./cors.ts";
-export type { CorsOptions } from "./cors.ts";
-export { formatReport, partialMatch } from "./check.ts";
-export type { CheckOptions, CheckReport, CheckResult } from "./check.ts";
+export { inkan, App } from "./core/app.ts";
+export type { AppOptions, InjectOptions, InjectResponse, LogEntry, RequestLog } from "./core/app.ts";
+export { Routes, routes, reply, Reply } from "./core/route.ts";
+export type { Context, Example, Handler, Middleware, PathParams, Responses, RouteRecord, RouteSpec } from "./core/route.ts";
+export { t, Schema, ValidationError } from "./schema/schema.ts";
+export type { Infer, Issue, JsonSchema, SafeResult, ServerEvent, UploadedFile } from "./schema/schema.ts";
+export { sse, fileExample, EventStream } from "./core/stream.ts";
+export type { SseEvent } from "./core/stream.ts";
+export { problem, HttpProblem } from "./core/problem.ts";
+export type { ProblemBody } from "./core/problem.ts";
+export { buildOpenAPI } from "./openapi/openapi.ts";
+export { diffOpenAPI, formatDiff } from "./openapi/diff.ts";
+export type { Change } from "./openapi/diff.ts";
+export { cors } from "./plugins/cors.ts";
+export type { CorsOptions } from "./plugins/cors.ts";
+export { formatReport, partialMatch } from "./testing/check.ts";
+export type { CheckOptions, CheckReport, CheckResult } from "./testing/check.ts";

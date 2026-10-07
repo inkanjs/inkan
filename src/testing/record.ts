@@ -1,7 +1,7 @@
 // Turns a request the inspector saw into an `examples: [...]` entry, so real
 // traffic can become part of the contract with one copy and paste.
 
-import type { LogEntry } from "./app.ts";
+import type { LogEntry } from "../core/app.ts";
 
 // Headers every client sends anyway, or ones that would be wrong to pin in a test.
 const SKIP = new Set([

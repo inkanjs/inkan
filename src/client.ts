@@ -10,9 +10,9 @@
 //   if (res.ok) res.data.name; // typed from the contract
 //   else res.problem.detail;   // every error is a problem document
 
-import type { Responses, RouteDef, Routes } from "./app.ts";
-import type { ProblemBody } from "./problem.ts";
-import type { Infer } from "./schema.ts";
+import type { Responses, RouteDef, Routes } from "./core/route.ts";
+import type { ProblemBody } from "./core/problem.ts";
+import type { Infer } from "./schema/schema.ts";
 
 type DefsOf<A> = A extends Routes<infer D> ? D : never;
 
