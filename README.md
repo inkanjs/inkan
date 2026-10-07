@@ -529,6 +529,35 @@ runs unsealed, as it would without the file, and inkan says which one and to run
 `inkan seal` again. `refine`, `transform`, unions, records, dates and lazy schemas
 run unsealed for now; `inkan seal` lists them.
 
+## How fast
+
+Not to win, but to know. Twelve scenarios, from a fixed answer to a body of 50
+objects checked one by one, a router of 400 routes, 404s and 400s. Every server
+does the same work: inkan and Fastify check with schemas, the others by hand, and
+every answer is checked before it is measured. All servers run at once and each
+scenario is measured for all of them back to back, so a runner that slows down
+slows everybody alike. One GitHub runner with 4 cores, 10 seconds per scenario
+after a warm-up, the median of 3 rounds:
+
+| | score | hello, 100 connections | params + query | body of 50 | answer of 100 | 400 routes | 404 | 400 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| **inkan on uWebSockets.js** | **133.5** | **143 %** | **143 %** | **101 %** | 99 % | **145 %** | **163 %** | **121 %** |
+| node:http, by hand | 100 | 100 % | 100 % | 100 % | 100 % | 100 % | 100 % | 100 % |
+| Fastify | 88.1 | 95 % | 93 % | 91 % | 79 % | 95 % | 100 % | 59 % |
+| **inkan** | **85.4** | 89 % | 87 % | 79 % | 85 % | 91 % | 106 % | 69 % |
+| Hono | 85.0 | 93 % | 79 % | 90 % | **103 %** | 76 % | 86 % | 81 % |
+| Express | 40.6 | 41 % | 44 % | 56 % | 68 % | 19 % | 20 % | 43 % |
+
+The score is the geometric mean over all twelve scenarios against bare `node:http`,
+so no single one can carry or sink a server. inkan does a little more per request
+than the others: it gives every request an id and keeps back every key an answer's
+contract does not list. Read the numbers as a range, not a rank: a run on another
+day moves each server by a few points, and inkan and Hono swap places within that.
+With `inkan seal`, a body of 50 objects is checked in about half the time.
+
+Run it yourself: `cd bench && npm install && node run.mjs`, or the `bench` workflow
+on GitHub, which also measures what one request costs the server in CPU time.
+
 ## Running it
 
 `app.listen()` takes the port from its argument, then `$PORT`, then 3000. So it

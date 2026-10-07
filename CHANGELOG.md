@@ -89,6 +89,12 @@
   instead of installed, so it works at once and offline, and the progress is kept. Every
   quest has a test that solves it, so CI keeps the tutorial working.
   ([#26](https://github.com/inkanjs/inkan/issues/26))
+- **How fast, in the README.** Twelve scenarios next to node:http, Fastify, Hono and Express,
+  every answer checked before it is measured. The bench now runs every server at once and
+  measures each scenario for all of them back to back, in a turning order, so a runner that
+  slows down over the hour slows everybody alike. On a 4-core GitHub runner inkan scores
+  85.4 against bare node:http, next to Hono (85.0) and Fastify (88.1), and 133.5 on
+  uWebSockets.js. ([#18](https://github.com/inkanjs/inkan/issues/18))
 - **`bench/cpu.mjs`**: the CPU time one request costs the server, next to the others, which
   does not depend on how fast the load generator is. The bench workflow runs it with
   `kind: cpu` (or `both`).

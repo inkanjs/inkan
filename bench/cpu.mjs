@@ -55,8 +55,9 @@ const lines = [
   `| --- | ${servers.map(() => "---:").join(" | ")} |`,
   ...scenarios.map(([label]) => {
     const row = best[label];
-    const low = Math.min(...servers.map((n) => row[n]));
-    return `| ${label} | ${servers.map((n) => (row[n] === low ? `**${row[n].toFixed(1)}**` : row[n].toFixed(1))).join(" | ")} |`;
+    const low = Math.min(...servers.map((n) => row[n]).filter(Number.isFinite));
+    const cell = (n) => (!Number.isFinite(row[n]) ? "–" : row[n] === low ? `**${row[n].toFixed(1)}**` : row[n].toFixed(1));
+    return `| ${label} | ${servers.map(cell).join(" | ")} |`;
   }),
 ];
 console.log(lines.join("\n"));

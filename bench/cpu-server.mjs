@@ -18,7 +18,8 @@ process.on("message", (m) => {
   }
   if (m === "read") {
     const u = process.cpuUsage(since);
-    process.send({ us: (u.user + u.system) / Math.max(1, served - at) });
+    // a server that is not node:http (uWebSockets.js) never counts a request here: no number beats a wrong one
+    process.send({ us: served > at ? (u.user + u.system) / (served - at) : NaN });
   }
 });
 process.argv = [process.argv[0], "servers.mjs", process.argv[2], process.argv[3]];
