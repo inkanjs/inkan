@@ -207,6 +207,15 @@ export abstract class Schema<T = unknown> {
     return false;
   }
 
+  /**
+   * @internal How a parent can ask _fits without calling it: 0 anything fits, 1 anything but
+   * a non-null object fits (every primitive schema, nullable or not), 2 only a call can say.
+   * Lets objects and arrays test their primitive fields inline, which is most of them.
+   */
+  _fitKind(): 0 | 1 | 2 {
+    return 2;
+  }
+
   /** How this kind of schema writes a value. The fallback lets the parser strip, then writes that. */
   protected serialize(): (v: unknown) => string {
     return (v) => {
@@ -239,6 +248,9 @@ class EffectSchema<T, U> extends Schema<U> {
   }
   protected override fits(v: unknown) {
     return this.sameShape ? this.source._fits(v) : true;
+  }
+  override _fitKind() {
+    return this.sameShape ? this.source._fitKind() : 0;
   }
   override optional(): Schema<U | undefined> {
     const copy = this.clone({ optional: true });
@@ -280,6 +292,18 @@ class EffectSchema<T, U> extends Schema<U> {
 export type Infer<S> = S extends Schema<infer T> ? T : never;
 
 const typeOf = (v: unknown) => (v === null ? "null" : Array.isArray(v) ? "array" : typeof v);
+
+/**
+ * Children are checked with a path relative to their parent, and only the issues they
+ * report get the parent's part put in front. A value that checks out costs no path at all;
+ * before, every field of every item built its full path on the way, used or not.
+ */
+function under(issues: Issue[], from: number, at: string) {
+  for (let i = from; i < issues.length; i++) {
+    const p = issues[i].path;
+    issues[i].path = p === "" ? at : p.charCodeAt(0) === 91 /* [ */ ? at + p : `${at}.${p}`;
+  }
+}
 
 // ---------- primitives ----------
 
@@ -325,6 +349,9 @@ export class StringSchema extends Schema<string> {
 
   protected override fits(v: unknown) {
     return typeof v !== "object" || v === null;
+  }
+  override _fitKind() {
+    return 1 as const;
   }
 
   protected json() {
@@ -374,6 +401,9 @@ export class NumberSchema extends Schema<number> {
   protected override fits(v: unknown) {
     return typeof v !== "object" || v === null;
   }
+  override _fitKind() {
+    return 1 as const;
+  }
 
   protected json() {
     const s: JsonSchema = { type: this.rules.int ? "integer" : "number" };
@@ -398,6 +428,9 @@ export class BooleanSchema extends Schema<boolean> {
   }
   protected override fits(v: unknown) {
     return typeof v !== "object" || v === null;
+  }
+  override _fitKind() {
+    return 1 as const;
   }
   protected json() {
     return { type: "boolean" };
@@ -446,6 +479,9 @@ export class EnumSchema<const V extends string | number | boolean> extends Schem
   protected override fits(v: unknown) {
     return typeof v !== "object" || v === null;
   }
+  override _fitKind() {
+    return 1 as const;
+  }
   protected json() {
     return this.values.length === 1 ? { const: this.values[0] } : { enum: [...this.values] };
   }
@@ -460,6 +496,9 @@ export class AnySchema<T = unknown> extends Schema<T> {
   }
   protected override fits() {
     return true; // anything goes, by definition
+  }
+  override _fitKind() {
+    return 0 as const;
   }
   protected json() {
     return {};
@@ -489,10 +528,13 @@ export class ArraySchema<S extends Schema<any>> extends Schema<Infer<S>[]> {
     if (min !== undefined && list.length < min) issues.push({ path, message: `must have at least ${min} items` });
     if (max !== undefined && list.length > max) issues.push({ path, message: `must have at most ${max} items` });
     const out: Infer<S>[] = [];
-    list.forEach((x, i) => {
-      const r = this.item._run(x, `${path}[${i}]`, coerce, issues);
+    for (let i = 0; i < list.length; i++) {
+      if (!(i in list)) continue; // a hole, skipped as forEach skips it
+      const start = issues.length;
+      const r = this.item._run(list[i], "", coerce, issues);
+      if (issues.length > start) under(issues, start, `${path}[${i}]`);
       if (r !== FAIL) out.push(r);
-    });
+    }
     return out;
   }
 
@@ -508,7 +550,12 @@ export class ArraySchema<S extends Schema<any>> extends Schema<Infer<S>[]> {
 
   protected override fits(v: unknown) {
     if (!Array.isArray(v)) return false;
-    for (let i = 0; i < v.length; i++) if (v[i] === undefined || !this.item._fits(v[i])) return false;
+    const kind = this.item._fitKind();
+    for (let i = 0; i < v.length; i++) {
+      const x = v[i];
+      if (x === undefined) return false;
+      if (kind === 1 ? typeof x === "object" && x !== null : kind === 2 && !this.item._fits(x)) return false;
+    }
     return true;
   }
 
@@ -534,6 +581,7 @@ export class ObjectSchema<S extends Shape> extends Schema<InferShape<S>> {
   private fields?: [string, Schema<any>][];
   private keyList?: string[];
   private schemaList?: Schema<any>[];
+  private kindList?: (0 | 1 | 2)[];
   constructor(shape: S) {
     super();
     this.shape = shape;
@@ -565,7 +613,9 @@ export class ObjectSchema<S extends Shape> extends Schema<InferShape<S>> {
     const input = v as Record<string, unknown>;
     const out: Record<string, unknown> = this.unknownKeys === "keep" ? { ...input } : {};
     for (const [key, schema] of (this.fields ??= Object.entries(this.shape))) {
-      const r = schema._run(input[key], path ? `${path}.${key}` : key, coerce, issues);
+      const start = issues.length;
+      const r = schema._run(input[key], "", coerce, issues);
+      if (issues.length > start) under(issues, start, path ? `${path}.${key}` : key);
       if (r !== FAIL && r !== undefined) out[key] = r;
     }
     if (this.unknownKeys === "strict") {
@@ -602,13 +652,16 @@ export class ObjectSchema<S extends Shape> extends Schema<InferShape<S>> {
     if (typeof o.toJSON === "function") return false; // JSON.stringify would write what toJSON makes
     const keys = (this.keyList ??= Object.keys(this.shape));
     const schemas = (this.schemaList ??= Object.values(this.shape));
+    const kinds = (this.kindList ??= schemas.map((s) => s._fitKind()));
     const count = Object.keys(o).length; // fast for objects of one shape: V8 caches their keys
     if (count > keys.length) return false;
     let present = 0;
     for (let i = 0; i < keys.length; i++) {
       const x = o[keys[i]];
       if (x === undefined) continue;
-      if (!schemas[i]._fits(x)) return false;
+      const kind = kinds[i];
+      // a primitive field is tested here, without a call: most fields are
+      if (kind === 1 ? typeof x === "object" && x !== null : kind === 2 && !schemas[i]._fits(x)) return false;
       present++;
     }
     return count === present;
@@ -641,7 +694,9 @@ export class RecordSchema<S extends Schema<any>> extends Schema<Record<string, I
     }
     const out: Record<string, Infer<S>> = {};
     for (const [k, x] of Object.entries(v)) {
-      const r = this.value._run(x, path ? `${path}.${k}` : k, coerce, issues);
+      const start = issues.length;
+      const r = this.value._run(x, "", coerce, issues);
+      if (issues.length > start) under(issues, start, path ? `${path}.${k}` : k);
       if (r !== FAIL) out[k] = r;
     }
     return out;
