@@ -36,6 +36,12 @@
   only exist when something logs, and a context and a request target have one stable shape.
   inkan's own time per request is about halved (`bench/inproc.mjs`: 7.0 → 2.9 µs for a fixed
   answer, 8.8 → 4.6 µs with params and query, 8.7 → 4.8 µs with a JSON body).
+- **Errors and big answers are cheap too.** A problem no longer captures a stack trace (nobody
+  reads one for a 404 or a 400, and it made every error several times slower than a 200), and
+  problem answers are built without copying objects. An answer that holds exactly what its
+  contract lists, the usual case, is checked by counting keys and then written by the native
+  `JSON.stringify`; only an answer with keys the contract does not list takes the exact writer.
+  A list of 100 nested objects: 80 → 51 µs.
 
 ## 0.3.0
 

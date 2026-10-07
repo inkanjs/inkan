@@ -28,7 +28,12 @@ export class HttpProblem extends Error {
     extra: Record<string, unknown> = {},
     headers: Record<string, string> = {},
   ) {
+    // A problem is an answer, not a crash: nobody reads its stack, and capturing one made
+    // every 404 and 400 several times slower than a 200. So none is captured.
+    const limit = Error.stackTraceLimit;
+    Error.stackTraceLimit = 0;
     super(detail ?? type);
+    Error.stackTraceLimit = limit;
     this.name = "HttpProblem";
     this.status = status;
     this.type = type;
@@ -41,7 +46,8 @@ export class HttpProblem extends Error {
   toJSON(): ProblemBody {
     const body: ProblemBody = { type: this.type, title: this.title, status: this.status };
     if (this.detail) body.detail = this.detail;
-    return { ...body, ...this.extra };
+    for (const key in this.extra) body[key] = this.extra[key];
+    return body;
   }
 }
 

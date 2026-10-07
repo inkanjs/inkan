@@ -586,11 +586,12 @@ export class App<Defs extends RouteDefs = any> extends Routes<Defs> {
       p = problem(500, "internal", detail);
     }
     if (p.type === "validation") notes.push("input broke the contract");
-    const body: ProblemBody = { ...p.toJSON(), instance: path };
+    const body = p.toJSON();
+    body.instance = path;
     if (requestId) body.requestId = requestId; // so a user's bug report points at the right log line
     return {
       status: p.status,
-      headers: { ...set, "content-type": "application/problem+json", ...lower(p.headers) },
+      headers: withProblemHeaders(set, p.headers),
       body: JSON.stringify(body),
     };
   }
@@ -883,6 +884,13 @@ function queryObject(sp: URLSearchParams): RawQuery {
     o[k] = prev === undefined ? v : Array.isArray(prev) ? [...prev, v] : [prev, v];
   }
   return o;
+}
+
+/** The answer's own headers (CORS, request id) plus the problem's; filled in place, nothing copied. */
+function withProblemHeaders(set: Record<string, string>, extra: Record<string, string>) {
+  set["content-type"] = "application/problem+json";
+  for (const key in extra) set[key.toLowerCase()] = extra[key];
+  return set;
 }
 
 const lower = (h: Record<string, string>) => Object.fromEntries(Object.entries(h).map(([k, v]) => [k.toLowerCase(), v]));

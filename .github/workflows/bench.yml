@@ -1,18 +1,22 @@
 name: bench
 
-# Throughput next to node:http, Fastify and Express, on a Linux runner where the
-# network stack is not the bottleneck. Started by hand; the table lands in the
-# job summary. Shared runners are noisy: compare within one run, not across runs.
+# inkan next to node:http, Fastify, Hono and Express on twelve scenarios, on a Linux
+# runner where the network stack is not the bottleneck. Every answer is checked before it
+# is measured. Started by hand; the tables land in the job summary. Shared runners are
+# noisy: compare within one run, not across runs. The defaults take about an hour.
 
 on:
   workflow_dispatch:
     inputs:
       seconds:
-        description: Seconds per measurement
-        default: "10"
+        description: Seconds per measurement (after a 3 s warm-up)
+        default: "15"
       rounds:
         description: Rounds (the median is shown)
         default: "3"
+      servers:
+        description: Servers, comma separated (node, fastify, hono, inkan, inkan-dev, express)
+        default: "node,fastify,hono,inkan,express"
 
 permissions:
   contents: read
@@ -20,7 +24,7 @@ permissions:
 jobs:
   bench:
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -34,5 +38,5 @@ jobs:
         run: node inproc.mjs
         working-directory: bench
       - name: over HTTP, next to the others
-        run: node run.mjs node,fastify,inkan,inkan-dev,express ${{ inputs.seconds }} ${{ inputs.rounds }}
+        run: node run.mjs ${{ inputs.servers }} ${{ inputs.seconds }} ${{ inputs.rounds }}
         working-directory: bench
