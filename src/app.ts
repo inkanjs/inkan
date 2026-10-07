@@ -83,7 +83,6 @@ export class Reply<S extends number = number, Body = unknown> {
 /** Answers with a status that is not the default one, or with extra headers. */
 export const reply = <S extends number, B>(status: S, body?: B, headers?: Record<string, string>) =>
   new Reply(status, body, headers);
-const makeReply = (status: number, body: unknown, headers?: Record<string, string>) => new Reply(status, body, headers);
 
 export type Context<P = Record<string, string>, Q = RawQuery, B = unknown, H = RawHeaders, R extends Responses = {}> = {
   method: string;
@@ -429,28 +428,7 @@ export class App<Defs extends RouteDefs = any> extends Routes<Defs> {
     if (idHeader) out.headers[idHeader] = id;
     let result: unknown;
 
-    const ctx: Context<any, any, any, any, any> = {
-      method: raw.method,
-      path: url.pathname,
-      // built only when a handler asks for it; most never do
-      get url() {
-        const u = new URL("http://" + (headers.host || "localhost"));
-        u.pathname = url.pathname;
-        u.search = url.search;
-        return u;
-      },
-      id,
-      params: {},
-      query: url.search ? queryObject(url.searchParams) : {},
-      headers,
-      body: undefined,
-      state: {},
-      status: (code) => void (out.status = code),
-      header: (name, value) => void (out.headers[name.toLowerCase()] = value),
-      reply: makeReply as Context<any, any, any, any, any>["reply"],
-      req: raw.req,
-      res: raw.res,
-    };
+    const ctx = new RequestContext(raw, url, id, headers, out) as Context<any, any, any, any, any>;
 
     let route: RouteRecord | undefined;
     const dispatch = async () => {
@@ -816,7 +794,64 @@ function compose(mw: Middleware[], last: () => Promise<void>) {
   };
 }
 
-type Target = { pathname: string; search: string; readonly searchParams: URLSearchParams };
+/** A request target split into its path and its query. A class, so every one has the same shape. */
+class Target {
+  pathname: string;
+  search: string;
+  constructor(pathname: string, search: string) {
+    this.pathname = pathname;
+    this.search = search;
+  }
+  get searchParams() {
+    return new URLSearchParams(this.search);
+  }
+}
+
+/**
+ * The context of one request. A class, so every context has the same shape and the
+ * `url` getter lives on the prototype. `status` and `header` stay own functions:
+ * handlers take them apart (`({ status }) => …`), so they must not need `this`.
+ */
+class RequestContext {
+  method: string;
+  path: string;
+  id: string;
+  params: unknown = {};
+  query: unknown;
+  headers: unknown;
+  body: unknown = undefined;
+  state: Record<string, unknown> = {};
+  route?: { method: string; path: string } = undefined;
+  req?: IncomingMessage;
+  res?: ServerResponse;
+  status: (code: number) => void;
+  header: (name: string, value: string) => void;
+  private target: Target;
+  private host?: string;
+  constructor(raw: RawRequest, target: Target, id: string, headers: Record<string, string>, out: { status: number; headers: Record<string, string> }) {
+    this.method = raw.method;
+    this.path = target.pathname;
+    this.id = id;
+    this.query = target.search ? queryObject(target.searchParams) : {};
+    this.headers = headers;
+    this.req = raw.req;
+    this.res = raw.res;
+    this.target = target;
+    this.host = headers.host; // kept here: a header schema may later strip it from ctx.headers
+    this.status = (code) => void (out.status = code);
+    this.header = (name, value) => void (out.headers[name.toLowerCase()] = value);
+  }
+  /** Built only when a handler asks for it; most never do. */
+  get url(): URL {
+    const u = new URL("http://" + (this.host || "localhost"));
+    u.pathname = this.target.pathname;
+    u.search = this.target.search;
+    return u;
+  }
+  reply(status: number, body: unknown, headers?: Record<string, string>) {
+    return new Reply(status, body, headers);
+  }
+}
 
 /**
  * Splits a request target into its path and its query. Not `new URL()`: that reads a path
@@ -828,13 +863,7 @@ function target(raw: string): Target {
   const q = local.indexOf("?");
   const pathname = q < 0 ? local : local.slice(0, q);
   const search = q < 0 || q === local.length - 1 ? "" : local.slice(q);
-  return {
-    pathname: pathname || "/",
-    search,
-    get searchParams() {
-      return new URLSearchParams(search);
-    },
-  };
+  return new Target(pathname || "/", search);
 }
 
 function queryObject(sp: URLSearchParams): RawQuery {

@@ -460,6 +460,8 @@ export type InferShape<S extends Shape> = Simplify<
 export class ObjectSchema<S extends Shape> extends Schema<InferShape<S>> {
   shape: S;
   private unknownKeys: "strip" | "strict" | "keep" = "strip";
+  /** The shape as a list, made once: validation walks it on every request. */
+  private fields?: [string, Schema<any>][];
   constructor(shape: S) {
     super();
     this.shape = shape;
@@ -490,7 +492,7 @@ export class ObjectSchema<S extends Shape> extends Schema<InferShape<S>> {
     }
     const input = v as Record<string, unknown>;
     const out: Record<string, unknown> = this.unknownKeys === "keep" ? { ...input } : {};
-    for (const [key, schema] of Object.entries(this.shape)) {
+    for (const [key, schema] of (this.fields ??= Object.entries(this.shape))) {
       const r = schema._run(input[key], path ? `${path}.${key}` : key, coerce, issues);
       if (r !== FAIL && r !== undefined) out[key] = r;
     }

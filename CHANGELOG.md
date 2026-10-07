@@ -29,8 +29,9 @@
   A route without middleware calls its handler directly, a sync handler and a request without a
   multipart body cost no extra await, request headers are no longer copied, the socket address
   is only read for the inspector, the body is read with events, and the log entry and the timer
-  only exist when something logs. About 30 % less time in inkan per request
-  (`bench/inproc.mjs`).
+  only exist when something logs, and a context and a request target have one stable shape.
+  inkan's own time per request is about halved (`bench/inproc.mjs`: 7.0 → 2.9 µs for a fixed
+  answer, 8.8 → 4.6 µs with params and query, 8.7 → 4.8 µs with a JSON body).
 
 ## 0.3.0
 

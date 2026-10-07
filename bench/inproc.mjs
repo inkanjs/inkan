@@ -25,7 +25,16 @@ async function perRequest(target, req) {
   return runs.sort((a, b) => a - b)[Math.floor(ROUNDS / 2)]; // the median
 }
 
-for (const dev of [false, true]) {
+// Each mode in a process of its own: measured one after the other in one process, the
+// second one inherits the first one's optimised code and looks several times slower.
+if (!process.env.MODE) {
+  const { execFileSync } = await import("node:child_process");
+  const { fileURLToPath } = await import("node:url");
+  for (const mode of ["prod", "dev"]) {
+    process.stdout.write(execFileSync(process.execPath, [fileURLToPath(import.meta.url)], { env: { ...process.env, MODE: mode } }));
+  }
+} else {
+  const dev = process.env.MODE === "dev";
   const target = app(dev);
   const line = [];
   for (const c of cases) line.push(`${c.name} ${(await perRequest(target, c.req)).toFixed(2)}µs`);
