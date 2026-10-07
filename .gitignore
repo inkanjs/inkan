@@ -10,3 +10,6 @@ coverage/
 Thumbs.db
 .idea/
 .vscode/
+
+# the bench installs its own tools; no lockfile to keep
+bench/package-lock.json

@@ -1,0 +1,38 @@
+name: bench
+
+# Throughput next to node:http, Fastify and Express, on a Linux runner where the
+# network stack is not the bottleneck. Started by hand; the table lands in the
+# job summary. Shared runners are noisy: compare within one run, not across runs.
+
+on:
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: Seconds per measurement
+        default: "10"
+      rounds:
+        description: Rounds (the median is shown)
+        default: "3"
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm install --no-audit --no-fund
+        working-directory: bench
+      - name: inkan alone, without a network
+        run: node inproc.mjs
+        working-directory: bench
+      - name: over HTTP, next to the others
+        run: node run.mjs node,fastify,inkan,inkan-dev,express ${{ inputs.seconds }} ${{ inputs.rounds }}
+        working-directory: bench
