@@ -79,6 +79,16 @@
   allows when asked), so inkan keeps no dependencies. One set of requests runs in CI against
   `listen`, `fetch` and every adapter, and the bench has an `inkan-uws` entry.
   ([#25](https://github.com/inkanjs/inkan/issues/25))
+- **`inkan learn`, a tutorial in the terminal.** `npx @vxnsin/inkan learn` sets up a practice
+  app and gives twelve quests, one idea each: a first route, typed params, rules for a body,
+  examples as tests, problems, groups, security, hooks, the docs page (it sees you press
+  send there), changes that break clients, the seal and plugins. Every save is checked
+  through `inject` and answered with what is still missing; `h` gives a hint and then a
+  clearer one, `s` skips, `o` saves the OpenAPI document, `w` writes the seal. The app runs
+  on a port meanwhile, for `/docs` and `/_inkan`. inkan is linked into the practice folder
+  instead of installed, so it works at once and offline, and the progress is kept. Every
+  quest has a test that solves it, so CI keeps the tutorial working.
+  ([#26](https://github.com/inkanjs/inkan/issues/26))
 - **`bench/cpu.mjs`**: the CPU time one request costs the server, next to the others, which
   does not depend on how fast the load generator is. The bench workflow runs it with
   `kind: cpu` (or `both`).

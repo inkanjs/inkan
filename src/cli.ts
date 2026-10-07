@@ -13,6 +13,7 @@ import { paint, useColor } from "./core/color.ts";
 import { diffOpenAPI, formatDiff } from "./openapi/diff.ts";
 import { copyExample, EXAMPLES, ExampleError } from "./cli/examples.ts";
 import { writeSeal } from "./seal/seal.ts";
+import { learn, LearnError, setupLearn } from "./cli/learn.ts";
 
 const version = (): string => JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 
@@ -67,6 +68,8 @@ const HELP = `
   ${c.bold("inkan diff")}    ${c.dim("<before> <after> [--json]")}
                 ${c.dim("what would break a client; each side a .json file or an app")}
   ${c.bold("inkan seal")}    ${c.dim("<entry> [-o <file>]")}   ${c.dim("stamp the contracts into plain code, for speed")}
+  ${c.bold("inkan learn")}   ${c.dim("[folder] [--port <n>] [--force]")}
+                ${c.dim("an interactive tutorial: quests in a practice app, checked as you save")}
   ${c.bold("inkan examples")} ${c.dim("[name] [folder] [--list] [--force]")}
                 ${c.dim("copy an explained example project into a folder")}
 
@@ -141,6 +144,20 @@ switch (command) {
     if (json) console.log(JSON.stringify(changes, null, 2));
     else console.log(formatDiff(changes, `${before} → ${after}`, color));
     process.exit(changes.some((x) => x.breaking) ? 1 : 0);
+  }
+  case "learn": {
+    const force = has("--force");
+    const port = option("--port");
+    const dir = args[0] ?? "inkan-learn";
+    try {
+      const { created } = setupLearn(dir, { force });
+      if (created) console.log(`\n  ${c.seal("印")} ${c.bold("a practice app")} ${c.dim("→")} ${relative(process.cwd(), resolve(dir)) || "."}`);
+      await learn(dir, { port: port ? Number(port) : undefined });
+    } catch (err) {
+      if (err instanceof LearnError) fail(err.message);
+      throw err;
+    }
+    break;
   }
   case "examples": {
     const force = has("--force");

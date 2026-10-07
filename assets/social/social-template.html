@@ -1,0 +1,87 @@
+<!doctype html>
+<!-- The repository's social preview, 1280×640. Render it next to this file and upload the PNG
+     in the repository settings (the PNG never goes into git):
+     chrome --headless=new --hide-scrollbars --window-size=1280,640 --screenshot=social.png social-template.html -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>inkan social preview</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700;800&display=swap" rel="stylesheet">
+<style>
+  :root { --bg: #1a1614; --ink: #ece1cf; --soft: #cbbda8; --muted: #8a7d72; --seal: #c4381f; --hot: #e2583e;
+          --ok: #79c08a; --term: #2a2421; --bar: #312a26; --key: #d9a05b; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 1280px; height: 640px; overflow: hidden; }
+  body {
+    font-family: "JetBrains Mono", ui-monospace, monospace; color: var(--ink); font-variant-ligatures: none;
+    background:
+      radial-gradient(900px 560px at 100% 0%, #3a2a22 0%, transparent 60%),
+      radial-gradient(700px 480px at 0% 100%, #15110f 0%, transparent 70%),
+      var(--bg);
+  }
+  .left { position: absolute; left: 72px; top: 92px; width: 540px; }
+  .brand { display: flex; align-items: center; gap: 22px; }
+  .logo { width: 104px; height: 104px; filter: drop-shadow(0 8px 18px rgba(0,0,0,.4)); }
+  .name { font-size: 76px; font-weight: 800; letter-spacing: -1.5px; }
+  .name .jp { font-size: 30px; color: var(--muted); font-weight: 400; margin-left: 10px; letter-spacing: 0; font-family: "Yu Gothic", "Meiryo", "Noto Sans JP", sans-serif; }
+  h1 { margin-top: 38px; font-size: 30px; line-height: 1.18; font-weight: 800; letter-spacing: -.4px; }
+  h1 em { font-style: normal; color: var(--hot); }
+  .tags { margin-top: 30px; display: flex; flex-wrap: wrap; gap: 10px; }
+  .tags span { font-size: 16px; color: var(--soft); border: 1px solid #4a3d36; border-radius: 999px; padding: 6px 14px; }
+  .url { position: absolute; left: 72px; bottom: 52px; font-size: 18px; color: var(--muted); }
+
+  .term {
+    position: absolute; left: 640px; top: 104px; width: 580px; height: 432px; background: var(--term);
+    border-radius: 14px; box-shadow: 0 26px 60px rgba(0,0,0,.45), 0 0 0 1px rgba(255,255,255,.04); overflow: hidden;
+  }
+  .bar { height: 46px; background: var(--bar); display: flex; align-items: center; gap: 9px; padding: 0 18px; }
+  .dot { width: 13px; height: 13px; border-radius: 50%; }
+  .bar span { margin-left: 14px; color: var(--muted); font-size: 14px; }
+  pre { font-family: inherit; font-size: 16.5px; line-height: 1.62; padding: 22px 26px; color: var(--ink); white-space: pre; }
+  .k { color: var(--key); } .s { color: var(--ok); } .c { color: var(--muted); } .r { color: var(--hot); } .b { font-weight: 700; }
+</style>
+</head>
+<body>
+  <div class="left">
+    <div class="brand"><svg class="logo" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" role="img" aria-label="inkan">
+  <defs>
+    <filter id="ink" x="-10%" y="-10%" width="120%" height="120%">
+      <feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" seed="7" result="noise"/>
+      <feDisplacementMap in="SourceGraphic" in2="noise" scale="2.2"/>
+    </filter>
+  </defs>
+  <g transform="rotate(-4 60 60)" filter="url(#ink)">
+    <rect x="10" y="10" width="100" height="100" rx="22" fill="#c4381f"/>
+    <rect x="20" y="20" width="80" height="80" rx="13" fill="none" stroke="#fbf7ef" stroke-width="3.5"/>
+    <g fill="none" stroke="#fbf7ef" stroke-width="6" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M44 34 C37 34 36 39 36 46 L36 53 C36 57.5 33.5 60 30 60 C33.5 60 36 62.5 36 67 L36 74 C36 81 37 86 44 86"/>
+      <path d="M76 34 C83 34 84 39 84 46 L84 53 C84 57.5 86.5 60 90 60 C86.5 60 84 62.5 84 67 L84 74 C84 81 83 86 76 86"/>
+      <path d="M48.5 61 L56.5 69 L72 51"/>
+    </g>
+  </g>
+</svg><div class="name">inkan<span class="jp">印鑑</span></div></div>
+    <h1>An API framework for Node<br>where <em>the docs can't lie</em>.</h1>
+    <div class="tags"><span>contracts</span><span>docs</span><span>tests</span><span>typed client</span><span>hooks &amp; plugins</span><span>0 dependencies</span></div>
+  </div>
+  <div class="url">github.com/inkanjs/inkan</div>
+
+  <div class="term">
+    <div class="bar">
+      <div class="dot" style="background:#e5534b"></div><div class="dot" style="background:#e3b341"></div><div class="dot" style="background:#57c26a"></div>
+      <span>src/app.ts</span>
+    </div>
+<pre>app.<span class="k">post</span>(<span class="s">"/teas"</span>, {
+  body: t.object({
+    name:  t.string().min(<span class="r">1</span>),
+    grams: t.int().min(<span class="r">1</span>),
+  }),
+  response: { <span class="r">201</span>: Tea },
+  examples: [{ body: { name: <span class="s">"Sencha"</span>, grams: <span class="r">50</span> } }],
+}, ({ body }) =&gt; store.add(body));
+
+<span class="c">// one contract: validation, types, OpenAPI,</span>
+<span class="c">// docs, tests and a typed client</span></pre>
+  </div>
+</body>
+</html>
