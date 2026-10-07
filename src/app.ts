@@ -469,6 +469,8 @@ export class App<Defs extends RouteDefs = any> extends Routes<Defs> {
       res = this.fail(err, ctx, url.pathname, notes, out.headers, idHeader ? id : undefined);
     }
     if (raw.method === "HEAD") {
+      // a HEAD answers with the length the GET would have, and without the body
+      if (res.body !== undefined) res.headers["content-length"] = String(Buffer.byteLength(res.body));
       res.body = undefined;
       res.abort?.abort();
       res.stream = undefined;
@@ -683,8 +685,16 @@ export class App<Defs extends RouteDefs = any> extends Routes<Defs> {
       });
     }
     if (res.headersSent || res.writableEnded) return; // a handler wrote to `res` itself
+    if (!out.stream) {
+      // writeHead fixes the headers at once; without a length Node falls back to chunked
+      // encoding for a body it already has whole, which costs framing on every answer
+      if (out.status !== 204 && out.status !== 304 && out.status >= 200) {
+        out.headers["content-length"] ??= String(out.body === undefined ? 0 : Buffer.byteLength(out.body));
+      }
+      res.writeHead(out.status, out.headers);
+      return void res.end(out.body);
+    }
     res.writeHead(out.status, out.headers);
-    if (!out.stream) return void res.end(out.body);
 
     const source = out.stream as AsyncIterable<Uint8Array | string> & { destroy?: () => void };
     const stop = () => {

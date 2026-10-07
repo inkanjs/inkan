@@ -19,6 +19,10 @@
   methods, statuses and the links from the app's options, and they only send a request (with
   its token) when it stays on the same origin. A replay of a recorded `//elsewhere/x` is
   refused instead of going to another host. Found by Socket's code analysis.
+- **Answers have a `content-length` again.** `writeHead` fixed the headers before the body was
+  known, so Node sent every answer with chunked encoding: extra framing on each response and
+  a higher tail latency under load. A whole body now goes out with its length; streams stay
+  chunked, and a `HEAD` tells the length the `GET` has.
 
 ### Changed
 
