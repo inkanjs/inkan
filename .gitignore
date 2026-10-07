@@ -13,3 +13,7 @@ Thumbs.db
 
 # the bench installs its own tools; no lockfile to keep
 bench/package-lock.json
+
+# release pictures are rendered from the template and attached to the release, never committed
+assets/release/*
+!assets/release/release-template.html
