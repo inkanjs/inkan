@@ -1,4 +1,6 @@
+import cluster from "node:cluster";
 import { randomUUID } from "node:crypto";
+import { availableParallelism } from "node:os";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { HttpProblem, problem, type ProblemBody } from "./problem.ts";
 import { type Match, Router } from "./router.ts";
@@ -42,6 +44,12 @@ export type AppOptions = OpenAPIInfo & {
   requestId?: string | false;
   /** Close in-flight requests cleanly on SIGINT and SIGTERM. Default true. */
   gracefulShutdown?: boolean;
+  /**
+   * Run one process per core (`"auto"`) or this many, sharing the port. The first process
+   * only looks after them: it starts them, starts another when one dies, and on SIGINT or
+   * SIGTERM lets every one finish its open requests. Default: one process, no cluster.
+   */
+  workers?: number | "auto";
   /** Development mode. Default: NODE_ENV is not "production". */
   dev?: boolean;
   onError?: (error: unknown, ctx: Context<any, any, any, any, any>) => void;
@@ -80,6 +88,8 @@ export type RequestLog = {
   status: number;
   ms: number;
   notes: string[];
+  /** The cluster worker that answered, when the app runs with `workers`. */
+  worker?: number;
 };
 
 export type LogEntry = {
@@ -92,6 +102,7 @@ export type LogEntry = {
   status: number;
   ms: number;
   notes: string[];
+  worker?: number;
   /** `clipped` is true when the body was too long to keep whole; such a request cannot be replayed. */
   request: { headers: Record<string, string>; body?: string; clipped?: boolean };
   response: { body?: string };
@@ -99,6 +110,8 @@ export type LogEntry = {
   example?: string;
 };
 
+/** This process's worker id in a cluster, for the log and the inspector. */
+const WORKER = cluster.isWorker ? cluster.worker?.id : undefined;
 const SAFE_ID = /^[\w.:@-]{1,128}$/; // anything else could smuggle into logs, so it gets a fresh id
 const REDACT = new Set(["authorization", "cookie", "set-cookie", "proxy-authorization", "x-api-key"]);
 const CLIP = 4096;
@@ -450,6 +463,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
       status: res.status,
       ms: Math.round((performance.now() - x.started) * 10) / 10,
       notes: x.notes,
+      worker: WORKER,
     };
     const report = (err: unknown) => (this.options.onError ? this.options.onError(err, x.ctx) : console.error(err));
     for (const h of x.hooks.onResponse) {
@@ -486,6 +500,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
         status: res.status,
         ms,
         notes,
+        worker: WORKER,
       });
     }
     if (this.options.inspector) this.remember(raw, url, res, route, ms, notes, x.headers, x.id);
@@ -499,7 +514,8 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     if (log === "json") return console.log(JSON.stringify(entry));
     const c = paint(useColor());
     const flag = entry.notes.length ? c.seal(`  ! ${entry.notes.join("; ")}`) : "";
-    console.log(`  ${c.method(entry.method, entry.method.padEnd(6))} ${entry.path}  ${c.status(entry.status)}  ${c.dim(entry.ms + "ms")}${flag}`);
+    const who = entry.worker ? c.dim(`w${entry.worker} `) : "";
+    console.log(`  ${who}${c.method(entry.method, entry.method.padEnd(6))} ${entry.path}  ${c.status(entry.status)}  ${c.dim(entry.ms + "ms")}${flag}`);
   }
 
   private respond(result: unknown, x: Exchange): RawResponse {
@@ -644,6 +660,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     const entry: LogEntry = {
       id: ++this.logId,
       requestId,
+      worker: WORKER,
       at: new Date().toISOString(),
       method: raw.method,
       path: url.pathname + url.search,
@@ -779,8 +796,54 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
    * so it runs under warden, a PaaS or a container without changes.
    */
   listen(port?: number, host?: string): Promise<Server> {
+    const { workers } = this.options;
+    // in a cluster the first process only looks after the workers; listen() there does not return
+    if (workers && cluster.isPrimary && !process.env.INKAN_NO_LISTEN) return this.supervise(workers === "auto" ? availableParallelism() : workers);
     // every plugin first: a route a plugin adds must be there for the first request, and one that fails stops the start
     return this.ready().then(() => this.open(port, host));
+  }
+
+  /** The first process of a cluster: starts the workers, replaces one that dies, and stops them all together. */
+  private supervise(count: number): Promise<never> {
+    const c = paint(useColor());
+    const { log } = this.options;
+    const say = (msg: string) => {
+      if (log === "json") console.log(JSON.stringify({ time: new Date().toISOString(), msg }));
+      else if (log) console.log(`  ${c.seal("印")} ${msg}`);
+    };
+    say(`starting ${count} worker${count === 1 ? "" : "s"}`);
+    for (let i = 0; i < count; i++) cluster.fork();
+    let stopping = false;
+    const deaths: number[] = [];
+    cluster.on("exit", (worker, code, signal) => {
+      const left = Object.keys(cluster.workers ?? {}).length;
+      if (stopping) {
+        if (left === 0) process.exit(0);
+        return;
+      }
+      // a worker that keeps dying right away is a bug, not bad luck: stop instead of looping
+      const now = Date.now();
+      deaths.push(now);
+      while (deaths.length && deaths[0] < now - 10_000) deaths.shift();
+      if (deaths.length > count * 3) {
+        console.error(`inkan: workers keep dying (${deaths.length} in 10s, the last with ${signal ?? code}); stopping`);
+        process.exit(1);
+      }
+      console.error(`inkan: worker ${worker.id} stopped with ${signal ?? code}; starting another`);
+      cluster.fork();
+    });
+    const stop = () => {
+      if (stopping) return;
+      stopping = true;
+      // a message, not a signal: a ctrl+c already reached every worker, and a second one would mean "now"
+      for (const w of Object.values(cluster.workers ?? {})) w?.send({ inkan: "stop" });
+      setTimeout(() => process.exit(0), 12_000).unref();
+    };
+    if (this.options.gracefulShutdown) {
+      process.once("SIGINT", stop);
+      process.once("SIGTERM", stop);
+    }
+    return new Promise<never>(() => {});
   }
 
   private open(port?: number, host?: string): Promise<Server> {
@@ -799,7 +862,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
             if (log === "json") {
               const addr = server.address();
               const port = typeof addr === "object" && addr ? addr.port : addr;
-              console.log(JSON.stringify({ time: new Date().toISOString(), msg: "listening", port }));
+              console.log(JSON.stringify({ time: new Date().toISOString(), msg: "listening", port, worker: WORKER }));
             } else this.banner(server);
           }
           if (this.options.gracefulShutdown) shutdownOnSignal(server, this._onClose);
@@ -813,6 +876,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     const addr = server.address();
     const port = typeof addr === "object" && addr ? addr.port : addr;
     const base = `http://localhost:${port}`;
+    if (WORKER) return console.log(`  ${paint(useColor()).dim(`worker ${WORKER}`)} listening on ${base}`); // one line each, not a banner per worker
     const n = this._records.length;
     const ex = this._records.reduce((s, r) => s + (r.spec.examples?.length ?? 0), 0);
     const name = [this.options.title, this.options.version].filter(Boolean).join(" ");
@@ -980,4 +1044,10 @@ function shutdownOnSignal(server: Server, onClose: (() => void | Promise<void>)[
   };
   process.once("SIGINT", () => stop("SIGINT"));
   process.once("SIGTERM", () => stop("SIGTERM"));
+  // in a cluster the first process asks to stop by message; a worker already stopping goes on as it was
+  if (cluster.isWorker) {
+    process.on("message", (m: { inkan?: string } | undefined) => {
+      if (m?.inkan === "stop" && !shuttingDown) stop("stop");
+    });
+  }
 }

@@ -534,6 +534,20 @@ app.onClose(() => db.end());      // awaited after the last request, within the 
 
 `onClose` runs on SIGINT or SIGTERM while `gracefulShutdown` is on.
 
+A Node process runs JavaScript on one core. To use all of them:
+
+```ts
+inkan({ workers: "auto" }) // one process per core, or a number
+```
+
+The first process starts the workers and only looks after them: they share the
+port, a worker that dies is replaced (and one that keeps dying stops the whole
+thing instead of looping), and on SIGINT or SIGTERM every worker finishes its
+open requests and runs its own `onClose`. `listen()` returns in the workers, not
+in the first process. Log lines and the inspector say which worker answered.
+Each worker has its own memory: a rate limit or a cache in memory counts per
+worker.
+
 ```ts
 inkan({
   title: "Tea Shop", version: "1.0.0", description: "…", servers: [{ url: "https://api.example.com" }],
