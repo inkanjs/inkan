@@ -50,6 +50,13 @@
   looser and answers only stricter. Everything else is listed as safe. It exits with `1` when
   something breaks, so CI can ask for a major version; `--json` for tools. Also as
   `diffOpenAPI(before, after)`. ([#11](https://github.com/vxnsin/inkan/issues/11))
+- **Examples that build on each other.** An example can `keep` values from its answer
+  (`keep: { id: "body.id" }`, also `headers.…` and `status`), and another one can run
+  `after` it (`after: "POST /teas > a new oolong"`) and use them as `{id}` in its params,
+  query, headers and body. `beforeEach` runs once before the whole chain, the order comes from
+  `after` rather than from the files, and a broken step, an `after` that points nowhere or a
+  circle each fail with a sentence that says which. The docs page runs the chain when you
+  press send, and the tea-shop example shows it. ([#10](https://github.com/vxnsin/inkan/issues/10))
 
 ### Changed
 

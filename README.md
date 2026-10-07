@@ -142,7 +142,7 @@ app.post(
 | --- | --- |
 | `params`, `query`, `headers`, `body` | schemas for the input. Header names are lowercase. |
 | `response` | status → schema. The first 2xx is the default status, and no body means 204. |
-| `examples` | `{ name, params, query, headers, body, status, expect }`. `status` defaults to the first 2xx. `expect` is a part of the answer that has to be there. |
+| `examples` | `{ name, params, query, headers, body, status, expect, keep, after }`. `status` defaults to the first 2xx. `expect` is a part of the answer that has to be there. `keep` and `after` chain examples, see below. |
 | `summary`, `description`, `tags`, `deprecated`, `operationId` | for the docs |
 | `hidden` | keeps the route out of the docs and OpenAPI |
 | `use` | middleware for this route only, after validation |
@@ -232,6 +232,25 @@ test("the contract holds", async () => {
   assert.equal(report.failed, 0);
 });
 ```
+
+### Examples that build on each other
+
+"Create a tea, then fetch it" needs the id from the first answer. One example `keep`s it,
+the next one runs `after` it and uses it as a placeholder:
+
+```ts
+// POST /teas
+{ name: "a new oolong", body: { name: "Da Hong Pao", kind: "oolong" }, keep: { id: "body.id" } },
+
+// GET /teas/:id
+{ name: "the one just added", after: "POST /teas > a new oolong", params: { id: "{id}" }, expect: { name: "Da Hong Pao" } },
+```
+
+`keep` reads `body.…`, `headers.…` or `status`. A placeholder alone (`"{id}"`) keeps the
+value's type; inside text (`"/teas/{id}"`) it becomes text. `beforeEach` runs once before
+the whole chain, so the examples in it see each other's data, and the order comes from
+`after`, never from the order of the files. The docs page runs the chain too when you
+press send.
 
 For everything the examples do not cover, `app.inject()` sends a request
 straight in, without a socket:

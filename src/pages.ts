@@ -52,7 +52,7 @@ pre.type{margin:0;padding:10px 12px;background:var(--paper);border:1px solid var
 .ex{border:1px dashed var(--line);border-radius:3px;margin:8px 0;padding:8px 10px}
 .ex-head{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.ex-head .name{font-weight:600}
 .ex-head .req{color:var(--ink-2);font:12px var(--mono);word-break:break-all}.ex-head .acts{margin-left:auto;display:flex;gap:6px}
-[hidden]{display:none!important}.btn.on{background:var(--paper-2);border-color:var(--seal);color:var(--seal)}
+[hidden]{display:none!important}.chain{margin:4px 0 0;font-size:12px}.btn.on{background:var(--paper-2);border-color:var(--seal);color:var(--seal)}
 .edit{display:grid;gap:8px;margin-top:10px}
 .edit label{display:grid;grid-template-columns:72px minmax(0,1fr);gap:8px;align-items:start;font:12px var(--mono)}
 .edit label span{color:var(--ink-2);padding-top:6px}
@@ -133,7 +133,9 @@ function expected(op, ex) {
 }
 function urlFor(path, ex) {
   var u = path.replace(/\\{(\\w+)\\}/g, function (_, n) {
-    var v = (ex.params || {})[n]; return v === undefined ? "{" + n + "}" : encodeURIComponent(String(v));
+    var v = (ex.params || {})[n];
+    if (v === undefined) return "{" + n + "}";
+    return /^\\{\\w+\\}$/.test(String(v)) ? String(v) : encodeURIComponent(String(v)); // a placeholder stays readable
   });
   var q = new URLSearchParams();
   Object.keys(ex.query || {}).forEach(function (k) { [].concat(ex.query[k]).forEach(function (v) { q.append(k, String(v)); }); });
@@ -171,11 +173,13 @@ function card(path, method, op, idx) {
     h += "<h5>examples · each one is also a test</h5>";
     exs.forEach(function (ex, i) {
       var want = expected(op, ex), n = ROUTES.length;
-      ROUTES.push({ id: id, path: path, method: method, op: op, ex: ex, el: id + "-ex" + i });
+      ROUTES.push({ id: id, path: path, method: method, op: op, ex: ex, el: id + "-ex" + i, name: ex.name || "example " + (i + 1) });
       h += '<div class="ex" id="' + id + "-ex" + i + '"><div class="ex-head"><span class="name">' + esc(ex.name || "example " + (i + 1)) +
         '</span><span class="req">' + method.toUpperCase() + " " + esc(urlFor(path, ex)) + (want ? " → " + want : "") +
         '</span><span class="acts"><button class="btn" data-edit="' + n + '">edit</button><button class="btn" data-curl="' + n +
         '">curl</button><button class="btn" data-run="' + n + '">send</button></span></div>' +
+        (ex.after ? '<p class="mono muted chain">after ' + esc(ex.after) + "</p>" : "") +
+        (ex.keep ? '<p class="mono muted chain">keeps ' + esc(Object.keys(ex.keep).map(function (k) { return k + " = " + ex.keep[k]; }).join(", ")) + "</p>" : "") +
         (ex.body !== undefined ? '<pre class="exbody">' + esc(JSON.stringify(ex.body, null, 2)) + "</pre>" : "") +
         editor(path, op, ex) + '<div class="out"></div></div>';
     });
@@ -200,22 +204,80 @@ function editor(path, op, ex) {
     '<span class="muted">an edited request is sent as it is and not held to the example</span></div></div>';
 }
 function hasHeader(h, name) { return Object.keys(h).some(function (k) { return k.toLowerCase() === name.toLowerCase(); }); }
-function request(i) {
-  var r = ROUTES[i], ex = r.ex, ed = document.getElementById(r.el).querySelector(".edit");
+// ----- examples that build on each other: run what comes first, keep what it answers -----
+function substitute(v, kept) {
+  if (typeof v === "string") {
+    var whole = /^\\{(\\w+)\\}$/.exec(v);
+    if (whole && whole[1] in kept) return kept[whole[1]];
+    return v.replace(/\\{(\\w+)\\}/g, function (m, k) { return k in kept ? String(kept[k]) : m; });
+  }
+  if (Array.isArray(v)) return v.map(function (x) { return substitute(x, kept); });
+  if (v && typeof v === "object") { var o = {}; Object.keys(v).forEach(function (k) { o[k] = substitute(v[k], kept); }); return o; }
+  return v;
+}
+function stepFor(after) {
+  var m = /^\\s*(\\w+)\\s+(\\S+)\\s*>\\s*(.+?)\\s*$/.exec(after || "");
+  if (!m) return -1;
+  var path = m[2].replace(/[:*](\\w+)/g, "{$1}");
+  return ROUTES.findIndex(function (r) { return r.method.toUpperCase() === m[1].toUpperCase() && r.path === path && r.name === m[3]; });
+}
+function chainFor(i) {
+  var chain = [], seen = [i];
+  for (var step = i; ROUTES[step].ex.after; ) {
+    var dep = stepFor(ROUTES[step].ex.after);
+    if (dep < 0) throw new Error('after: "' + ROUTES[step].ex.after + '" is not an example on this page');
+    if (seen.indexOf(dep) >= 0) throw new Error("after goes in a circle");
+    seen.push(dep); chain.unshift(dep); step = dep;
+  }
+  return chain;
+}
+function pick(answer, path) {
+  var parts = path.split("."), root = parts.shift();
+  var v = root === "body" ? answer.body : root === "headers" ? answer.headers : root === "status" ? answer.status : undefined;
+  parts.forEach(function (k) { v = v !== null && typeof v === "object" ? v[root === "headers" ? k.toLowerCase() : k] : undefined; });
+  return v;
+}
+function answerOf(res, text) {
+  var headers = {}, body = text;
+  res.headers.forEach(function (v, k) { headers[k] = v; });
+  try { body = JSON.parse(text); } catch (e) {}
+  return { status: res.status, headers: headers, body: body };
+}
+function runChain(i) {
+  var chain = chainFor(i), kept = {}, done = Promise.resolve();
+  chain.forEach(function (s) {
+    done = done.then(function () {
+      var req = request(s, kept, true), init = { method: req.method, headers: req.headers };
+      if (req.body !== undefined) init.body = req.body;
+      return fetch(req.url, init).then(function (res) {
+        return res.text().then(function (text) {
+          var a = answerOf(res, text), want = expected(ROUTES[s].op, ROUTES[s].ex), label = ROUTES[s].method.toUpperCase() + " " + ROUTES[s].path + " > " + ROUTES[s].name;
+          if (want !== undefined ? a.status !== want : a.status >= 300) throw new Error('needs "' + label + '" first, which answered ' + a.status);
+          Object.keys(ROUTES[s].ex.keep || {}).forEach(function (k) { kept[k] = pick(a, ROUTES[s].ex.keep[k]); });
+        });
+      });
+    });
+  });
+  return done.then(function () { return kept; });
+}
+function request(i, kept, plain) {
+  kept = kept || {};
+  var r = ROUTES[i], ex = substitute(r.ex, kept), ed = plain ? null : document.getElementById(r.el).querySelector(".edit");
   var req = { method: r.method.toUpperCase(), url: urlFor(r.path, ex), headers: Object.assign({}, ex.headers || {}),
     body: ex.body === undefined ? undefined : JSON.stringify(ex.body), edited: false };
   if (ed && !ed.hidden) {
     var params = {};
-    ed.querySelectorAll("[data-param]").forEach(function (inp) { params[inp.dataset.param] = inp.value; });
-    var q = ed.querySelector("[data-query]").value.trim().replace(/^\\?/, "");
+    ed.querySelectorAll("[data-param]").forEach(function (inp) { params[inp.dataset.param] = substitute(inp.value, kept); });
+    var q = substitute(ed.querySelector("[data-query]").value.trim().replace(/^\\?/, ""), kept);
     req.url = urlFor(r.path, { params: params }) + (q ? "?" + q : "");
     req.headers = {};
     ed.querySelector("[data-headers]").value.split("\\n").forEach(function (line) {
       var k = line.indexOf(":");
-      if (k > 0) req.headers[line.slice(0, k).trim()] = line.slice(k + 1).trim();
+      if (k > 0) req.headers[line.slice(0, k).trim()] = substitute(line.slice(k + 1).trim(), kept);
     });
     var b = ed.querySelector("[data-body]");
     req.body = b && b.value.trim() ? b.value : undefined;
+    if (req.body !== undefined) { try { req.body = JSON.stringify(substitute(JSON.parse(req.body), kept)); } catch (e) { req.body = substitute(req.body, kept); } }
     req.edited = true;
   }
   if (req.body !== undefined && !hasHeader(req.headers, "content-type")) req.headers["content-type"] = "application/json";
@@ -262,12 +324,15 @@ function curl(i) {
   } else done("copy it from here");
 }
 function send(i) {
-  var r = ROUTES[i], el = document.getElementById(r.el), out = el.querySelector(".out"), req = request(i);
-  var init = { method: req.method, headers: req.headers };
-  if (req.body !== undefined) init.body = req.body;
-  var t0 = performance.now();
-  out.innerHTML = '<p class="muted mono">sending…</p>';
-  return fetch(req.url, init).then(function (res) {
+  var r = ROUTES[i], el = document.getElementById(r.el), out = el.querySelector(".out"), req, t0;
+  out.innerHTML = '<p class="muted mono">' + (r.ex.after ? "running what comes first…" : "sending…") + "</p>";
+  return Promise.resolve().then(function () { return r.ex.after ? runChain(i) : {}; }).then(function (kept) {
+    req = request(i, kept);
+    var init = { method: req.method, headers: req.headers };
+    if (req.body !== undefined) init.body = req.body;
+    t0 = performance.now();
+    return fetch(req.url, init);
+  }).then(function (res) {
     return res.text().then(function (text) {
       var ms = Math.round(performance.now() - t0), want = expected(r.op, r.ex);
       var ok = want === undefined ? res.status < 300 : res.status === want, pretty = text;
@@ -281,7 +346,7 @@ function send(i) {
     });
   }).catch(function (e) {
     out.innerHTML = '<p class="verdict no">' + esc(e.message) + "</p>";
-    if (!req.edited) { el.dataset.ok = "0"; stampCard(r.id); }
+    if (!req || !req.edited) { el.dataset.ok = "0"; stampCard(r.id); }
   });
 }
 function stampCard(id) {

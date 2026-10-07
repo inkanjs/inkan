@@ -2,7 +2,7 @@
 // app and holds the answer against the contract: the status, the response
 // schema and whatever the example says it `expect`s.
 
-import { contractFor, type App, type Example, type RouteRecord } from "./app.ts";
+import { contractFor, type App, type Example, type InjectResponse, type RouteRecord } from "./app.ts";
 import { paint } from "./color.ts";
 
 export type CheckOptions = {
@@ -85,18 +85,97 @@ function expectedStatus(r: RouteRecord, ex: Example): number | undefined {
   return ok[0];
 }
 
-async function runOne(app: App, r: RouteRecord, ex: Example, i: number): Promise<CheckResult> {
-  const name = ex.name ?? `example ${i + 1}`;
+// ---------- examples that build on each other ----------
+
+type Kept = Record<string, unknown>;
+type Step = { r: RouteRecord; ex: Example; label: string };
+
+/** Puts kept values into `{name}` placeholders. A placeholder alone keeps the value's type. */
+export function substitute<T>(value: T, kept: Kept): T {
+  if (typeof value === "string") {
+    const whole = /^\{(\w+)\}$/.exec(value);
+    if (whole && whole[1] in kept) return kept[whole[1]] as T;
+    return value.replace(/\{(\w+)\}/g, (m, k: string) => (k in kept ? String(kept[k]) : m)) as T;
+  }
+  if (Array.isArray(value)) return value.map((v) => substitute(v, kept)) as T;
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, substitute(v, kept)])) as T;
+  }
+  return value;
+}
+
+/** Reads `body.id`, `headers.location` or `status` out of an answer. */
+function pick(res: InjectResponse, path: string): unknown {
+  const [root, ...rest] = path.split(".");
+  let v: unknown = root === "body" ? res.body : root === "headers" ? res.headers : root === "status" ? res.status : undefined;
+  for (const k of rest) v = v !== null && typeof v === "object" ? (v as Record<string, unknown>)[root === "headers" ? k.toLowerCase() : k] : undefined;
+  return v;
+}
+
+function keepFrom(res: InjectResponse, keep: Record<string, string> = {}): { kept: Kept; missing: string[] } {
+  const kept: Kept = {};
+  const missing: string[] = [];
+  for (const [name, path] of Object.entries(keep)) {
+    const v = pick(res, path);
+    if (v === undefined) missing.push(`keeps ${name} from ${path}, but the answer has no ${path}`);
+    else kept[name] = v;
+  }
+  return { kept, missing };
+}
+
+const stepLabel = (r: RouteRecord, ex: Example, i: number) => `${r.method} ${r.path} > ${ex.name ?? `example ${i + 1}`}`;
+
+function indexExamples(app: App): Map<string, Step> {
+  const index = new Map<string, Step>();
+  for (const r of app.routes()) (r.spec.examples ?? []).forEach((ex, i) => index.set(stepLabel(r, ex, i), { r, ex, label: stepLabel(r, ex, i) }));
+  return index;
+}
+
+/** The examples an example needs first, the first one first. */
+function chainOf(index: Map<string, Step>, start: Step): Step[] {
+  const chain: Step[] = [];
+  const seen = [start.label];
+  for (let step = start; step.ex.after; ) {
+    const m = /^\s*(\w+)\s+(\S+)\s*>\s*(.+?)\s*$/.exec(step.ex.after);
+    const key = m ? `${m[1].toUpperCase()} ${m[2]} > ${m[3]}` : step.ex.after;
+    const dep = index.get(key);
+    if (!dep) throw new Error(`after: "${step.ex.after}" is not an example. Write it as "METHOD /path > example name".`);
+    if (seen.includes(dep.label)) throw new Error(`after goes in a circle: ${[...seen, dep.label].join(" → ")}`);
+    seen.push(dep.label);
+    chain.unshift(dep);
+    step = dep;
+  }
+  return chain;
+}
+
+async function runChain(app: App, chain: Step[]): Promise<Kept> {
+  let kept: Kept = {};
+  for (const step of chain) {
+    const res = await send(app, step.r, substitute(step.ex, kept));
+    const want = expectedStatus(step.r, step.ex);
+    if (want !== undefined ? res.status !== want : res.status >= 300) {
+      throw new Error(`needs "${step.label}" first, which answered ${res.status}, expected ${want ?? "a 2xx"}`);
+    }
+    const got = keepFrom(res, step.ex.keep);
+    if (got.missing.length) throw new Error(`needs "${step.label}" first, which ${got.missing[0]}`);
+    kept = { ...kept, ...got.kept };
+  }
+  return kept;
+}
+
+const send = (app: App, r: RouteRecord, ex: Example) =>
+  app.inject({ method: r.method, url: fill(r.path, ex.params) + queryString(ex.query), headers: ex.headers, body: ex.body });
+
+async function runOne(app: App, r: RouteRecord, raw: Example, i: number, index: Map<string, Step>, beforeEach?: () => unknown): Promise<CheckResult> {
+  const name = raw.name ?? `example ${i + 1}`;
   const started = performance.now();
   const problems: string[] = [];
   let status = 0;
   try {
-    const res = await app.inject({
-      method: r.method,
-      url: fill(r.path, ex.params) + queryString(ex.query),
-      headers: ex.headers,
-      body: ex.body,
-    });
+    await beforeEach?.(); // once per chain, so the examples in it see each other's data
+    const kept = await runChain(app, chainOf(index, { r, ex: raw, label: stepLabel(r, raw, i) }));
+    const ex = substitute(raw, kept);
+    const res = await send(app, r, ex);
     status = res.status;
     const want = expectedStatus(r, ex);
     if (want !== undefined ? status !== want : status >= 300) {
@@ -118,6 +197,7 @@ async function runOne(app: App, r: RouteRecord, ex: Example, i: number): Promise
         const miss = partialMatch(ex.expect, res.body);
         if (miss) problems.push(miss);
       }
+      problems.push(...keepFrom(res, ex.keep).missing); // whatever comes after this example relies on it
     }
   } catch (err) {
     problems.push((err as Error).message);
@@ -132,6 +212,7 @@ export async function runChecks(app: App, opts: CheckOptions = {}): Promise<Chec
   const uncovered: CheckReport["uncovered"] = [];
   const log = app.options.log;
   app.options.log = false;
+  const index = indexExamples(app);
   try {
     for (const r of app.routes()) {
       const label = `${r.method} ${r.path}`;
@@ -144,10 +225,7 @@ export async function runChecks(app: App, opts: CheckOptions = {}): Promise<Chec
           if (!covered.has(s)) uncovered.push({ method: r.method, path: r.path, status: s });
         }
       }
-      for (const [i, ex] of examples.entries()) {
-        await opts.beforeEach?.();
-        results.push(await runOne(app, r, ex, i));
-      }
+      for (const [i, ex] of examples.entries()) results.push(await runOne(app, r, ex, i, index, opts.beforeEach));
     }
   } finally {
     app.options.log = log;

@@ -51,6 +51,10 @@ teas.get(
       { name: "found", params: { id: 1 }, expect: { name: "Sencha" } },
       { name: "missing", params: { id: 99 }, status: 404 },
       { name: "not a number", params: { id: "abc" }, status: 400 },
+      // 8. Examples that build on each other. `after` runs another example first, and what it
+      //    `keep`s fills the `{id}` placeholder here. Both run between the same beforeEach.
+      { name: "the one just added", after: "POST /teas > a new oolong", params: { id: "{id}" }, expect: { name: "Da Hong Pao" } },
+      { name: "gone once removed", after: "DELETE /teas/:id > removes it", params: { id: 3 }, status: 404 },
     ],
   },
   ({ params }) => {
@@ -73,6 +77,7 @@ teas.post(
         name: "a new oolong",
         body: { name: "Da Hong Pao", kind: "oolong", grams: 50, price: 14, inStock: true },
         expect: { id: 4, name: "Da Hong Pao" },
+        keep: { id: "body.id" }, // for "the one just added" (8)
       },
       { name: "a name that is taken", body: { name: "sencha", kind: "green", grams: 50, price: 5, inStock: true }, status: 409 },
       { name: "a price below zero", body: { name: "Free tea", kind: "green", grams: 10, price: -1, inStock: true }, status: 400 },

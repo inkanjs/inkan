@@ -21,6 +21,8 @@ npm run check      # every example as a test, with --strict
    - query strings that become booleans and numbers, with a default
    - `reply(201, tea, { location })` for a header, typed to the contract
    - `t.empty()` for a 204
+   - examples that build on each other: `keep` an id from one answer, use it as `{id}`
+     in an example that runs `after` it
 4. [src/app.ts](src/app.ts): the app puts it together: middleware, `mount("/teas", teas)`
    and the exported `beforeEach`.
 

@@ -23,6 +23,13 @@ export type Example = {
   status?: number;
   /** A part of the response body that has to be in the answer, compared deeply. */
   expect?: unknown;
+  /** Values to keep from this answer for examples that come after it: `{ id: "body.id" }`. */
+  keep?: Record<string, string>;
+  /**
+   * Another example that runs first, as `"POST /teas > a new oolong"`. What it keeps fills
+   * `{name}` placeholders in this example's params, query, headers and body.
+   */
+  after?: string;
 };
 
 export type RouteSpec<P, Q, B, H, R extends Responses> = {
