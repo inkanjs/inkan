@@ -17,6 +17,11 @@ on:
       servers:
         description: Servers, comma separated (node, fastify, hono, inkan, inkan-dev, express)
         default: "node,fastify,hono,inkan,express"
+      kind:
+        description: "http: req/s, latency and memory · cpu: what one request costs the server · both"
+        type: choice
+        options: [http, cpu, both]
+        default: http
 
 permissions:
   contents: read
@@ -38,5 +43,10 @@ jobs:
         run: node inproc.mjs
         working-directory: bench
       - name: over HTTP, next to the others
+        if: inputs.kind != 'cpu'
         run: node run.mjs ${{ inputs.servers }} ${{ inputs.seconds }} ${{ inputs.rounds }}
+        working-directory: bench
+      - name: CPU per request, next to the others
+        if: inputs.kind != 'http'
+        run: node cpu.mjs ${{ inputs.servers }} ${{ inputs.seconds }} ${{ inputs.rounds }}
         working-directory: bench
