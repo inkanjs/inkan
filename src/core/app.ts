@@ -158,6 +158,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
   /** @internal Every route, from the app and from every scope inside it, ends up here. */
   _addRoute(r: RouteRecord) {
     r.box ??= this._box;
+    r.security ??= [];
     this.router.add(r.method, r.path, r);
     this._records.push(r);
     this.spec = undefined;
@@ -514,6 +515,8 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     }
     // No body means 204. Otherwise the first 2xx the contract lists, or 200.
     if (!status) status = body === undefined ? 204 : (plan?.defaultStatus ?? 200);
+    const promised = route?.spec.responseHeaders?.[status];
+    if (promised && this.options.validateResponses) this.checkHeaders(route!, status, promised, headers, notes);
 
     if (body instanceof EventStream) {
       const schema = route ? contractFor(route, status) : undefined;
@@ -560,6 +563,20 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
       return encode(status, schema._serializer()(body), headers);
     }
     return encode(status, body, headers);
+  }
+
+  /** The headers a status promises: there, unless optional, and of the shape promised. A broken promise is a 500 in development. */
+  private checkHeaders(route: RouteRecord, status: number, promised: Record<string, Schema<any>>, headers: Record<string, string>, notes: string[]) {
+    const errors: { in: string; path: string; message: string }[] = [];
+    for (const [name, schema] of Object.entries(promised)) {
+      const r = schema.safeParse(headers[name.toLowerCase()], { coerce: true }); // a header is text, like a query
+      if (!r.ok) for (const i of r.issues) errors.push({ in: "response headers", path: name, message: i.message });
+    }
+    if (!errors.length) return;
+    notes.push("response broke the contract");
+    const lines = errors.map((e) => `${e.path} ${e.message}`).join("\n  ");
+    console.error(`inkan: ${route.method} ${route.path} answered ${status} without the headers it promises:\n  ${lines}`);
+    throw problem(500, "response-contract", "The handler answered without the headers its contract promises", { errors });
   }
 
   private fail(err: unknown, x: Exchange): RawResponse {

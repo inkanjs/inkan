@@ -2,7 +2,7 @@
 // the schemas that validate a request are the ones that describe it.
 
 import { STATUS_CODES } from "node:http";
-import type { RouteRecord } from "../core/route.ts";
+import type { RouteRecord, Security } from "../core/route.ts";
 import { ArraySchema, EventsSchema, FileSchema, ObjectSchema, t, type JsonSchema, type RefContext, type Schema } from "../schema/schema.ts";
 
 /** A body with a file anywhere at its top level goes as multipart/form-data. */
@@ -58,10 +58,20 @@ function parameters(where: "path" | "query" | "header", schema: Schema<any> | un
   return out;
 }
 
+/** A scheme as OpenAPI names and describes it. Names may only hold letters, digits and . - _ */
+function schemeOf(s: Security): [string, JsonSchema] {
+  if (s === "bearer") return ["bearer", { type: "http", scheme: "bearer" }];
+  if (s === "basic") return ["basic", { type: "http", scheme: "basic" }];
+  const where = s.in ?? "header";
+  const name = (where === "header" ? s.apiKey : `${s.apiKey}-${where}`).replace(/[^\w.-]/g, "_");
+  return [name, { type: "apiKey", in: where, name: s.apiKey }];
+}
+
 export function buildOpenAPI(records: RouteRecord[], info: OpenAPIInfo = {}) {
   const ctx: RefContext = { components: new Map() };
   const paths: Record<string, Record<string, unknown>> = {};
   const problemRef = () => t.problem()._schema(ctx);
+  const schemes = new Map<string, JsonSchema>();
 
   for (const r of records) {
     const { spec } = r;
@@ -97,7 +107,28 @@ export function buildOpenAPI(records: RouteRecord[], info: OpenAPIInfo = {}) {
         const type = schema instanceof EventsSchema ? "text/event-stream" : code >= 400 ? "application/problem+json" : "application/json";
         res.content = { [type]: { schema: schema._schema(ctx) } };
       }
+      const headers = spec.responseHeaders?.[code];
+      if (headers) {
+        res.headers = Object.fromEntries(
+          Object.entries(headers).map(([name, h]) => [
+            name,
+            { schema: h._schema(ctx), required: !h.meta.optional && !h.meta.hasDefault, ...(h.meta.description ? { description: h.meta.description } : {}) },
+          ]),
+        );
+      }
       responses[status] = res;
+    }
+    if (r.security?.length) {
+      op.security = r.security.map((s) => {
+        const [name, scheme] = schemeOf(s);
+        schemes.set(name, scheme);
+        return { [name]: [] };
+      });
+      responses["401"] ??= {
+        description: "The credentials this route asks for are missing",
+        content: { "application/problem+json": { schema: problemRef() } },
+        "x-inkan-implied": true,
+      };
     }
     if ((spec.params || spec.query || spec.headers || spec.body) && !responses["400"]) {
       responses["400"] = {
@@ -123,6 +154,9 @@ export function buildOpenAPI(records: RouteRecord[], info: OpenAPIInfo = {}) {
   };
   if (info.servers) doc.servers = info.servers;
   doc.paths = paths;
-  if (ctx.components.size) doc.components = { schemas: Object.fromEntries(ctx.components) };
+  const components: Record<string, unknown> = {};
+  if (ctx.components.size) components.schemas = Object.fromEntries(ctx.components);
+  if (schemes.size) components.securitySchemes = Object.fromEntries(schemes);
+  if (Object.keys(components).length) doc.components = components;
   return doc;
 }

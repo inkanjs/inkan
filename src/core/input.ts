@@ -4,11 +4,41 @@
 import type { IncomingMessage } from "node:http";
 import { HttpProblem, problem } from "./problem.ts";
 import type { Issue, Schema, UploadedFile } from "../schema/schema.ts";
-import type { Context, RouteRecord } from "./route.ts";
+import type { Context, RouteRecord, Security } from "./route.ts";
 import { queryObject, type RawRequest } from "./context.ts";
 import { Buffer } from "node:buffer"; // explicit, for runtimes without a global Buffer
 
 export type Body = { kind: "none" | "json" | "form" | "multipart" | "text" | "binary"; value: unknown };
+
+/** Whether the request carries the credentials a scheme asks for. Whether they are good is not inkan's to say. */
+function presented(s: Security, ctx: Context<any, any, any, any, any>): boolean {
+  const headers = ctx.headers as Record<string, string | undefined>;
+  if (s === "bearer") return /^bearer\s+\S/i.test(headers.authorization ?? "");
+  if (s === "basic") return /^basic\s+\S/i.test(headers.authorization ?? "");
+  const where = s.in ?? "header";
+  if (where === "header") return Boolean(headers[s.apiKey.toLowerCase()]);
+  if (where === "query") return Boolean((ctx.query as Record<string, unknown>)[s.apiKey]);
+  const cookie = headers.cookie ?? "";
+  return cookie.split(";").some((part) => {
+    const eq = part.indexOf("=");
+    return eq > 0 && part.slice(0, eq).trim() === s.apiKey && part.slice(eq + 1).trim() !== "";
+  });
+}
+
+/** What a scheme asks for, in words a caller can act on. */
+export function describeSecurity(s: Security): string {
+  if (s === "bearer") return "a bearer token in authorization";
+  if (s === "basic") return "basic credentials in authorization";
+  const where = s.in ?? "header";
+  return where === "header" ? `${s.apiKey} in the headers` : where === "query" ? `${s.apiKey} in the query` : `a ${s.apiKey} cookie`;
+}
+
+function missingCredentials(schemes: Security[]): HttpProblem {
+  const challenge = schemes.flatMap((s) => (s === "bearer" ? ["Bearer"] : s === "basic" ? ['Basic realm="api"'] : []));
+  const p = problem(401, "unauthorized", `This route needs ${schemes.map(describeSecurity).join(" or ")}`);
+  if (challenge.length) p.headers["www-authenticate"] = challenge.join(", ");
+  return p;
+}
 
 export async function readMultipart(raw: RawRequest, contentType: string): Promise<Body> {
   let form: FormData;
@@ -56,6 +86,8 @@ export function validateInput(
   raw: RawRequest,
 ): void | Promise<void> {
   const { spec } = route;
+  // who is asking comes first: without the credentials the route asks for, nothing else matters
+  if (route.security?.length && !route.security.some((s) => presented(s, ctx))) throw missingCredentials(route.security);
   const errors: { in: string; path: string; message: string }[] = [];
   const take = (where: string, schema: Schema<any> | undefined, value: unknown, coerce: boolean) => {
     if (!schema) return value;

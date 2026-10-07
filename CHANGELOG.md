@@ -47,6 +47,17 @@
   does. `{ remote }` passes the client's address where the platform knows it: the inspector
   answers only a loopback address, so without one it stays shut. CI runs the same requests
   on Bun and Deno. ([#14](https://github.com/inkanjs/inkan/issues/14))
+- **Security schemes.** `security: "bearer" | "basic" | { apiKey, in }` on a route, a list for
+  alternatives, `.security(…)` for a group, a plugin or the whole app, and `security: false`
+  to open one route again. A request without the credentials is a 401 problem with
+  `www-authenticate`, before its input is looked at; whether they are good stays the job of a
+  hook or middleware. OpenAPI gets `components.securitySchemes`, `security` per operation
+  and an implied 401; the docs page shows a lock and its token field starts on the right
+  header. ([#12](https://github.com/inkanjs/inkan/issues/12))
+- **Response headers in the contract.** `responseHeaders: { 201: { location: t.string() } }`
+  goes into OpenAPI and onto the docs page, and in development an answer without a promised
+  header (or with one of the wrong shape) breaks the contract like a wrong body does.
+  ([#12](https://github.com/inkanjs/inkan/issues/12))
 - **`bench/cpu.mjs`**: the CPU time one request costs the server, next to the others, which
   does not depend on how fast the load generator is. The bench workflow runs it with
   `kind: cpu` (or `both`).

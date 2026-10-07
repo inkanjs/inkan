@@ -36,7 +36,7 @@ aside a:hover{background:var(--paper-2)}aside a .p{overflow:hidden;text-overflow
 .intro{margin:0 0 22px;color:var(--ink-2);max-width:68ch}
 .win{background:var(--card);border:1px solid var(--ink);border-radius:4px;box-shadow:4px 4px 0 var(--line);margin:0 0 26px;scroll-margin-top:84px}
 .bar{display:flex;align-items:center;gap:10px;padding:8px 12px;border-bottom:1px solid var(--ink);background:var(--paper-2);border-radius:4px 4px 0 0}
-.bar code{font-size:14px;font-weight:600;word-break:break-all}.bar .dep{color:var(--warn);font:11px var(--mono)}
+.bar code{font-size:14px;font-weight:600;word-break:break-all}.bar .dep{color:var(--warn);font:11px var(--mono)}.bar .lock{color:var(--ink-2);font:11px var(--mono);white-space:nowrap}.heads{margin:4px 0 0;font-size:12px}
 .bar .sealmark{margin-left:auto;opacity:0;transition:opacity .3s,transform .3s;transform:scale(1.6) rotate(-12deg)}
 .win.sealed .sealmark{opacity:1;transform:scale(1) rotate(-4deg)}
 .win.broken .bar{background:var(--seal-soft)}

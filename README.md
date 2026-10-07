@@ -359,6 +359,36 @@ app.mount("/admin", admin);
 `ctx.state` carries things from middleware to the handler. A thrown
 `problem()` stops everything, wherever it is thrown.
 
+### Who may call it
+
+```ts
+app.get("/me", { security: "bearer" }, …);                         // authorization: Bearer …
+app.get("/feed", { security: { apiKey: "x-api-key" } }, …);       // also in: "query" or "cookie"
+app.get("/either", { security: ["bearer", "basic"] }, …);         // any one will do
+
+const admin = routes().security("bearer").get("/stats", …);      // every route of a group
+app.security("bearer").get("/health", { security: false }, …);   // the whole app, and an open door
+```
+
+A request without the credentials a route asks for is a 401 problem with a
+`www-authenticate` header, before its input is even looked at. Whether the
+credentials are good stays yours, in an `onRequest` hook or a middleware: inkan
+only makes sure the docs cannot promise a lock that is not there. The schemes go
+into OpenAPI as `securitySchemes`, the docs page shows a lock on every route that
+asks, and its token field starts on the right header.
+
+Headers an answer promises are part of the contract too:
+
+```ts
+app.post("/teas", {
+  response: { 201: Tea },
+  responseHeaders: { 201: { location: t.string().describe("Where the new tea lives") } },
+}, ({ body, reply }) => reply(201, tea, { location: `/teas/${tea.id}` }));
+```
+
+They are in the document and on the docs page, and in development an answer
+without them breaks the contract like a wrong body does.
+
 ### CORS
 
 `OPTIONS` answers on its own with an `Allow` header. For browsers on another

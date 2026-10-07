@@ -28,6 +28,12 @@ export type Example = {
   after?: string;
 };
 
+/**
+ * How a caller proves who they are. inkan checks that the credentials are there and
+ * documents them; whether they are good is for your hook or middleware to say.
+ */
+export type Security = "bearer" | "basic" | { apiKey: string; in?: "header" | "query" | "cookie" };
+
 export type RouteSpec<P, Q, B, H, R extends Responses> = {
   summary?: string;
   description?: string;
@@ -41,6 +47,13 @@ export type RouteSpec<P, Q, B, H, R extends Responses> = {
   headers?: Schema<H>;
   body?: Schema<B>;
   response?: R;
+  /** Headers an answer carries, by status: `{ 201: { location: t.string() } }`. Checked in development, like the body. */
+  responseHeaders?: { [status: number]: Record<string, Schema<any>> };
+  /**
+   * Who may call it: a request without these credentials is a 401 before anything else runs.
+   * Several are alternatives, any one will do. `false` opens a route in a secured group.
+   */
+  security?: Security | Security[] | false;
   examples?: Example[];
   /** Middleware for this route only. It runs after the input was validated. */
   use?: Middleware[];
@@ -113,6 +126,8 @@ export type RouteRecord = {
   spec: RouteSpec<any, any, any, any, Responses>;
   handler: Handler<any, any, any, any, any>;
   use: Middleware[];
+  /** @internal The credentials it asks for, its own or its group's; empty for none. */
+  security?: Security[];
   /** @internal The scope it was defined in: its hooks and its decorations. */
   box?: Box;
   /** @internal Every hook from the app down to this route, joined once before the first request. */
@@ -172,6 +187,10 @@ export type RouteMethod<Self, M extends string> = {
 
 // ---------- route tables ----------
 
+/** `security` as a list: undefined to take the group's, empty for none. */
+export const securityList = (s: Security | Security[] | false | undefined): Security[] | undefined =>
+  s === undefined ? undefined : s === false ? [] : Array.isArray(s) ? s : [s];
+
 export const joinPath = (a: string, b: string) => "/" + [a, b].join("/").split("/").filter(Boolean).join("/");
 
 /**
@@ -194,16 +213,27 @@ export class Routes<Defs extends RouteDefs = any, Deco = {}> {
     return this;
   }
 
+  /** @internal */
+  _security?: Security[];
+  /**
+   * The credentials every route defined here afterwards asks for, unless it says
+   * otherwise in its own `security`. On the app it is the default for every route.
+   */
+  security(scheme: Security | Security[] | false): this {
+    this._security = securityList(scheme);
+    return this;
+  }
+
   protected define(method: string, path: string, a: unknown, b?: unknown): this {
     const [spec, handler] = typeof a === "function" ? [{}, a] : [a, b];
     const s = spec as RouteRecord["spec"];
-    this.add({ method, path, spec: s, handler: handler as RouteRecord["handler"], use: s.use ?? [] });
+    this.add({ method, path, spec: s, handler: handler as RouteRecord["handler"], use: s.use ?? [], security: securityList(s.security) });
     return this;
   }
 
   /** @internal */
   add(r: RouteRecord) {
-    this._records.push({ ...r, use: [...this._use, ...r.use] });
+    this._records.push({ ...r, use: [...this._use, ...r.use], security: r.security ?? this._security });
   }
 
   get: RouteMethod<this, "GET"> = ((p: string, a: unknown, b?: unknown) => this.define("GET", p, a, b)) as never;

@@ -63,6 +63,7 @@ function card(path, method, op, idx) {
   var id = "op-" + (op.operationId || idx);
   var h = '<section class="win" id="' + esc(id) + '"><header class="bar"><span class="m m-' + esc(method) + '">' + esc(method.toUpperCase()) +
     "</span><code>" + esc(path) + "</code>" + (op.deprecated ? '<span class="dep">deprecated</span>' : "") +
+    (op.security && op.security.length ? '<span class="lock" title="asks for these credentials">&#128274; ' + esc(op.security.map(function (s) { return Object.keys(s)[0]; }).join(" or ")) + "</span>" : "") +
     '<span class="stamp sealmark" title="every example answered as promised">印</span></header><div class="pad">';
   if (op.summary) h += '<p class="sum">' + esc(op.summary) + "</p>";
   if (op.description) h += '<p class="desc">' + esc(op.description) + "</p>";
@@ -81,7 +82,8 @@ function card(path, method, op, idx) {
   Object.keys(op.responses || {}).forEach(function (s) {
     var r = op.responses[s], sc = firstContent(r.content);
     var gap = exs.length && !r["x-inkan-implied"] && covered.indexOf(Number(s)) < 0 ? ' <span class="muted" title="inkan check --strict fails on this">· no example answers with it</span>' : "";
-    h += '<tr><td style="width:60px"><span class="status s' + esc(s[0]) + '">' + esc(s) + "</span></td><td>" + esc(r.description || "") + gap +
+    var heads = r.headers ? '<p class="mono muted heads">headers: ' + esc(Object.keys(r.headers).map(function (n) { return n + (r.headers[n].required ? "" : "?"); }).join(", ")) + "</p>" : "";
+    h += '<tr><td style="width:60px"><span class="status s' + esc(s[0]) + '">' + esc(s) + "</span></td><td>" + esc(r.description || "") + gap + heads +
       (sc ? '<pre class="type" style="margin-top:6px">' + render(sc, "") + "</pre>" : "") + "</td></tr>";
   });
   h += "</table>";
@@ -309,8 +311,21 @@ function sendAll() {
   var chain = Promise.resolve();
   ROUTES.forEach(function (_, i) { chain = chain.then(function () { return send(i); }); });
 }
+// the token field offers the headers the document's security schemes name, and starts on the first one
+function schemes(spec) {
+  var all = (spec.components || {}).securitySchemes || {}, sel = $("#authName"), first = null;
+  var have = Array.prototype.map.call(sel.options, function (o) { return o.value; });
+  Object.keys(all).forEach(function (k) {
+    var s = all[k], h = s.type === "http" ? "authorization" : s.type === "apiKey" && s.in === "header" ? String(s.name).toLowerCase() : null;
+    if (!h) return;
+    if (have.indexOf(h) < 0) { var o = document.createElement("option"); o.value = o.textContent = h; sel.appendChild(o); have.push(h); }
+    if (!first) { first = h; if (s.scheme === "bearer") $("#auth").placeholder = "Bearer <token>, kept for this tab"; }
+  });
+  if (first && !store.get("inkan:auth-header")) sel.value = first;
+}
 function boot(spec) {
   COMP = (spec.components || {}).schemas || {};
+  schemes(spec);
   document.title = (spec.info.title || "API") + " · docs";
   $("#title").textContent = spec.info.title || "API";
   $("#ver").textContent = spec.info.version || "";

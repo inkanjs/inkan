@@ -138,6 +138,7 @@ export class Scope<Defs extends RouteDefs = any, Deco = any> extends Routes<Defs
       ...r,
       path: this._prefix ? joinPath(this._prefix, r.path) : r.path,
       use: [...this._use, ...r.use],
+      security: r.security ?? this._security,
       box: this._box,
     });
   }
