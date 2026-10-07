@@ -1,5 +1,8 @@
 // A segment tree. Static segments win over `:params`, params win over `*rest`,
 // so `/users/me` and `/users/:id` can live side by side in any order.
+//
+// Paths without parameters are also kept in a map by their exact path, so the
+// most common request (`/health`, `/teas`) is one lookup, not a walk.
 
 type Node<R> = {
   statics: Map<string, Node<R>>;
@@ -19,8 +22,12 @@ export function splitPath(path: string): string[] {
   return path.split("/").filter(Boolean);
 }
 
+const NONE = { kind: "none" } as const;
+
 export class Router<R> {
   private root: Node<R> = node();
+  /** Routes of paths without parameters, by their normalized path; shares its maps with the tree. */
+  private exact = new Map<string, Map<string, R>>();
 
   add(method: string, path: string, route: R) {
     let n = this.root;
@@ -46,6 +53,8 @@ export class Router<R> {
       }
     }
     this.put(n.routes, method, path, route);
+    // the tree would end on this very node for this path, so the shortcut answers the same
+    if (!segments.some((s) => s.startsWith(":"))) this.exact.set("/" + segments.join("/"), n.routes);
   }
 
   private put(routes: Map<string, R>, method: string, path: string, route: R) {
@@ -54,42 +63,60 @@ export class Router<R> {
   }
 
   match(method: string, path: string): Match<R> {
-    let segments: string[];
-    try {
-      segments = splitPath(path).map(decodeURIComponent);
-    } catch {
-      return { kind: "none" };
+    const encoded = path.includes("%");
+    let routes = encoded ? undefined : this.exact.get(path);
+    const params: Record<string, string> = {};
+    if (!routes) {
+      let segments = splitPath(path);
+      if (encoded) {
+        try {
+          segments = segments.map(decodeURIComponent);
+        } catch {
+          return NONE;
+        }
+      }
+      const names: string[] = [];
+      const values: string[] = [];
+      routes = this.walk(this.root, segments, 0, names, values);
+      if (!routes) return NONE;
+      for (let i = 0; i < names.length; i++) params[names[i]] = values[i];
     }
-    const hit = this.walk(this.root, segments, 0, {});
-    if (!hit) return { kind: "none" };
-    const route = hit.routes.get(method) ?? (method === "HEAD" ? hit.routes.get("GET") : undefined);
-    if (route) return { kind: "found", route, params: hit.params };
-    const allow = [...hit.routes.keys()];
+    const route = routes.get(method) ?? (method === "HEAD" ? routes.get("GET") : undefined);
+    if (route) return { kind: "found", route, params };
+    const allow = [...routes.keys()];
     if (allow.includes("GET")) allow.push("HEAD");
     return { kind: "method", allow };
   }
 
-  private walk(
-    n: Node<R>,
-    segs: string[],
-    i: number,
-    params: Record<string, string>,
-  ): { routes: Map<string, R>; params: Record<string, string> } | undefined {
+  // Depth first; the names and values of the parameters on the winning path are left in the arrays.
+  private walk(n: Node<R>, segs: string[], i: number, names: string[], values: string[]): Map<string, R> | undefined {
     if (i === segs.length) {
-      if (n.routes.size) return { routes: n.routes, params };
-      if (n.wildcard) return { routes: n.wildcard.routes, params: { ...params, [n.wildcard.name]: "" } };
+      if (n.routes.size) return n.routes;
+      if (n.wildcard) {
+        names.push(n.wildcard.name);
+        values.push("");
+        return n.wildcard.routes;
+      }
       return undefined;
     }
     const s = n.statics.get(segs[i]);
     if (s) {
-      const hit = this.walk(s, segs, i + 1, params);
+      const hit = this.walk(s, segs, i + 1, names, values);
       if (hit) return hit;
     }
     if (n.param) {
-      const hit = this.walk(n.param.node, segs, i + 1, { ...params, [n.param.name]: segs[i] });
+      names.push(n.param.name);
+      values.push(segs[i]);
+      const hit = this.walk(n.param.node, segs, i + 1, names, values);
       if (hit) return hit;
+      names.pop();
+      values.pop();
     }
-    if (n.wildcard) return { routes: n.wildcard.routes, params: { ...params, [n.wildcard.name]: segs.slice(i).join("/") } };
+    if (n.wildcard) {
+      names.push(n.wildcard.name);
+      values.push(segs.slice(i).join("/"));
+      return n.wildcard.routes;
+    }
     return undefined;
   }
 }

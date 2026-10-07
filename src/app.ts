@@ -83,6 +83,7 @@ export class Reply<S extends number = number, Body = unknown> {
 /** Answers with a status that is not the default one, or with extra headers. */
 export const reply = <S extends number, B>(status: S, body?: B, headers?: Record<string, string>) =>
   new Reply(status, body, headers);
+const makeReply = (status: number, body: unknown, headers?: Record<string, string>) => new Reply(status, body, headers);
 
 export type Context<P = Record<string, string>, Q = RawQuery, B = unknown, H = RawHeaders, R extends Responses = {}> = {
   method: string;
@@ -411,15 +412,14 @@ export class App<Defs extends RouteDefs = any> extends Routes<Defs> {
 
   /** @internal */
   async handle(raw: RawRequest): Promise<RawResponse> {
-    const started = performance.now();
+    const timed = Boolean(this.options.log || this.options.inspector);
+    const started = timed ? performance.now() : 0;
     const url = target(raw.url);
     const own = this.builtin(raw, url);
     if (own) return own;
 
-    const headers: Record<string, string> = {};
-    for (const [k, v] of Object.entries(raw.headers)) {
-      if (v !== undefined) headers[k.toLowerCase()] = Array.isArray(v) ? v.join(", ") : v;
-    }
+    // Node already lower-cases header names; inject does the same. Nothing to copy.
+    const headers = raw.headers as Record<string, string>;
     const out = { status: 0, headers: {} as Record<string, string> };
     const notes: string[] = [];
     if (headers["x-inkan-replay"]) notes.push(`replay of #${headers["x-inkan-replay"].slice(0, 12)}`);
@@ -441,13 +441,13 @@ export class App<Defs extends RouteDefs = any> extends Routes<Defs> {
       },
       id,
       params: {},
-      query: queryObject(url.searchParams),
+      query: url.search ? queryObject(url.searchParams) : {},
       headers,
       body: undefined,
       state: {},
       status: (code) => void (out.status = code),
       header: (name, value) => void (out.headers[name.toLowerCase()] = value),
-      reply: (status, body, h) => new Reply(status, body, h),
+      reply: makeReply as Context<any, any, any, any, any>["reply"],
       req: raw.req,
       res: raw.res,
     };
@@ -470,15 +470,22 @@ export class App<Defs extends RouteDefs = any> extends Routes<Defs> {
       const r = m.route;
       route = r;
       ctx.route = { method: r.method, path: r.path };
-      await validateInput(ctx, r, m.params, raw);
-      await compose(r.use, async () => {
-        result = await r.handler(ctx);
-      })(ctx);
+      const reading = validateInput(ctx, r, m.params, raw); // a promise only when a body has to be parsed
+      if (reading) await reading;
+      if (r.use.length) {
+        await compose(r.use, async () => {
+          result = await r.handler(ctx);
+        })(ctx);
+      } else {
+        const x = r.handler(ctx);
+        result = x instanceof Promise ? await x : x; // a sync handler costs no extra turn
+      }
     };
 
     let res: RawResponse;
     try {
-      await compose(this.global, dispatch)(ctx);
+      if (this.global.length) await compose(this.global, dispatch)(ctx);
+      else await dispatch();
       res = this.respond(result, out, route, notes);
     } catch (err) {
       res = this.fail(err, ctx, url.pathname, notes, out.headers, idHeader ? id : undefined);
@@ -489,17 +496,20 @@ export class App<Defs extends RouteDefs = any> extends Routes<Defs> {
       res.stream = undefined;
     }
 
+    if (!timed) return res;
     const ms = Math.round((performance.now() - started) * 10) / 10;
-    this.logRequest({
-      time: new Date().toISOString(),
-      id: idHeader ? id : undefined,
-      method: raw.method,
-      path: url.pathname + url.search,
-      route: route?.path,
-      status: res.status,
-      ms,
-      notes,
-    });
+    if (this.options.log) {
+      this.logRequest({
+        time: new Date().toISOString(),
+        id: idHeader ? id : undefined,
+        method: raw.method,
+        path: url.pathname + url.search,
+        route: route?.path,
+        status: res.status,
+        ms,
+        notes,
+      });
+    }
     if (this.options.inspector) this.remember(raw, url, res, route, ms, notes, headers, idHeader ? id : undefined);
     return res;
   }
@@ -520,20 +530,17 @@ export class App<Defs extends RouteDefs = any> extends Routes<Defs> {
     route: RouteRecord | undefined,
     notes: string[],
   ): RawResponse {
-    const responses = route?.spec.response ?? {};
+    const plan = route ? planOf(route) : undefined;
     let status = out.status;
     let body = result;
-    let headers = { ...out.headers };
+    const headers = out.headers; // this request's own object: filled in place, never copied
     if (result instanceof Reply) {
       status = result.status;
       body = result.body;
-      headers = { ...headers, ...lower(result.headers) };
+      for (const [k, v] of Object.entries(result.headers)) headers[k.toLowerCase()] = v;
     }
-    if (!status) {
-      // No body means 204. Otherwise the first 2xx the contract lists, or 200.
-      const declared = Object.keys(responses).map(Number).filter((s) => s >= 200 && s < 300 && s !== 204).sort();
-      status = body === undefined ? 204 : (declared[0] ?? 200);
-    }
+    // No body means 204. Otherwise the first 2xx the contract lists, or 200.
+    if (!status) status = body === undefined ? 204 : (plan?.defaultStatus ?? 200);
 
     if (body instanceof EventStream) {
       const schema = route ? contractFor(route, status) : undefined;
@@ -557,7 +564,7 @@ export class App<Defs extends RouteDefs = any> extends Routes<Defs> {
     }
 
     let schema: Schema<any> | undefined;
-    if (route && Object.keys(responses).length && status !== 204) {
+    if (route && plan?.hasContract && status !== 204) {
       schema = contractFor(route, status);
       if (!schema) notes.push(`status ${status} is not in the contract`);
       else if (this.options.validateResponses) {
@@ -576,7 +583,8 @@ export class App<Defs extends RouteDefs = any> extends Routes<Defs> {
     // Only what the contract lists leaves the server, in development and in production alike.
     // The writer is built once per schema and knows the shape, so this is also the fast path.
     if (schema && typeof body === "object" && body !== null && !Buffer.isBuffer(body) && !(body instanceof Uint8Array)) {
-      return encode(status, schema._serializer()(body), { "content-type": "application/json; charset=utf-8", ...headers });
+      headers["content-type"] ??= "application/json; charset=utf-8";
+      return encode(status, schema._serializer()(body), headers);
     }
     return encode(status, body, headers);
   }
@@ -619,7 +627,7 @@ export class App<Defs extends RouteDefs = any> extends Routes<Defs> {
       });
     }
     if (inspector && (p === inspector || p.startsWith(inspector + "/"))) {
-      if (!isLoopback(raw.remote)) return; // a plain 404 for everybody else
+      if (!isLoopback(raw.remote ?? raw.req?.socket.remoteAddress)) return; // a plain 404 for everybody else
       if (p === inspector + "/log.json") {
         const since = Number(url.searchParams.get("since") ?? 0);
         return encode(200, this.log.filter((e) => e.id > since), { "cache-control": "no-store" });
@@ -670,18 +678,13 @@ export class App<Defs extends RouteDefs = any> extends Routes<Defs> {
 
   private async serve(req: IncomingMessage, res: ServerResponse) {
     const limit = this.options.bodyLimit!;
-    const chunks: Buffer[] = [];
-    let size = 0;
+    const hasBody = req.headers["content-length"] !== undefined || req.headers["transfer-encoding"] !== undefined;
     let tooLarge = Number(req.headers["content-length"] ?? 0) > limit;
-    if (!tooLarge && req.method !== "GET" && req.method !== "HEAD") {
-      for await (const chunk of req) {
-        size += chunk.length;
-        if (size > limit) {
-          tooLarge = true;
-          break;
-        }
-        chunks.push(chunk);
-      }
+    let body: Buffer | undefined;
+    if (!tooLarge && hasBody && req.method !== "GET" && req.method !== "HEAD") {
+      const read = await readRequestBody(req, limit);
+      if (read === TOO_LARGE) tooLarge = true;
+      else body = read;
     }
     let out: RawResponse;
     if (tooLarge) {
@@ -696,8 +699,7 @@ export class App<Defs extends RouteDefs = any> extends Routes<Defs> {
         method: req.method ?? "GET",
         url: req.url ?? "/",
         headers: req.headers,
-        body: chunks.length ? Buffer.concat(chunks) : undefined,
-        remote: req.socket.remoteAddress,
+        body,
         req,
         res,
       });
@@ -773,6 +775,20 @@ export class App<Defs extends RouteDefs = any> extends Routes<Defs> {
 }
 
 export const inkan = (options?: AppOptions): App<{}> => new App(options);
+
+type Plan = { hasContract: boolean; defaultStatus: number };
+const plans = new WeakMap<RouteRecord, Plan>();
+/** What a route's contract says about every answer, worked out on its first request instead of on each. */
+function planOf(route: RouteRecord): Plan {
+  let plan = plans.get(route);
+  if (!plan) {
+    const statuses = Object.keys(route.spec.response ?? {}).map(Number);
+    const ok = statuses.filter((s) => s >= 200 && s < 300 && s !== 204).sort((a, b) => a - b);
+    plan = { hasContract: statuses.length > 0, defaultStatus: ok[0] ?? 200 };
+    plans.set(route, plan);
+  }
+  return plan;
+}
 
 /**
  * The schema a status answers with. A route that takes input also promises
@@ -854,7 +870,8 @@ async function readMultipart(raw: RawRequest, contentType: string): Promise<Body
   return { kind: "multipart", value };
 }
 
-async function readBody(raw: RawRequest, contentType: string): Promise<Body> {
+/** A promise only for multipart, which the platform parses asynchronously; everything else is read at once. */
+function readBody(raw: RawRequest, contentType: string): Body | Promise<Body> {
   if (!raw.body?.length) return { kind: "none", value: undefined };
   const ct = contentType.split(";")[0].trim().toLowerCase();
   const text = () => raw.body!.toString("utf8");
@@ -871,7 +888,13 @@ async function readBody(raw: RawRequest, contentType: string): Promise<Body> {
   return { kind: "binary", value: raw.body };
 }
 
-async function validateInput(ctx: Context<any, any, any, any, any>, route: RouteRecord, params: Record<string, string>, raw: RawRequest) {
+/** Checks params, query, headers and body together. Returns a promise only when a body had to be read asynchronously. */
+function validateInput(
+  ctx: Context<any, any, any, any, any>,
+  route: RouteRecord,
+  params: Record<string, string>,
+  raw: RawRequest,
+): void | Promise<void> {
   const { spec } = route;
   const errors: { in: string; path: string; message: string }[] = [];
   const take = (where: string, schema: Schema<any> | undefined, value: unknown, coerce: boolean) => {
@@ -888,21 +911,47 @@ async function validateInput(ctx: Context<any, any, any, any, any>, route: Route
   ctx.query = take("query", spec.query, ctx.query, true);
   ctx.headers = take("headers", spec.headers, ctx.headers, true);
 
-  const body = await readBody(raw, contentType);
-  if (spec.body && (body.kind === "binary" || body.kind === "text")) {
-    throw problem(415, "unsupported-media-type", "Send the body as application/json, application/x-www-form-urlencoded or multipart/form-data");
-  }
-  // form fields arrive as text, like a query, so they are turned into what the schema asks for
-  ctx.body = take("body", spec.body, body.value, body.kind === "form" || body.kind === "multipart");
-
-  if (errors.length) {
-    const where = [...new Set(errors.map((e) => e.in))].join(" and ");
-    throw new HttpProblem(400, "validation", `The ${where} does not match the contract`, { errors });
-  }
+  const finish = (body: Body) => {
+    if (spec.body && (body.kind === "binary" || body.kind === "text")) {
+      throw problem(415, "unsupported-media-type", "Send the body as application/json, application/x-www-form-urlencoded or multipart/form-data");
+    }
+    // form fields arrive as text, like a query, so they are turned into what the schema asks for
+    ctx.body = take("body", spec.body, body.value, body.kind === "form" || body.kind === "multipart");
+    if (errors.length) {
+      const where = [...new Set(errors.map((e) => e.in))].join(" and ");
+      throw new HttpProblem(400, "validation", `The ${where} does not match the contract`, { errors });
+    }
+  };
+  const body = readBody(raw, contentType);
+  return body instanceof Promise ? body.then(finish) : finish(body);
 }
 
+const TOO_LARGE = Symbol("too large");
+
+/** Reads a request body with plain events, which is cheaper than an async iterator per chunk. */
+function readRequestBody(req: IncomingMessage, limit: number): Promise<Buffer | undefined | typeof TOO_LARGE> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    const onData = (chunk: Buffer) => {
+      size += chunk.length;
+      if (size > limit) {
+        req.off("data", onData);
+        req.pause(); // stop reading; the 413 closes the connection
+        resolve(TOO_LARGE);
+        return;
+      }
+      chunks.push(chunk);
+    };
+    req.on("data", onData);
+    req.once("end", () => resolve(chunks.length === 0 ? undefined : chunks.length === 1 ? chunks[0] : Buffer.concat(chunks, size)));
+    req.once("error", reject);
+  });
+}
+
+/** Turns a body into bytes and a content type. Fills `headers` in place: every caller owns it. */
 function encode(status: number, body: unknown, headers: Record<string, string>): RawResponse {
-  const h = { ...headers };
+  const h = headers;
   if (body === undefined || body === null || status === 204 || status === 304) {
     return { status, headers: h, body: undefined };
   }

@@ -24,6 +24,13 @@
 
 - Answers with a schema are written by that schema's own writer, built once per schema,
   instead of by `JSON.stringify`.
+- **Faster request path.** Static paths are one map lookup instead of a walk, parameters are
+  collected without a copy per level, and `decodeURIComponent` only runs on paths that need it.
+  A route without middleware calls its handler directly, a sync handler and a request without a
+  multipart body cost no extra await, request headers are no longer copied, the socket address
+  is only read for the inspector, the body is read with events, and the log entry and the timer
+  only exist when something logs. About 30 % less time in inkan per request
+  (`bench/inproc.mjs`).
 
 ## 0.3.0
 
