@@ -12,7 +12,7 @@
 //   GET  /async/:id                 a handler that waits one event-loop hop
 //   anything else                   404
 //
-//   node servers.mjs <node|express|fastify|hono|inkan|inkan-dev> <port>
+//   node servers.mjs <node|express|fastify|hono|inkan|inkan-sealed|inkan-dev> <port>
 
 import http from "node:http";
 import { isBulk, isUser, LIST, ROUTE_COUNT, user } from "./data.mjs";
@@ -218,6 +218,8 @@ if (name === "fastify") {
 
 if (name.startsWith("inkan")) {
   const { app } = await import("./inkan-app.mjs");
-  await app(name === "inkan-dev").listen(Number(port), "127.0.0.1");
+  // inkan-sealed runs on the seal `inkan seal seal-entry.mjs -o inkan.seal.js` writes
+  const seal = name === "inkan-sealed" ? (await import("./inkan.seal.js")).default : undefined;
+  await app(name === "inkan-dev", seal).listen(Number(port), "127.0.0.1");
   ready();
 }

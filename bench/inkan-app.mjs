@@ -19,8 +19,8 @@ const stamp = (name) => async (ctx, next) => {
   await next();
 };
 
-export const app = (dev = false) => {
-  const a = inkan({ dev, log: false, gracefulShutdown: false, inspector: false })
+export const app = (dev = false, seal = undefined) => {
+  const a = inkan({ dev, log: false, gracefulShutdown: false, inspector: false, seal })
     .get("/hello", { response: { 200: t.object({ hello: t.string() }) } }, () => ({ hello: "world" }))
     .get(
       "/users/:id",

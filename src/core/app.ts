@@ -10,6 +10,8 @@ import { inspectorPage } from "../pages/inspector.ts";
 import { exampleFrom } from "../testing/record.ts";
 import { runChecks, type CheckOptions, type CheckReport } from "../testing/check.ts";
 import { paint, useColor } from "./color.ts";
+import type { Seal } from "../seal/compile.ts";
+import { applySeal, type SealState } from "../seal/seal.ts";
 import { Reply, Routes, type Context, type Example, type Middleware, type RawQuery, type RouteRecord, type Responses, type RouteDefs } from "./route.ts";
 import { RequestContext, target, queryObject, type Exchange, type RawRequest, type RawResponse, type Target } from "./context.ts";
 import { readRequestBody, TOO_LARGE, validateInput } from "./input.ts";
@@ -41,6 +43,11 @@ export type AppOptions = OpenAPIInfo & {
   /** Development mode. Default: NODE_ENV is not "production". */
   dev?: boolean;
   onError?: (error: unknown, ctx: Context<any, any, any, any, any>) => void;
+  /**
+   * The contracts stamped into code by `inkan seal`: `import seal from "./inkan.seal.js"`.
+   * Each one is used only while it matches its contract; the rest run as without a seal.
+   */
+  seal?: Seal;
 };
 
 export type InjectOptions = {
@@ -145,6 +152,22 @@ export class App<Defs extends RouteDefs = any> extends Routes<Defs> {
     this.router.add(r.method, r.path, r);
     this._records.push(r);
     this.spec = undefined;
+    this.sealState = undefined; // a new route: its contracts get sealed on the next request
+  }
+
+  private sealState?: SealState;
+  /** How the seal went: how many contracts run on it, and which changed since it was made. */
+  sealed(): SealState | undefined {
+    if (!this.options.seal) return undefined;
+    if (!this.sealState) {
+      this.sealState = applySeal(this.options.seal, this._records);
+      const { stale, wrongFormat } = this.sealState;
+      if (wrongFormat) console.warn("inkan: the seal was made by another version of inkan, so it is not used. Run inkan seal again.");
+      else if (stale.length) {
+        console.warn(`inkan: ${stale.length} contract${stale.length === 1 ? "" : "s"} changed since the seal was made and run${stale.length === 1 ? "s" : ""} unsealed (${stale.slice(0, 3).join(", ")}${stale.length > 3 ? ", …" : ""}). Run inkan seal again.`);
+      }
+    }
+    return this.sealState;
   }
 
   routes(): RouteRecord[] {
@@ -204,6 +227,7 @@ export class App<Defs extends RouteDefs = any> extends Routes<Defs> {
    * microtask queue.
    */
   handle(raw: RawRequest): RawResponse | Promise<RawResponse> {
+    if (this.options.seal && !this.sealState) this.sealed();
     const timed = Boolean(this.options.log || this.options.inspector);
     const started = timed ? performance.now() : 0;
     const url = target(raw.url);

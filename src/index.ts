@@ -15,3 +15,4 @@ export { cors } from "./plugins/cors.ts";
 export type { CorsOptions } from "./plugins/cors.ts";
 export { formatReport, partialMatch } from "./testing/check.ts";
 export type { CheckOptions, CheckReport, CheckResult } from "./testing/check.ts";
+export type { Seal } from "./seal/compile.ts";

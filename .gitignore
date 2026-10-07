@@ -17,3 +17,5 @@ bench/package-lock.json
 # release pictures are rendered from the template and attached to the release, never committed
 assets/release/*
 !assets/release/release-template.html
+bench/inkan.seal.js
+bench/inkan.seal.d.ts

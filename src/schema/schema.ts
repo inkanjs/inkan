@@ -90,6 +90,8 @@ export abstract class Schema<T = unknown> {
     copy.meta = { ...this.meta, ...patch };
     copy._ser = undefined; // a copy with other rules writes its own way
     copy._exactSer = undefined;
+    copy._sealedParse = undefined; // and checks its own way: a seal belongs to one contract
+    copy._sealedBy = undefined;
     return copy;
   }
 
@@ -139,6 +141,7 @@ export abstract class Schema<T = unknown> {
   }
 
   safeParse(value: unknown, opts: { coerce?: boolean } = {}): SafeResult<T> {
+    if (this._sealedParse) return this._sealedParse(value, opts.coerce ?? false) as SafeResult<T>;
     const issues: Issue[] = [];
     const out = this._run(value, "", opts.coerce ?? false, issues);
     if (out === FAIL || issues.length) return { ok: false, issues };
@@ -152,6 +155,19 @@ export abstract class Schema<T = unknown> {
   }
 
   private _ser?: (v: unknown) => string;
+  private _sealedParse?: (v: unknown, coerce: boolean) => SafeResult<unknown>;
+  /** @internal The seal this schema runs on, if any. */
+  _sealedBy?: object;
+
+  /**
+   * @internal Hands checking and writing to code stamped from this very contract by
+   * `inkan seal`. Only called once the stamped code is known to match (see seal/apply.ts).
+   */
+  _seal(by: object, parse: (v: unknown, coerce: boolean) => SafeResult<unknown>, write: (v: unknown) => string) {
+    this._sealedBy = by;
+    this._sealedParse = parse;
+    this._ser = write;
+  }
 
   /**
    * @internal A function that writes a value as JSON with only what this schema lists,
@@ -265,7 +281,7 @@ const typeOf = (v: unknown) => (v === null ? "null" : Array.isArray(v) ? "array"
 
 // ---------- primitives ----------
 
-const FORMATS: Record<string, RegExp> = {
+export const FORMATS: Record<string, RegExp> = {
   email: /^[^\s@]+@[^\s@]+\.[^\s@]+$/,
   uuid: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
   "date-time": /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/,
