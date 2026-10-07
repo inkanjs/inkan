@@ -66,9 +66,11 @@ jobs:
         with:
           node-version: 24
           registry-url: https://npm.pkg.github.com
-          scope: "@vxnsin"
+          scope: "@inkanjs"
       - run: npm ci
       - run: npm run build
+      # GitHub Packages only takes packages named after the repository's owner
+      - run: npm pkg set name=@inkanjs/inkan
       - run: npm publish --ignore-scripts
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

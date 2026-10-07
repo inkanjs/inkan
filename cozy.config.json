@@ -1,13 +1,13 @@
 {
   "theme": "autumn",
-  "repo": "vxnsin/inkan",
+  "repo": "inkanjs/inkan",
   "cards": [
-    { "type": "repo", "link": "https://github.com/vxnsin/inkan" },
-    { "type": "button", "id": "nav-start", "label": "install →", "link": "https://github.com/vxnsin/inkan#install" },
+    { "type": "repo", "link": "https://github.com/inkanjs/inkan" },
+    { "type": "button", "id": "nav-start", "label": "install →", "link": "https://github.com/inkanjs/inkan#install" },
     { "type": "button", "id": "nav-npm", "label": "npm", "link": "https://www.npmjs.com/package/@vxnsin/inkan" },
     { "type": "button", "id": "nav-warden", "label": "warden", "link": "https://github.com/vxnsin/warden" },
-    { "type": "commits", "link": "https://github.com/vxnsin/inkan/commits" },
-    { "type": "releases", "link": "https://github.com/vxnsin/inkan/releases" },
-    { "type": "contributors", "link": "https://github.com/vxnsin/inkan/graphs/contributors" }
+    { "type": "commits", "link": "https://github.com/inkanjs/inkan/commits" },
+    { "type": "releases", "link": "https://github.com/inkanjs/inkan/releases" },
+    { "type": "contributors", "link": "https://github.com/inkanjs/inkan/graphs/contributors" }
   ]
 }
