@@ -10,8 +10,9 @@ import { inspectorPage } from "../pages/inspector.ts";
 import { exampleFrom } from "../testing/record.ts";
 import { runChecks, type CheckOptions, type CheckReport } from "../testing/check.ts";
 import { paint, useColor } from "./color.ts";
-import { Reply, Routes, type Context, type Example, type Middleware, type RawQuery, type RouteRecord, type Responses, type RouteDefs } from "./route.ts";
-import { RequestContext, target, queryObject, type Exchange, type RawRequest, type RawResponse, type Target } from "./context.ts";
+import { Reply, type Context, type Example, type Middleware, type RawQuery, type RouteRecord, type Responses, type RouteDefs } from "./route.ts";
+import { target, queryObject, type Exchange, type RawRequest, type RawResponse, type Target } from "./context.ts";
+import { NO_HOOKS, runHooks, Scope, type Hooks, type Root } from "./scope.ts";
 import { readRequestBody, TOO_LARGE, validateInput } from "./input.ts";
 
 // ---------- the app ----------
@@ -97,7 +98,7 @@ const clip = (s: string, n = CLIP) => (s.length > n ? s.slice(0, n) + `… (${s.
 const isLoopback = (addr?: string) =>
   !addr || addr === "127.0.0.1" || addr === "::1" || addr === "::ffff:127.0.0.1";
 
-export class App<Defs extends RouteDefs = any> extends Routes<Defs> {
+export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, Deco> implements Root {
   options: AppOptions;
   dev: boolean;
   private router = new Router<RouteRecord>();
@@ -107,6 +108,12 @@ export class App<Defs extends RouteDefs = any> extends Routes<Defs> {
   private spec?: Record<string, unknown>;
   private _onListen: (() => void | Promise<void>)[] = [];
   private _onClose: (() => void | Promise<void>)[] = [];
+  /** Plugins still loading, in order; undefined when everything registered so far has run. */
+  private loading?: Promise<void>;
+  /** Whether every route has its hooks joined; adding a route or a hook undoes it. */
+  private built = false;
+  /** The app's own hooks, for requests no route matched. */
+  private rootHooks: Hooks = NO_HOOKS;
 
   constructor(options: AppOptions = {}) {
     super();
@@ -140,12 +147,48 @@ export class App<Defs extends RouteDefs = any> extends Routes<Defs> {
     return this;
   }
 
-  /** @internal */
-  override add(r: RouteRecord) {
+  /** @internal Every route, from the app and from every scope inside it, ends up here. */
+  _addRoute(r: RouteRecord) {
+    r.box ??= this._box;
     this.router.add(r.method, r.path, r);
     this._records.push(r);
     this.spec = undefined;
+    this.built = false;
   }
+
+  /** @internal A hook was added somewhere: the routes' joined hooks are out of date. */
+  _changed() {
+    this.built = false;
+  }
+
+  /** @internal Runs a plugin now, or after the ones still loading, so they run in the order they were registered. */
+  _load(run: () => void | Promise<void>) {
+    if (!this.loading) {
+      const r = run(); // a plugin that throws at once throws out of register()
+      if (r instanceof Promise) this.loading = r.then(() => undefined);
+      return;
+    }
+    this.loading = this.loading.then(() => run());
+  }
+
+  /** Resolves once every plugin registered so far has loaded; rejects with the error of one that failed. */
+  async ready(): Promise<void> {
+    while (this.loading) {
+      const now = this.loading;
+      await now;
+      if (this.loading === now) this.loading = undefined; // a plugin may have registered more while it ran
+    }
+  }
+
+  /** Joins every route's hooks, from the app down to its scope, once instead of per request. */
+  private build() {
+    for (const r of this._records) r.hooks = r.box!.flatten();
+    this.rootHooks = this._box.flatten();
+    this.timeAll = this._records.some((r) => r.hooks!.onResponse.length) || this.rootHooks.onResponse.length > 0;
+    this.built = true;
+  }
+  /** Whether any route has an onResponse hook, which needs the time a request took. */
+  private timeAll = false;
 
   routes(): RouteRecord[] {
     return [...this._records];
@@ -156,12 +199,14 @@ export class App<Defs extends RouteDefs = any> extends Routes<Defs> {
   }
 
   /** Runs every route's examples against the app, without a socket. */
-  check(opts?: CheckOptions): Promise<CheckReport> {
+  async check(opts?: CheckOptions): Promise<CheckReport> {
+    await this.ready();
     return runChecks(this, opts);
   }
 
   /** Sends a request straight into the app. Good for tests: no port, no network. */
   async inject(opts: InjectOptions): Promise<InjectResponse> {
+    if (this.loading) await this.ready();
     const headers: Record<string, string> = {};
     for (const [k, v] of Object.entries(opts.headers ?? {})) headers[k.toLowerCase()] = v;
     let body: Buffer | undefined;
@@ -188,8 +233,9 @@ export class App<Defs extends RouteDefs = any> extends Routes<Defs> {
         if (sse && opts.events !== undefined && parseEvents(text).length >= opts.events) break; // stops the source too
       }
       res.abort?.abort();
+      res.done?.();
       if (type.startsWith("text/event-stream")) return { status: res.status, headers: res.headers, text, body: parseEvents(text) };
-    }
+    } else res.done?.();
     const json = /json/.test(type);
     return { status: res.status, headers: res.headers, text, body: json && text ? JSON.parse(text) : text };
   }
@@ -204,8 +250,9 @@ export class App<Defs extends RouteDefs = any> extends Routes<Defs> {
    * microtask queue.
    */
   handle(raw: RawRequest): RawResponse | Promise<RawResponse> {
+    if (!this.built) this.build();
     const timed = Boolean(this.options.log || this.options.inspector);
-    const started = timed ? performance.now() : 0;
+    const started = timed || this.timeAll ? performance.now() : 0;
     const url = target(raw.url);
     const own = this.builtin(raw, url);
     if (own) return own;
@@ -219,20 +266,24 @@ export class App<Defs extends RouteDefs = any> extends Routes<Defs> {
     const incoming = idHeader ? headers[idHeader] : undefined;
     const id = incoming && SAFE_ID.test(incoming) ? incoming : randomUUID();
     if (idHeader) out.headers[idHeader] = id;
-    const ctx = new RequestContext(raw, url, id, headers, out) as Context<any, any, any, any, any>;
-    const x: Exchange = { raw, url, ctx, out, notes, headers, started, timed, id: idHeader ? id : undefined, route: undefined };
 
-    if (this.global.length) return this.throughGlobal(x);
+    // the route decides the context: its scope's decorations live on that context's class
+    const m = this.router.match(raw.method, url.pathname);
+    const route = m.kind === "found" ? m.route : undefined;
+    const ctx = new (route ? route.box! : this._box).Ctx(raw, url, id, headers, out) as Context<any, any, any, any, any>;
+    const hooks = route ? route.hooks! : this.rootHooks;
+    const x: Exchange = { raw, url, ctx, out, notes, headers, started, timed, id: idHeader ? id : undefined, route: undefined, hooks };
+
+    if (this.global.length || hooks !== NO_HOOKS) return this.full(x, m);
     let res: RawResponse;
     try {
-      const m = this.router.match(raw.method, url.pathname);
-      if (m.kind !== "found") {
+      if (!route) {
         const p = this.unmatched(m, raw.method, url.pathname, out);
         res = p ? this.fail(p, x) : this.respond(undefined, x);
       } else {
-        const r = (x.route = m.route);
+        const r = (x.route = route);
         ctx.route = { method: r.method, path: r.path };
-        const reading = validateInput(ctx, r, m.params, raw); // a promise only when a body has to be parsed
+        const reading = validateInput(ctx, r, (m as { params: Record<string, string> }).params, raw); // a promise only when a body has to be parsed
         if (reading || r.use.length) return this.later(x, r, reading);
         const result = r.handler(ctx);
         if (result instanceof Promise) return this.settle(x, result);
@@ -290,43 +341,105 @@ export class App<Defs extends RouteDefs = any> extends Routes<Defs> {
     return this.finish(x, res);
   }
 
-  /** With app-wide middleware every request goes through the chain, so it is asynchronous. */
-  private async throughGlobal(x: Exchange): Promise<RawResponse> {
-    const { raw, url, ctx, out } = x;
-    let result: unknown;
-    const dispatch = async () => {
-      const m = this.router.match(raw.method, url.pathname);
-      if (m.kind !== "found") {
-        const p = this.unmatched(m, raw.method, url.pathname, out);
-        if (p) throw p;
-        return;
-      }
-      const r = (x.route = m.route);
+  /**
+   * The whole way, for a request with hooks or app-wide middleware on it: onRequest,
+   * middleware, the input, preHandler, the handler, onSend; onProblem for every problem.
+   */
+  private async full(x: Exchange, m: Match<RouteRecord>): Promise<RawResponse> {
+    const { raw, url, ctx, out, hooks } = x;
+    const r = m.kind === "found" ? m.route : undefined;
+    if (r) {
+      x.route = r;
       ctx.route = { method: r.method, path: r.path };
-      const reading = validateInput(ctx, r, m.params, raw);
-      if (reading) await reading;
-      if (r.use.length) {
-        await compose(r.use, async () => {
-          result = await r.handler(ctx);
-        })(ctx);
-      } else {
-        const y = r.handler(ctx);
-        result = y instanceof Promise ? await y : y;
-      }
-    };
+    }
     let res: RawResponse;
     try {
-      await compose(this.global, dispatch)(ctx);
+      let result = hooks.onRequest.length ? await runHooks(hooks.onRequest, ctx) : undefined;
+      if (result === undefined) {
+        const dispatch = async () => {
+          if (!r) {
+            const p = this.unmatched(m, raw.method, url.pathname, out);
+            if (p) throw p;
+            return;
+          }
+          const reading = validateInput(ctx, r, (m as { params: Record<string, string> }).params, raw);
+          if (reading) await reading;
+          if (hooks.preHandler.length) {
+            const early = await runHooks(hooks.preHandler, ctx);
+            if (early !== undefined) return void (result = early);
+          }
+          if (r.use.length) {
+            await compose(r.use, async () => {
+              result = await r.handler(ctx);
+            })(ctx);
+          } else {
+            const y = r.handler(ctx);
+            result = y instanceof Promise ? await y : y;
+          }
+        };
+        if (this.global.length) await compose(this.global, dispatch)(ctx);
+        else await dispatch();
+      }
       res = this.respond(result, x);
     } catch (err) {
-      res = this.fail(err, x);
+      res = hooks.onProblem.length ? await this.failWithHooks(err, x) : this.fail(err, x);
     }
+    if (hooks.onSend.length) res = await this.sending(x, res);
     return this.finish(x, res);
+  }
+
+  /** onSend: every hook sees the answer and may change it, or hand back another. */
+  private async sending(x: Exchange, res: RawResponse): Promise<RawResponse> {
+    try {
+      for (const h of x.hooks.onSend) {
+        let v = h(x.ctx, res);
+        if (v instanceof Promise) v = await v;
+        if (v && typeof v === "object" && v !== res) res = { ...res, ...v };
+      }
+      return res;
+    } catch (err) {
+      return this.fail(err, x); // a hook that breaks is a problem like any other, and goes out as it is
+    }
+  }
+
+  /** onProblem: every hook sees the problem and may change it, or return another, before it becomes the answer. */
+  private async failWithHooks(err: unknown, x: Exchange): Promise<RawResponse> {
+    let p = this.problemOf(err, x);
+    for (const h of x.hooks.onProblem) {
+      let v = h(x.ctx, p);
+      if (v instanceof Promise) v = await v;
+      if (v instanceof HttpProblem) p = v;
+    }
+    return this.answer(p, x);
+  }
+
+  /** onResponse, once the answer is written. Nothing can change the answer now, so a hook that breaks is only logged. */
+  private responded(x: Exchange, res: RawResponse) {
+    const done: RequestLog = {
+      time: new Date().toISOString(),
+      id: x.id,
+      method: x.raw.method,
+      path: x.url.pathname + x.url.search,
+      route: x.route?.path,
+      status: res.status,
+      ms: Math.round((performance.now() - x.started) * 10) / 10,
+      notes: x.notes,
+    };
+    const report = (err: unknown) => (this.options.onError ? this.options.onError(err, x.ctx) : console.error(err));
+    for (const h of x.hooks.onResponse) {
+      try {
+        const v = h(x.ctx, done);
+        if (v instanceof Promise) v.catch(report);
+      } catch (err) {
+        report(err);
+      }
+    }
   }
 
   /** HEAD, the log line and the inspector: what every answer goes through last. */
   private finish(x: Exchange, res: RawResponse): RawResponse {
     const { raw, url, route, notes } = x;
+    if (x.hooks.onResponse.length) res.done = () => this.responded(x, res);
     if (raw.method === "HEAD") {
       // a HEAD answers with the length the GET would have, and without the body
       if (res.body !== undefined) res.headers["content-length"] = String(Buffer.byteLength(res.body));
@@ -425,14 +538,20 @@ export class App<Defs extends RouteDefs = any> extends Routes<Defs> {
   }
 
   private fail(err: unknown, x: Exchange): RawResponse {
-    let p: HttpProblem;
-    if (err instanceof HttpProblem) p = err;
-    else {
-      if (this.options.onError) this.options.onError(err, x.ctx);
-      else console.error(err);
-      const detail = this.dev && err instanceof Error ? err.message : "Something went wrong on our side";
-      p = problem(500, "internal", detail);
-    }
+    return this.answer(this.problemOf(err, x), x);
+  }
+
+  /** A problem as it is, or a 500 for anything else thrown, which gets logged: it is a bug, not an answer. */
+  private problemOf(err: unknown, x: Exchange): HttpProblem {
+    if (err instanceof HttpProblem) return err;
+    if (this.options.onError) this.options.onError(err, x.ctx);
+    else console.error(err);
+    const detail = this.dev && err instanceof Error ? err.message : "Something went wrong on our side";
+    return problem(500, "internal", detail);
+  }
+
+  /** A problem written as an RFC 9457 document. */
+  private answer(p: HttpProblem, x: Exchange): RawResponse {
     if (p.type === "validation") x.notes.push("input broke the contract");
     const body = p.toJSON();
     body.instance = x.url.pathname;
@@ -562,7 +681,8 @@ export class App<Defs extends RouteDefs = any> extends Routes<Defs> {
         out.headers["content-length"] ??= String(out.body === undefined ? 0 : Buffer.byteLength(out.body));
       }
       res.writeHead(out.status, out.headers);
-      return void res.end(out.body);
+      res.end(out.body);
+      return void out.done?.();
     }
     res.writeHead(out.status, out.headers);
     void this.pipe(res, out);
@@ -586,6 +706,7 @@ export class App<Defs extends RouteDefs = any> extends Routes<Defs> {
     } finally {
       res.off("close", stop);
       res.end();
+      out.done?.();
     }
   }
 
@@ -594,6 +715,11 @@ export class App<Defs extends RouteDefs = any> extends Routes<Defs> {
    * so it runs under warden, a PaaS or a container without changes.
    */
   listen(port?: number, host?: string): Promise<Server> {
+    // every plugin first: a route a plugin adds must be there for the first request, and one that fails stops the start
+    return this.ready().then(() => this.open(port, host));
+  }
+
+  private open(port?: number, host?: string): Promise<Server> {
     const server = createServer(this.listener);
     if (process.env.INKAN_NO_LISTEN) return Promise.resolve(server); // the CLI loads the app only to read it
     const p = port ?? (process.env.PORT ? Number(process.env.PORT) : 3000);
@@ -635,7 +761,7 @@ export class App<Defs extends RouteDefs = any> extends Routes<Defs> {
   }
 }
 
-export const inkan = (options?: AppOptions): App<{}> => new App(options);
+export const inkan = (options?: AppOptions): App<{}, {}> => new App(options);
 
 type Plan = { hasContract: boolean; defaultStatus: number };
 const plans = new WeakMap<RouteRecord, Plan>();

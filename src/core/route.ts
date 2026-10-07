@@ -5,6 +5,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Infer, Schema } from "../schema/schema.ts";
 import type { EventStream } from "./stream.ts";
 import type { App } from "./app.ts";
+import type { Box, Hooks, Scope } from "./scope.ts";
 
 export type Responses = { [status: number]: Schema<any> };
 
@@ -90,7 +91,7 @@ export type Context<P = Record<string, string>, Q = RawQuery, B = unknown, H = R
   body: B;
   /** Free space for middleware to hand things to the handler. */
   state: Record<string, unknown>;
-  /** The route that matched, as it was written. Undefined before routing. */
+  /** The route that matched, as it was written. Undefined when no route matched. */
   route?: { method: string; path: string };
   /** Sets the status used when the handler returns a plain value. */
   status(code: number): void;
@@ -102,7 +103,8 @@ export type Context<P = Record<string, string>, Q = RawQuery, B = unknown, H = R
 };
 
 export type Result<R extends Responses> = SuccessBody<R> | Reply | EventStream | AsyncIterable<Uint8Array | string> | void;
-export type Handler<P, Q, B, H, R extends Responses> = (ctx: Context<P, Q, B, H, R>) => Result<R> | Promise<Result<R>>;
+/** A route's handler. `Deco` is what `decorate` put on the context of the app or plugin it belongs to. */
+export type Handler<P, Q, B, H, R extends Responses, Deco = {}> = (ctx: Context<P, Q, B, H, R> & Deco) => Result<R> | Promise<Result<R>>;
 export type Middleware = (ctx: Context<any, any, any, any, any>, next: () => Promise<void>) => unknown;
 
 export type RouteRecord = {
@@ -111,6 +113,10 @@ export type RouteRecord = {
   spec: RouteSpec<any, any, any, any, Responses>;
   handler: Handler<any, any, any, any, any>;
   use: Middleware[];
+  /** @internal The scope it was defined in: its hooks and its decorations. */
+  box?: Box;
+  /** @internal Every hook from the app down to this route, joined once before the first request. */
+  hooks?: Hooks;
 };
 
 /** What the type of an app remembers about one route, for the typed client. */
@@ -120,7 +126,19 @@ export type RouteDefs = { [route: string]: RouteDef };
 
 // A table with more routes: the same kind of table, remembering them.
 export type WithRoutes<Self, More extends RouteDefs> =
-  Self extends App<infer D> ? App<D & More> : Self extends Routes<infer D> ? Routes<D & More> : Self;
+  Self extends App<infer D, infer X>
+    ? App<D & More, X>
+    : Self extends Scope<infer D, infer X>
+      ? Scope<D & More, X>
+      : Self extends Routes<infer D, infer X>
+        ? Routes<D & More, X>
+        : Self;
+
+/** What `decorate` has put on the context so far. */
+export type DecoOf<Self> = Self extends { readonly _deco: infer X } ? X : {};
+/** The same app or scope, with one more decoration on its context. */
+export type WithDeco<Self, More> =
+  Self extends App<infer D, infer X> ? App<D, X & More> : Self extends Scope<infer D, infer X> ? Scope<D, X & More> : Self;
 
 export type TrimEnd<S extends string> = S extends `${infer A}/` ? TrimEnd<A> : S;
 /** `/teas` + `/:id` is `/teas/:id`, `/teas` + `/` is `/teas`, `/` + `/me` is `/me`. */
@@ -144,11 +162,11 @@ export type RouteMethod<Self, M extends string> = {
   >(
     path: Path,
     spec: RouteSpec<P, Q, B, H, R>,
-    handler: Handler<P, Q, B, H, R>,
+    handler: Handler<P, Q, B, H, R, DecoOf<Self>>,
   ): WithRoutes<Self, { [K in `${M} ${Path}`]: { params: P; query: Q; body: B; headers: H; response: R } }>;
   <Path extends string>(
     path: Path,
-    handler: Handler<PathParams<Path>, RawQuery, unknown, RawHeaders, {}>,
+    handler: Handler<PathParams<Path>, RawQuery, unknown, RawHeaders, {}, DecoOf<Self>>,
   ): WithRoutes<Self, { [K in `${M} ${Path}`]: { params: PathParams<Path>; query: RawQuery; body: unknown; headers: RawHeaders; response: {} } }>;
 };
 
@@ -160,9 +178,11 @@ export const joinPath = (a: string, b: string) => "/" + [a, b].join("/").split("
  * A set of routes that can be mounted under a prefix. Its type remembers every route
  * defined on it in a chain, which is what the typed client reads.
  */
-export class Routes<Defs extends RouteDefs = any> {
+export class Routes<Defs extends RouteDefs = any, Deco = {}> {
   /** Only a type: the routes this table knows. There is nothing here at runtime. */
   declare readonly _defs: Defs;
+  /** Only a type: what `decorate` put on the context its handlers get. */
+  declare readonly _deco: Deco;
   /** @internal */
   _records: RouteRecord[] = [];
   /** @internal */

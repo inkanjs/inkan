@@ -6,6 +6,30 @@
 
 - inkan is under the [MIT license](LICENSE), and that covers 0.3.0 as well.
 
+### New
+
+- **Hooks.** `onRequest` (a route was found, the body is not read yet), `preHandler` (the
+  input is checked and typed), `onSend` (every answer, problems too, and it may change it),
+  `onResponse` (after the answer is written) and `onProblem` (every problem, before it is
+  written, and it may change it or hand back another). `onRequest` and `preHandler` may
+  answer by returning a value. Every route gets the hooks of its scope chain joined once,
+  before the first request; a route with none takes the same path as before.
+  ([#23](https://github.com/inkanjs/inkan/issues/23))
+- **Plugins.** `app.register(plugin, { prefix, ...options })` runs a plugin with a scope of its
+  own: its routes, hooks and decorations stay there, under its prefix. `plugin(fn, { shared:
+  true })` makes one that adds to the scope it is registered in instead. Plugins load in
+  order, an async one holds back the ones after it, `await app.ready()` waits for all of them,
+  and one that fails stops `listen()`. `inject`, `check` and the CLI wait too. Their routes
+  are in OpenAPI, on the docs page and in `inkan check` like any other.
+  ([#23](https://github.com/inkanjs/inkan/issues/23))
+- **Decorators.** `app.decorate("db", pool)` puts a value on every context in its scope,
+  typed: the handler's `ctx.db` has the type of `pool`. It lives on the context's prototype,
+  so it costs nothing per request. A name the context already has, by itself or from another
+  decoration, is refused. ([#23](https://github.com/inkanjs/inkan/issues/23))
+- **`rateLimit({ max, window, key })`**, a plugin built on nothing but these APIs: a 429
+  problem with `retry-after` after `max` requests per client, and `x-ratelimit-remaining` on
+  every answer. Registered in a plugin, it limits only that plugin's routes.
+
 ### Fixed
 
 - **Keys the contract does not list no longer leave the server in production.** The README

@@ -3,6 +3,7 @@
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { Reply, type Context, type RouteRecord } from "./route.ts";
+import type { Hooks } from "./scope.ts";
 import type { RawQuery } from "./route.ts";
 
 export type RawRequest = {
@@ -23,6 +24,8 @@ export type RawResponse = {
   stream?: AsyncIterable<Uint8Array | string>;
   /** Tells the stream's source that nobody is reading any more. */
   abort?: AbortController;
+  /** Called once the answer is written, for onResponse hooks. */
+  done?: () => void;
 };
 
 /** One request on its way through the app: what every step after routing needs. */
@@ -38,6 +41,8 @@ export type Exchange = {
   /** The request id, when the app sends one. */
   id: string | undefined;
   route: RouteRecord | undefined;
+  /** The hooks of the route's scope chain, or of the app when no route matched. */
+  hooks: Hooks;
 };
 
 /** A request target split into its path and its query. A class, so every one has the same shape. */

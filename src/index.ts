@@ -1,4 +1,6 @@
 export { inkan, App } from "./core/app.ts";
+export { plugin, Scope } from "./core/scope.ts";
+export type { Outgoing, Plugin, ProblemHook, RequestHook, ResponseHook, SendHook } from "./core/scope.ts";
 export type { AppOptions, InjectOptions, InjectResponse, LogEntry, RequestLog } from "./core/app.ts";
 export { Routes, routes, reply, Reply } from "./core/route.ts";
 export type { Context, Example, Handler, Middleware, PathParams, Responses, RouteRecord, RouteSpec } from "./core/route.ts";
@@ -13,5 +15,7 @@ export { diffOpenAPI, formatDiff } from "./openapi/diff.ts";
 export type { Change } from "./openapi/diff.ts";
 export { cors } from "./plugins/cors.ts";
 export type { CorsOptions } from "./plugins/cors.ts";
+export { rateLimit } from "./plugins/rate-limit.ts";
+export type { RateLimitOptions } from "./plugins/rate-limit.ts";
 export { formatReport, partialMatch } from "./testing/check.ts";
 export type { CheckOptions, CheckReport, CheckResult } from "./testing/check.ts";

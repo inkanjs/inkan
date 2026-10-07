@@ -377,6 +377,54 @@ Preflights are answered before routing, and error answers carry the headers
 too, so the page can read a 404 instead of a CORS error. `allowHeaders`,
 `exposeHeaders` and `methods` are there when the defaults are not enough.
 
+## Hooks, plugins and decorators
+
+Hooks run at fixed points of every request, in this order:
+
+```ts
+app
+  .onRequest((ctx) => { /* a route was found; the body is not read yet: auth, rate limits */ })
+  .preHandler((ctx) => { /* the input is checked and typed: rules that need it */ })
+  .onSend((ctx, answer) => { answer.headers["x-took"] = "…"; })   // every answer, problems too
+  .onResponse((ctx, done) => metrics.observe(done.route, done.ms)) // after it is written
+  .onProblem((ctx, problem) => { problem.extra.help = docsFor(problem.type); });
+```
+
+`onRequest` and `preHandler` may return a value, and that is the answer, as if
+a handler had returned it. A thrown `problem()` stops the request wherever it is
+thrown, and `onProblem` sees it before it is written.
+
+A plugin is a function that gets a scope of its own. What it adds there (routes,
+hooks, decorations) stays there, under its prefix, unless it says `shared: true`:
+
+```ts
+import { plugin, problem, rateLimit } from "@vxnsin/inkan";
+
+const admin = plugin(async (app, opts: { token: string }) => {
+  app.register(rateLimit({ max: 10 }));      // only these routes
+  app.onRequest((ctx) => { if (ctx.headers.authorization !== opts.token) throw problem(401, "unauthorized"); });
+  app.get("/stats", () => stats());
+});
+
+app.register(admin, { prefix: "/admin", token: process.env.ADMIN_TOKEN! });
+await app.ready();                           // or just listen(): it waits for every plugin
+```
+
+Plugins load in the order they are registered, an async one holds back the
+ones after it, and one that fails stops `listen()`. Their routes are routes
+like any other: in OpenAPI, on the docs page and in `inkan check`.
+
+`decorate` puts a value on every context in its scope, typed:
+
+```ts
+const app = inkan().decorate("db", pool);
+app.get("/teas/:id", { params: t.object({ id: t.int() }) }, (ctx) => ctx.db.find(ctx.params.id));
+```
+
+A name the context already has is refused, so a decoration cannot hide `params`
+or another decoration. A route with no hooks anywhere above it takes the same
+path it took before there were hooks: they cost nothing until you use them.
+
 ## Running it
 
 `app.listen()` takes the port from its argument, then `$PORT`, then 3000. So it

@@ -48,6 +48,7 @@ async function load(entry: string | undefined) {
   }
   const app = (mod.default ?? mod.app) as App | undefined;
   if (!app || typeof app.check !== "function") fail(`${entry} has to export the app, as \`export default app\` or \`export const app\`.`);
+  await app.ready(); // plugins add routes too
   return { app, beforeEach: mod.beforeEach as (() => unknown) | undefined };
 }
 
