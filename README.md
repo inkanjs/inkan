@@ -344,6 +344,8 @@ turning inspector traffic into examples, more schema power. What changed lives i
 [good first issue](https://github.com/vxnsin/inkan/labels/good%20first%20issue) are a good place to start.
 License
 
+## License
+
 This software is licensed under the [Non-Sale & No Misrepresentation License](LICENSE).
 
 You are free to use, modify, and distribute the software, including for commercial purposes. However, the software itself may not be sold or licensed for payment, and the original authorship may not be falsely claimed.
