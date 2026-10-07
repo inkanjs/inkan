@@ -14,7 +14,7 @@
     "express",
     "fastapi"
   ],
-  "license": "SEE LICENSE IN LICENSE",
+  "license": "MIT",
   "author": "Vensin (https://github.com/vxnsin)",
   "homepage": "https://github.com/vxnsin/inkan#readme",
   "repository": {
