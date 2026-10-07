@@ -327,6 +327,7 @@ line in the logs.
 npx inkan check   src/app.ts [--only <text>] [--json] [--strict]
 npx inkan openapi src/app.ts [-o openapi.json]
 npx inkan routes  src/app.ts
+npx inkan examples [name] [folder] [--list] [--force]
 ```
 
 Exit codes: `0` everything sealed, `1` something broke, `2` the command was
@@ -334,6 +335,26 @@ used wrong. Colours turn off when the output is not a terminal or `NO_COLOR`
 is set; `FORCE_COLOR` turns them on.
 
 ## Try the example
+
+```sh
+npx @vxnsin/inkan examples         # pick one, and it lands in a folder of its own
+```
+
+Six example projects, in reading order, each explained file by file:
+
+| | |
+| --- | --- |
+| `hello` | one route, one example, `inkan check`. Five minutes. |
+| `tea-shop` | CRUD with named schemas, `problem()`, groups and `beforeEach` |
+| `auth` | middleware, `ctx.state`, route-level `use`, a 401 and a 403 in the contract |
+| `testing` | `app.check()` and `app.inject()` in `node:test`, plus a CI workflow |
+| `openapi` | export the document, generate a client, keep both in sync |
+| `deploy` | Dockerfile, `$PORT`, JSON logs, graceful shutdown, warden |
+
+Every one has a README that says what to read in which order, something to change first,
+and a list of ways to break it on purpose to see what inkan catches.
+
+Or the one in this repo:
 
 ```sh
 git clone https://github.com/vxnsin/inkan && cd inkan && npm install
@@ -344,12 +365,11 @@ node src/cli.ts check examples/shop.ts
 ## Not yet
 
 What comes next lives in the [issues](https://github.com/vxnsin/inkan/issues) and the
-[milestones](https://github.com/vxnsin/inkan/milestones): `inkan examples` to pull
-explained example projects into your folder, editable requests on the docs page,
-turning inspector traffic into examples, more schema power. What changed lives in the
+[milestones](https://github.com/vxnsin/inkan/milestones): a typed client that reads the
+routes with no codegen, streaming answers and uploads, examples that build on each other,
+a check for breaking changes against the last release. What changed lives in the
 [changelog](CHANGELOG.md). Issues marked
 [good first issue](https://github.com/vxnsin/inkan/labels/good%20first%20issue) are a good place to start.
-License
 
 ## License
 

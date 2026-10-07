@@ -12,7 +12,8 @@
     "allowImportingTsExtensions": true,
     "rewriteRelativeImportExtensions": true,
     "skipLibCheck": true,
-    "noEmit": true
+    "noEmit": true,
+    "paths": { "@vxnsin/inkan": ["./src/index.ts"] }
   },
-  "include": ["src", "test", "examples"]
+  "include": ["src", "test", "examples", "templates"]
 }

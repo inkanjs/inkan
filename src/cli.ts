@@ -4,11 +4,15 @@
 // and reads it, without opening a port.
 
 import { readFileSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { relative, resolve } from "node:path";
+import { createInterface } from "node:readline/promises";
 import { pathToFileURL } from "node:url";
 import type { App } from "./app.ts";
 import { formatReport } from "./check.ts";
 import { paint, useColor } from "./color.ts";
+import { copyExample, EXAMPLES, ExampleError } from "./examples.ts";
+
+const version = (): string => JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 
 const args = process.argv.slice(2);
 const command = args.shift();
@@ -57,6 +61,8 @@ const HELP = `
                 ${c.dim("--strict fails on promised statuses no example covers")}
   ${c.bold("inkan openapi")} ${c.dim("<entry> [-o <file>]")}   ${c.dim("write the OpenAPI 3.1 document")}
   ${c.bold("inkan routes")}  ${c.dim("<entry>")}               ${c.dim("list the routes")}
+  ${c.bold("inkan examples")} ${c.dim("[name] [folder] [--list] [--force]")}
+                ${c.dim("copy an explained example project into a folder")}
 
   ${c.dim("<entry>")} is the file that builds the app and exports it,
   as ${c.link("`export default app`")} or ${c.link("`export const app`")}.
@@ -94,10 +100,46 @@ switch (command) {
     }
     process.exit(0);
   }
+  case "examples": {
+    const force = has("--force");
+    const list = has("--list");
+    let name = args[0];
+    const printList = () => {
+      console.log(`\n  ${c.seal("印")} ${c.bold("inkan examples")}  ${c.dim("explained example projects, in reading order")}\n`);
+      EXAMPLES.forEach((e, i) => console.log(`  ${c.dim(String(i + 1) + ".")} ${c.bold(e.name.padEnd(10))} ${e.blurb}`));
+      console.log("");
+    };
+    if (list || (!name && !process.stdin.isTTY)) {
+      printList();
+      console.log(`  ${c.dim("pick one:")} inkan examples ${c.link("<name>")} ${c.dim("[folder]")}\n`);
+      process.exit(0);
+    }
+    if (!name) {
+      printList();
+      const rl = createInterface({ input: process.stdin, output: process.stdout });
+      const answer = (await rl.question(`  which one? ${c.dim(`(1-${EXAMPLES.length} or a name)`)} `)).trim();
+      rl.close();
+      name = EXAMPLES[Number(answer) - 1]?.name ?? answer;
+    }
+    const target = args[1] ?? name;
+    try {
+      const files = copyExample(name, target, { force, version: version() });
+      const dir = relative(process.cwd(), resolve(target)) || ".";
+      console.log(`\n  ${c.seal("印")} ${c.bold(name)} ${c.dim("→")} ${dir}  ${c.dim(`(${files.length} files)`)}\n`);
+      if (dir !== ".") console.log(`  cd ${dir}`);
+      console.log(`  npm install`);
+      console.log(`  npm run dev     ${c.dim("then open")} ${c.link("http://localhost:3000/docs")}`);
+      console.log(`  npm run check   ${c.dim("every example, run as a test")}\n`);
+      console.log(`  ${c.dim("Start with README.md: it says what to read, in which order.")}\n`);
+      process.exit(0);
+    } catch (err) {
+      if (err instanceof ExampleError) fail(err.message);
+      throw err;
+    }
+  }
   case "-v":
   case "--version": {
-    const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
-    console.log(pkg.version);
+    console.log(version());
     process.exit(0);
   }
   default:

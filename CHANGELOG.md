@@ -34,6 +34,15 @@
   its params, query, body and status, plus any custom headers, but never secret headers or
   the ones every client sends. Paste it into the route and `inkan check` holds it from then on.
   ([#7](https://github.com/vxnsin/inkan/issues/7))
+- **`inkan examples`.** Pulls a complete example project into a folder, explained file by file:
+  a README per example that says what to read in which order, numbered comments in the code,
+  something to change first, and a "try this: break it on purpose" list that shows what inkan
+  catches. Six of them, in reading order: `hello`, `tea-shop`, `auth`, `testing`, `openapi`,
+  `deploy`. `npx @vxnsin/inkan examples` asks which one, `--list` lists them,
+  `inkan examples tea-shop my-shop` goes straight there. A folder that is not empty needs
+  `--force`. The templates ship inside the package, so it works offline and fits the installed
+  version, and every one of them passes `inkan check --strict` in CI.
+  ([#1](https://github.com/vxnsin/inkan/issues/1))
 
 ### Changed
 

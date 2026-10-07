@@ -1,0 +1,20 @@
+{
+  "name": "{{name}}",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch src/server.ts",
+    "start": "node src/server.ts",
+    "check": "inkan check src/app.ts --strict",
+    "test": "node --test \"test/**/*.test.ts\""
+  },
+  "dependencies": {
+    "@vxnsin/inkan": "^{{version}}"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0"
+  },
+  "engines": {
+    "node": ">=22.18"
+  }
+}

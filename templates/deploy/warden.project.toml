@@ -1,0 +1,7 @@
+# warden (https://github.com/vxnsin/warden) hands out local ports by name.
+# `warden apply` reads this file; `warden run -- npm start` sets PORT for the app.
+[project]
+name = "{{name}}"
+
+[services.api]
+kind = "backend"
