@@ -11,15 +11,15 @@
 <!-- cozy:cards -->
 <div align="center">
 
-<a href="https://github.com/vxnsin/inkan"><picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/vxnsin/inkan/output/repo-dark.svg?v=fb6de0058e"><img src="https://raw.githubusercontent.com/vxnsin/inkan/output/repo-light.svg?v=fb6de0058e" width="840" alt="vxnsin/inkan: An API server for Node where the docs can't lie: one contract per route gives you validation, types, OpenAPI, docs and tests."></picture></a>
+<a href="https://github.com/vxnsin/inkan"><picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/vxnsin/inkan/output/repo-dark.svg?v=5dccbca106"><img src="https://raw.githubusercontent.com/vxnsin/inkan/output/repo-light.svg?v=5dccbca106" width="840" alt="vxnsin/inkan: An API server for Node where the docs can't lie: one contract per route gives you validation, types, OpenAPI, docs and tests."></picture></a>
 
 <a href="https://github.com/vxnsin/inkan#install"><picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/vxnsin/inkan/output/nav-start-dark.svg?v=c2e08cb92e"><img src="https://raw.githubusercontent.com/vxnsin/inkan/output/nav-start-light.svg?v=c2e08cb92e" width="95" alt="install →"></picture></a><a href="https://www.npmjs.com/package/@vxnsin/inkan"><picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/vxnsin/inkan/output/nav-npm-dark.svg?v=513902168b"><img src="https://raw.githubusercontent.com/vxnsin/inkan/output/nav-npm-light.svg?v=513902168b" width="50" alt="npm"></picture></a><a href="https://github.com/vxnsin/warden"><picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/vxnsin/inkan/output/nav-warden-dark.svg?v=0e950205da"><img src="https://raw.githubusercontent.com/vxnsin/inkan/output/nav-warden-light.svg?v=0e950205da" width="69" alt="warden"></picture></a>
 
-<a href="https://github.com/vxnsin/inkan/commits"><picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/vxnsin/inkan/output/commits-dark.svg?v=152275b210"><img src="https://raw.githubusercontent.com/vxnsin/inkan/output/commits-light.svg?v=152275b210" width="840" alt="latest commits of vxnsin/inkan"></picture></a>
+<a href="https://github.com/vxnsin/inkan/commits"><picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/vxnsin/inkan/output/commits-dark.svg?v=e0556b22dc"><img src="https://raw.githubusercontent.com/vxnsin/inkan/output/commits-light.svg?v=e0556b22dc" width="840" alt="latest commits of vxnsin/inkan"></picture></a>
 
 <a href="https://github.com/vxnsin/inkan/releases"><picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/vxnsin/inkan/output/releases-dark.svg?v=0a085a20df"><img src="https://raw.githubusercontent.com/vxnsin/inkan/output/releases-light.svg?v=0a085a20df" width="840" alt="releases: v0.2.0"></picture></a>
 
-<a href="https://github.com/vxnsin/inkan/graphs/contributors"><picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/vxnsin/inkan/output/contributors-dark.svg?v=e1b47f63f5"><img src="https://raw.githubusercontent.com/vxnsin/inkan/output/contributors-light.svg?v=e1b47f63f5" width="840" alt="contributors: vxnsin, AndrewCMD, RinZ27"></picture></a>
+<a href="https://github.com/vxnsin/inkan/graphs/contributors"><picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/vxnsin/inkan/output/contributors-dark.svg?v=4b9144ebd9"><img src="https://raw.githubusercontent.com/vxnsin/inkan/output/contributors-light.svg?v=4b9144ebd9" width="840" alt="contributors: vxnsin, AndrewCMD, RinZ27"></picture></a>
 
 </div>
 <!-- /cozy:cards -->
@@ -349,7 +349,10 @@ explained example projects into your folder, editable requests on the docs page,
 turning inspector traffic into examples, more schema power. What changed lives in the
 [changelog](CHANGELOG.md). Issues marked
 [good first issue](https://github.com/vxnsin/inkan/labels/good%20first%20issue) are a good place to start.
+License
 
 ## License
 
-[MIT](LICENSE)
+This software is licensed under the [Non-Sale & No Misrepresentation License](LICENSE).
+
+You are free to use, modify, and distribute the software, including for commercial purposes. However, the software itself may not be sold or licensed for payment, and the original authorship may not be falsely claimed.
