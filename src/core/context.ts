@@ -78,7 +78,7 @@ export class RequestContext {
     this.method = raw.method;
     this.path = target.pathname;
     this.id = id;
-    this.query = target.search ? queryObject(target.searchParams) : {};
+    this.query = target.search ? parseQuery(target.search) : {};
     this.headers = headers;
     this.req = raw.req;
     this.res = raw.res;
@@ -114,9 +114,33 @@ export function target(raw: string): Target {
 
 export function queryObject(sp: URLSearchParams): RawQuery {
   const o: RawQuery = {};
-  for (const [k, v] of sp) {
-    const prev = o[k];
-    o[k] = prev === undefined ? v : Array.isArray(prev) ? [...prev, v] : [prev, v];
+  for (const [k, v] of sp) addQuery(o, k, v);
+  return o;
+}
+
+/**
+ * A query string (with its `?`) as an object. A query with nothing to decode, the usual
+ * `?page=2&sort=name`, is cut apart in place; one with `%` or `+` goes through
+ * URLSearchParams, so decoding stays exactly the platform's.
+ */
+export function parseQuery(search: string): RawQuery {
+  if (search.includes("%") || search.includes("+")) return queryObject(new URLSearchParams(search));
+  const o: RawQuery = {};
+  let i = search.charCodeAt(0) === 63 ? 1 : 0; // "?"
+  while (i <= search.length) {
+    let end = search.indexOf("&", i);
+    if (end < 0) end = search.length;
+    if (end > i) {
+      const eq = search.indexOf("=", i);
+      if (eq < 0 || eq > end) addQuery(o, search.slice(i, end), "");
+      else addQuery(o, search.slice(i, eq), search.slice(eq + 1, end));
+    }
+    i = end + 1;
   }
   return o;
+}
+
+function addQuery(o: RawQuery, k: string, v: string) {
+  const prev = o[k];
+  o[k] = prev === undefined ? v : Array.isArray(prev) ? [...prev, v] : [prev, v];
 }
