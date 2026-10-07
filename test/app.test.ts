@@ -76,8 +76,8 @@ test("problem() and thrown errors", async () => {
     .get("/boom", () => {
       throw new Error("database on fire");
     });
-  const tea = await app.inject({ url: "/teapot" });
-  assert.deepEqual(tea.body, { type: "teapot", title: "I'm a Teapot", status: 418, detail: "I am a teapot", brewing: "sencha", instance: "/teapot" });
+  const tea = await app.inject({ url: "/teapot", headers: { "x-request-id": "t-1" } });
+  assert.deepEqual(tea.body, { type: "teapot", title: "I'm a Teapot", status: 418, detail: "I am a teapot", brewing: "sencha", instance: "/teapot", requestId: "t-1" });
   const boom = await app.inject({ url: "/boom" });
   assert.equal(boom.status, 500);
   assert.equal(boom.body.detail, "database on fire", "dev mode shows the message");

@@ -7,6 +7,7 @@ export type {
   InjectOptions,
   InjectResponse,
   LogEntry,
+  RequestLog,
   Middleware,
   PathParams,
   Responses,

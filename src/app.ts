@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { HttpProblem, problem, type ProblemBody } from "./problem.ts";
 import { Router } from "./router.ts";
@@ -78,6 +79,8 @@ export type Context<P = Record<string, string>, Q = RawQuery, B = unknown, H = R
   method: string;
   path: string;
   url: URL;
+  /** The request id: taken from the request id header when it looks safe, otherwise a fresh UUID. */
+  id: string;
   params: P;
   query: Q;
   headers: H;
@@ -179,8 +182,15 @@ export type AppOptions = OpenAPIInfo & {
   validateResponses?: boolean;
   /** Largest accepted request body in bytes. Default 1 MiB. */
   bodyLimit?: number;
-  /** One line per request on the console. Default: on in development. */
-  log?: boolean;
+  /**
+   * One line per request: "pretty" for people, "json" for log collectors, false for none.
+   * Default: "pretty" in development, "json" in production.
+   */
+  log?: boolean | "pretty" | "json";
+  /** Takes every request log entry instead of the console, e.g. to hand it to pino or winston. */
+  logger?: (entry: RequestLog) => void;
+  /** The header that carries the request id, in and out, or false. Default `x-request-id`. */
+  requestId?: string | false;
   /** Close in-flight requests cleanly on SIGINT and SIGTERM. Default true. */
   gracefulShutdown?: boolean;
   /** Development mode. Default: NODE_ENV is not "production". */
@@ -216,7 +226,20 @@ type RawRequest = {
 
 type RawResponse = { status: number; headers: Record<string, string>; body?: string | Buffer };
 
+/** What gets logged for every request. */
+export type RequestLog = {
+  time: string;
+  id?: string;
+  method: string;
+  path: string;
+  route?: string;
+  status: number;
+  ms: number;
+  notes: string[];
+};
+
 export type LogEntry = {
+  requestId?: string;
   id: number;
   at: string;
   method: string;
@@ -229,6 +252,7 @@ export type LogEntry = {
   response: { body?: string };
 };
 
+const SAFE_ID = /^[\w.:@-]{1,128}$/; // anything else could smuggle into logs, so it gets a fresh id
 const REDACT = new Set(["authorization", "cookie", "set-cookie", "proxy-authorization", "x-api-key"]);
 const clip = (s: string, n = 4096) => (s.length > n ? s.slice(0, n) + `… (${s.length - n} more)` : s);
 const isLoopback = (addr?: string) =>
@@ -254,7 +278,8 @@ export class App extends Routes {
       inspector: this.dev ? "/_inkan" : false,
       validateResponses: this.dev,
       bodyLimit: 1024 * 1024,
-      log: this.dev,
+      log: this.dev ? "pretty" : "json",
+      requestId: "x-request-id",
       gracefulShutdown: true,
       ...options,
     };
@@ -330,12 +355,17 @@ export class App extends Routes {
     }
     const out = { status: 0, headers: {} as Record<string, string> };
     const notes: string[] = [];
+    const idHeader = this.options.requestId ? this.options.requestId.toLowerCase() : undefined;
+    const incoming = idHeader ? headers[idHeader] : undefined;
+    const id = incoming && SAFE_ID.test(incoming) ? incoming : randomUUID();
+    if (idHeader) out.headers[idHeader] = id;
     let result: unknown;
 
     const ctx: Context<any, any, any, any, any> = {
       method: raw.method,
       path: url.pathname,
       url,
+      id,
       params: {},
       query: queryObject(url.searchParams),
       headers,
@@ -377,18 +407,33 @@ export class App extends Routes {
       await compose(this.global, dispatch)(ctx);
       res = this.respond(result, out, route, notes);
     } catch (err) {
-      res = this.fail(err, ctx, url.pathname, notes, out.headers);
+      res = this.fail(err, ctx, url.pathname, notes, out.headers, idHeader ? id : undefined);
     }
     if (raw.method === "HEAD") res.body = undefined;
 
     const ms = Math.round((performance.now() - started) * 10) / 10;
-    if (this.options.log) {
-      const c = paint(useColor());
-      const flag = notes.length ? c.seal(`  ! ${notes.join("; ")}`) : "";
-      console.log(`  ${c.method(raw.method, raw.method.padEnd(6))} ${url.pathname}${url.search}  ${c.status(res.status)}  ${c.dim(ms + "ms")}${flag}`);
-    }
-    if (this.options.inspector) this.remember(raw, url, res, route, ms, notes, headers);
+    this.logRequest({
+      time: new Date().toISOString(),
+      id: idHeader ? id : undefined,
+      method: raw.method,
+      path: url.pathname + url.search,
+      route: route?.path,
+      status: res.status,
+      ms,
+      notes,
+    });
+    if (this.options.inspector) this.remember(raw, url, res, route, ms, notes, headers, idHeader ? id : undefined);
     return res;
+  }
+
+  private logRequest(entry: RequestLog) {
+    const { log, logger } = this.options;
+    if (!log) return;
+    if (logger) return logger(entry);
+    if (log === "json") return console.log(JSON.stringify(entry));
+    const c = paint(useColor());
+    const flag = entry.notes.length ? c.seal(`  ! ${entry.notes.join("; ")}`) : "";
+    console.log(`  ${c.method(entry.method, entry.method.padEnd(6))} ${entry.path}  ${c.status(entry.status)}  ${c.dim(entry.ms + "ms")}${flag}`);
   }
 
   private respond(
@@ -437,6 +482,7 @@ export class App extends Routes {
     path: string,
     notes: string[],
     set: Record<string, string>,
+    requestId?: string,
   ): RawResponse {
     let p: HttpProblem;
     if (err instanceof HttpProblem) p = err;
@@ -448,6 +494,7 @@ export class App extends Routes {
     }
     if (p.type === "validation") notes.push("input broke the contract");
     const body: ProblemBody = { ...p.toJSON(), instance: path };
+    if (requestId) body.requestId = requestId; // so a user's bug report points at the right log line
     return {
       status: p.status,
       headers: { ...set, "content-type": "application/problem+json", ...lower(p.headers) },
@@ -486,11 +533,13 @@ export class App extends Routes {
     ms: number,
     notes: string[],
     headers: Record<string, string>,
+    requestId?: string,
   ) {
     const shown: Record<string, string> = {};
     for (const [k, v] of Object.entries(headers)) shown[k] = REDACT.has(k) ? "•••" : v;
     this.log.push({
       id: ++this.logId,
+      requestId,
       at: new Date().toISOString(),
       method: raw.method,
       path: url.pathname + url.search,
@@ -565,7 +614,14 @@ export class App extends Routes {
         server.off("error", reject);
         (async () => {
           for (const hook of this._onListen) await hook();
-          if (this.options.log) this.banner(server);
+          const { log, logger } = this.options;
+          if (log && !logger) {
+            if (log === "json") {
+              const addr = server.address();
+              const port = typeof addr === "object" && addr ? addr.port : addr;
+              console.log(JSON.stringify({ time: new Date().toISOString(), msg: "listening", port }));
+            } else this.banner(server);
+          }
           if (this.options.gracefulShutdown) shutdownOnSignal(server, this._onClose);
           resolve(server);
         })().catch((err) => server.close(() => reject(err)));

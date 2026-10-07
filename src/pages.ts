@@ -263,7 +263,7 @@ function line(e) {
 }
 function pretty(s) { if (s === undefined) return "—"; try { return JSON.stringify(JSON.parse(s), null, 2); } catch (x) { return s; } }
 function detail(e) {
-  return '<h5>request headers</h5><pre>' + esc(Object.keys(e.request.headers).map(function (k) { return k + ": " + e.request.headers[k]; }).join("\\n")) +
+  return (e.requestId ? '<h5>request id</h5><pre>' + esc(e.requestId) + "</pre>" : "") + '<h5>request headers</h5><pre>' + esc(Object.keys(e.request.headers).map(function (k) { return k + ": " + e.request.headers[k]; }).join("\\n")) +
     '</pre><h5>request body</h5><pre>' + esc(pretty(e.request.body)) + '</pre><h5>response body</h5><pre>' + esc(pretty(e.response.body)) + "</pre>";
 }
 function draw() {

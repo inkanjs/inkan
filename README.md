@@ -307,12 +307,19 @@ inkan({
   inspector: "/_inkan",           // default: on in development, always loopback only
   validateResponses: true,        // default: on in development
   bodyLimit: 1024 * 1024,
-  log: true,                      // one line per request, default: on in development
+  log: "pretty",                  // "pretty", "json" or false; default: pretty in development, json in production
+  logger: (entry) => pino.info(entry), // takes every request log entry instead of the console
+  requestId: "x-request-id",      // or false
   gracefulShutdown: true,
   dev: process.env.NODE_ENV !== "production",
   onError: (err, ctx) => report(err),
 });
 ```
+
+Every request has an id: the one in `x-request-id` when it looks safe, a fresh UUID
+otherwise. It is `ctx.id` in the handler, goes back out as a header, sits in every log
+line and in every problem document as `requestId`, so a bug report points at the right
+line in the logs.
 
 ## CLI
 

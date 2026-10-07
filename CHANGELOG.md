@@ -11,11 +11,20 @@
   makes recursive shapes possible. Thanks [@AndrewCMD](https://github.com/AndrewCMD)!
   ([#13](https://github.com/vxnsin/inkan/issues/13), [#22](https://github.com/vxnsin/inkan/pull/22))
 - The help text is coloured, and so are logs in GitHub Actions (`NO_COLOR` still turns it off).
+- **Request ids.** Every request gets one: the `x-request-id` it came with when that looks safe,
+  a fresh UUID otherwise. It is `ctx.id` in the handler, goes back out as a header, and lands in
+  the log line, the inspector and every problem document as `requestId`. `requestId: "x-correlation-id"`
+  picks another header, `requestId: false` turns it off. ([#15](https://github.com/vxnsin/inkan/issues/15))
+- **Structured logs.** `log: "json"` writes one JSON line per request (time, id, method, path,
+  route, status, ms, notes), and `logger: (entry) => …` hands every entry to your own logger
+  instead of the console. ([#15](https://github.com/vxnsin/inkan/issues/15))
 
 ### Changed
 
 - `toJSONSchema()` keeps named schemas in `$defs` and refers to them, instead of writing them
   out inline, so recursive schemas work there too.
+- In production, requests are now logged as JSON lines by default (before: not at all).
+  `log: false` keeps it quiet. Development keeps the short coloured line.
 
 ## 0.2.0
 
