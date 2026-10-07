@@ -26,6 +26,14 @@
   header on every request from the page. It lives in `sessionStorage`, so it is gone with
   the tab, never lands in a URL, and shows as ••• in a copied curl command.
   ([#8](https://github.com/vxnsin/inkan/issues/8))
+- **Inspector: replay.** Sends a request again and shows the old and the new answer side by
+  side, with whether they match (a `requestId` alone does not count as a change). Secret
+  headers are not sent again, and the page says so. The replay shows up in the log as
+  `replay of #n`. ([#7](https://github.com/vxnsin/inkan/issues/7))
+- **Inspector: copy as example.** Turns a request into a ready `examples: [...]` entry with
+  its params, query, body and status, plus any custom headers, but never secret headers or
+  the ones every client sends. Paste it into the route and `inkan check` holds it from then on.
+  ([#7](https://github.com/vxnsin/inkan/issues/7))
 
 ### Changed
 
@@ -33,6 +41,9 @@
   out inline, so recursive schemas work there too.
 - In production, requests are now logged as JSON lines by default (before: not at all).
   `log: false` keeps it quiet. Development keeps the short coloured line.
+- Inspector log entries carry `example` and `request.clipped`. A request whose body was too
+  long to keep whole is not offered for replay, and its example leaves the body out instead
+  of guessing.
 
 ## 0.2.0
 

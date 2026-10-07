@@ -5,6 +5,7 @@ import { Router } from "./router.ts";
 import { t, type Infer, type Issue, type Schema } from "./schema.ts";
 import { buildOpenAPI, type OpenAPIInfo } from "./openapi.ts";
 import { docsPage, inspectorPage } from "./pages.ts";
+import { exampleFrom } from "./record.ts";
 import { runChecks, type CheckOptions, type CheckReport } from "./check.ts";
 import { paint, useColor } from "./color.ts";
 
@@ -248,13 +249,17 @@ export type LogEntry = {
   status: number;
   ms: number;
   notes: string[];
-  request: { headers: Record<string, string>; body?: string };
+  /** `clipped` is true when the body was too long to keep whole; such a request cannot be replayed. */
+  request: { headers: Record<string, string>; body?: string; clipped?: boolean };
   response: { body?: string };
+  /** The request written as an `examples: [...]` entry, when a route answered it. */
+  example?: string;
 };
 
 const SAFE_ID = /^[\w.:@-]{1,128}$/; // anything else could smuggle into logs, so it gets a fresh id
 const REDACT = new Set(["authorization", "cookie", "set-cookie", "proxy-authorization", "x-api-key"]);
-const clip = (s: string, n = 4096) => (s.length > n ? s.slice(0, n) + `… (${s.length - n} more)` : s);
+const CLIP = 4096;
+const clip = (s: string, n = CLIP) => (s.length > n ? s.slice(0, n) + `… (${s.length - n} more)` : s);
 const isLoopback = (addr?: string) =>
   !addr || addr === "127.0.0.1" || addr === "::1" || addr === "::ffff:127.0.0.1";
 
@@ -355,6 +360,7 @@ export class App extends Routes {
     }
     const out = { status: 0, headers: {} as Record<string, string> };
     const notes: string[] = [];
+    if (headers["x-inkan-replay"]) notes.push(`replay of #${headers["x-inkan-replay"].slice(0, 12)}`);
     const idHeader = this.options.requestId ? this.options.requestId.toLowerCase() : undefined;
     const incoming = idHeader ? headers[idHeader] : undefined;
     const id = incoming && SAFE_ID.test(incoming) ? incoming : randomUUID();
@@ -537,7 +543,8 @@ export class App extends Routes {
   ) {
     const shown: Record<string, string> = {};
     for (const [k, v] of Object.entries(headers)) shown[k] = REDACT.has(k) ? "•••" : v;
-    this.log.push({
+    const body = raw.body?.length ? raw.body.toString() : undefined;
+    const entry: LogEntry = {
       id: ++this.logId,
       requestId,
       at: new Date().toISOString(),
@@ -547,9 +554,11 @@ export class App extends Routes {
       status: res.status,
       ms,
       notes,
-      request: { headers: shown, body: raw.body?.length ? clip(raw.body.toString()) : undefined },
+      request: { headers: shown, body: body === undefined ? undefined : clip(body), clipped: body !== undefined && body.length > CLIP },
       response: { body: res.body === undefined ? undefined : clip(res.body.toString()) },
-    });
+    };
+    entry.example = exampleFrom(entry);
+    this.log.push(entry);
     if (this.log.length > 200) this.log.shift();
   }
 

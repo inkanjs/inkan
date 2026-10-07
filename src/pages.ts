@@ -66,6 +66,9 @@ input.filter{font:13px var(--mono);padding:6px 10px;border:1px solid var(--ink);
 .log td{font:12.5px var(--mono);white-space:nowrap}.log tr.row{cursor:pointer}.log tr.row:hover td{background:var(--paper-2)}
 .log td.path{white-space:normal;word-break:break-all}.note{color:var(--seal)}
 .log tr.detail td{white-space:normal;background:var(--paper)}.log tr.detail pre{white-space:pre-wrap;word-break:break-all;margin:4px 0 10px}
+.acts-row{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin:8px 0}
+.pair{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:12px}
+@media (max-width:820px){.pair{grid-template-columns:minmax(0,1fr)}}
 @media (max-width:820px){.layout{grid-template-columns:minmax(0,1fr);padding:16px}aside{position:static;max-height:none}.top{padding:12px 16px}.top nav{margin-left:0}}
 `;
 
@@ -351,7 +354,7 @@ ${cfg.inspector ? `<a class="btn" href="${cfg.inspector}">inspector</a>` : ""}</
 // ---------- inspector ----------
 
 const inspectorScript = /* js */ `
-var since = 0, paused = false, rows = [], open = {};
+var since = 0, paused = false, rows = [], open = {}, results = {};
 var $ = function (s) { return document.querySelector(s); };
 function line(e) {
   var t = e.at.slice(11, 19);
@@ -360,9 +363,52 @@ function line(e) {
     '</span></td><td class="muted">' + e.ms + "ms</td><td class=muted>" + esc(e.route || "—") + '</td><td class="note">' + esc(e.notes.join("; ")) + "</td></tr>" +
     (open[e.id] ? '<tr class="detail"><td colspan="7">' + detail(e) + "</td></tr>" : "");
 }
-function pretty(s) { if (s === undefined) return "—"; try { return JSON.stringify(JSON.parse(s), null, 2); } catch (x) { return s; } }
+function pretty(s) { if (s === undefined || s === "") return "—"; try { return JSON.stringify(JSON.parse(s), null, 2); } catch (x) { return s; } }
+// what may differ between two runs of the same request without the answer having changed
+function comparable(s) { try { var v = JSON.parse(s); if (v && typeof v === "object") delete v.requestId; return JSON.stringify(v); } catch (x) { return s || ""; } }
+function statusTag(s) { return '<span class="status s' + String(s)[0] + '">' + s + "</span>"; }
+var FORBIDDEN = /^(host|connection|content-length|accept-encoding|accept-charset|cookie|date|dnt|expect|keep-alive|origin|referer|te|trailer|transfer-encoding|upgrade|via|x-request-id|x-inkan-replay)$|^(sec-|proxy-)/;
+function find(id) { return rows.filter(function (r) { return String(r.id) === String(id); })[0]; }
+function replay(id) {
+  var e = find(id), h = {}, dropped = false;
+  Object.keys(e.request.headers).forEach(function (k) {
+    var v = e.request.headers[k];
+    if (v === "•••") dropped = true;
+    else if (!FORBIDDEN.test(k)) h[k] = v;
+  });
+  h["x-inkan-replay"] = String(e.id);
+  var init = { method: e.method, headers: h };
+  if (e.request.body !== undefined && e.method !== "GET" && e.method !== "HEAD") init.body = e.request.body;
+  var t0 = performance.now();
+  results[id] = '<p class="muted mono">replaying…</p>';
+  draw();
+  fetch(e.path, init).then(function (res) {
+    return res.text().then(function (text) {
+      var ms = Math.round(performance.now() - t0);
+      var same = res.status === e.status && comparable(text) === comparable(e.response.body);
+      results[id] = '<div class="pair"><div><h5>then · ' + statusTag(e.status) + '</h5><pre>' + esc(pretty(e.response.body)) +
+        '</pre></div><div><h5>now · ' + statusTag(res.status) + " · " + ms + 'ms</h5><pre>' + esc(pretty(text)) + "</pre></div></div>" +
+        '<p class="verdict ' + (same ? "ok" : "no") + '">' + (same ? "✓ the same answer" : "✗ the answer changed") + "</p>" +
+        (dropped ? '<p class="muted">Secret headers were not sent again, so a route behind auth may answer differently.</p>' : "");
+      draw();
+    });
+  }).catch(function (err) { results[id] = '<p class="verdict no">' + esc(err.message) + "</p>"; draw(); });
+}
+function copyExample(id) {
+  var e = find(id), say = function (msg) {
+    results[id] = '<p class="muted mono">' + msg + " · paste it into <b>" + esc(e.method + " " + e.route) + "</b> → examples</p><pre>" + esc(e.example) + "</pre>";
+    draw();
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(e.example).then(function () { say("copied"); }, function () { say("copy it from here"); });
+  else say("copy it from here");
+}
 function detail(e) {
-  return (e.requestId ? '<h5>request id</h5><pre>' + esc(e.requestId) + "</pre>" : "") + '<h5>request headers</h5><pre>' + esc(Object.keys(e.request.headers).map(function (k) { return k + ": " + e.request.headers[k]; }).join("\\n")) +
+  var acts = '<div class="acts-row">' +
+    (e.request.clipped ? '<span class="muted">the body was too long to keep, so this one cannot be replayed</span>'
+      : '<button class="btn" data-replay="' + e.id + '">replay</button>') +
+    (e.example ? '<button class="btn" data-example="' + e.id + '">copy as example</button>' : '<span class="muted">no route answered, so there is no example to make</span>') +
+    '</div><div class="replay">' + (results[e.id] || "") + "</div>";
+  return acts + (e.requestId ? '<h5>request id</h5><pre>' + esc(e.requestId) + "</pre>" : "") + '<h5>request headers</h5><pre>' + esc(Object.keys(e.request.headers).map(function (k) { return k + ": " + e.request.headers[k]; }).join("\\n")) +
     '</pre><h5>request body</h5><pre>' + esc(pretty(e.request.body)) + '</pre><h5>response body</h5><pre>' + esc(pretty(e.response.body)) + "</pre>";
 }
 function draw() {
@@ -380,7 +426,11 @@ function poll() {
     draw();
   }).catch(function () {});
 }
-$("#body").addEventListener("click", function (e) { var tr = e.target.closest("tr.row"); if (!tr) return; var id = tr.dataset.id; open[id] = !open[id]; draw(); });
+$("#body").addEventListener("click", function (e) {
+  var b = e.target.closest("[data-replay],[data-example]");
+  if (b) { if (b.dataset.replay) replay(b.dataset.replay); else copyExample(b.dataset.example); return; }
+  var tr = e.target.closest("tr.row"); if (!tr) return; var id = tr.dataset.id; open[id] = !open[id]; draw();
+});
 $("#filter").addEventListener("input", draw);
 $("#pause").addEventListener("click", function () { paused = !paused; this.textContent = paused ? "▶ resume" : "❚❚ pause"; });
 $("#clear").addEventListener("click", function () { rows = []; open = {}; draw(); });
