@@ -51,7 +51,14 @@ pre.type{margin:0;padding:10px 12px;background:var(--paper);border:1px solid var
 .s2{color:var(--ok)}.s3{color:var(--post)}.s4{color:var(--warn)}.s5{color:var(--seal)}
 .ex{border:1px dashed var(--line);border-radius:3px;margin:8px 0;padding:8px 10px}
 .ex-head{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.ex-head .name{font-weight:600}
-.ex-head .req{color:var(--ink-2);font:12px var(--mono);word-break:break-all}.ex-head .btn{margin-left:auto}
+.ex-head .req{color:var(--ink-2);font:12px var(--mono);word-break:break-all}.ex-head .acts{margin-left:auto;display:flex;gap:6px}
+[hidden]{display:none!important}.btn.on{background:var(--paper-2);border-color:var(--seal);color:var(--seal)}
+.edit{display:grid;gap:8px;margin-top:10px}
+.edit label{display:grid;grid-template-columns:72px minmax(0,1fr);gap:8px;align-items:start;font:12px var(--mono)}
+.edit label span{color:var(--ink-2);padding-top:6px}
+.edit input,.edit textarea,.auth input,.auth select{font:12.5px var(--mono);padding:5px 8px;border:1px solid var(--line);border-radius:3px;background:var(--paper);color:var(--ink);width:100%}
+.edit textarea{resize:vertical}.edit-foot{display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-size:12px}
+.auth{display:flex;gap:4px}.auth input{width:190px}.auth select{width:auto}
 .ex pre{margin:8px 0 0;max-height:280px;overflow:auto;padding:8px 10px;background:var(--paper);border-radius:3px}
 .verdict{font:600 12px var(--mono)}.verdict.ok{color:var(--ok)}.verdict.no{color:var(--seal)}
 .muted{color:var(--ink-2)}.empty{padding:40px;text-align:center;color:var(--ink-2)}
@@ -160,35 +167,119 @@ function card(path, method, op, idx) {
   if (exs.length) {
     h += "<h5>examples · each one is also a test</h5>";
     exs.forEach(function (ex, i) {
-      var want = expected(op, ex);
+      var want = expected(op, ex), n = ROUTES.length;
       ROUTES.push({ id: id, path: path, method: method, op: op, ex: ex, el: id + "-ex" + i });
       h += '<div class="ex" id="' + id + "-ex" + i + '"><div class="ex-head"><span class="name">' + esc(ex.name || "example " + (i + 1)) +
         '</span><span class="req">' + method.toUpperCase() + " " + esc(urlFor(path, ex)) + (want ? " → " + want : "") +
-        '</span><button class="btn" data-run="' + (ROUTES.length - 1) + '">send</button></div>' +
-        (ex.body !== undefined ? "<pre>" + esc(JSON.stringify(ex.body, null, 2)) + "</pre>" : "") + '<div class="out"></div></div>';
+        '</span><span class="acts"><button class="btn" data-edit="' + n + '">edit</button><button class="btn" data-curl="' + n +
+        '">curl</button><button class="btn" data-run="' + n + '">send</button></span></div>' +
+        (ex.body !== undefined ? '<pre class="exbody">' + esc(JSON.stringify(ex.body, null, 2)) + "</pre>" : "") +
+        editor(path, op, ex) + '<div class="out"></div></div>';
     });
   }
   return h + "</div></section>";
 }
+// ----- editing a request before it goes out -----
+function paramNames(path) { return (path.match(/\\{(\\w+)\\}/g) || []).map(function (s) { return s.slice(1, -1); }); }
+function headerText(h) { return Object.keys(h || {}).map(function (k) { return k + ": " + h[k]; }).join("\\n"); }
+function editor(path, op, ex) {
+  var h = '<div class="edit" hidden>';
+  paramNames(path).forEach(function (p) {
+    var v = (ex.params || {})[p];
+    h += '<label><span>:' + esc(p) + '</span><input data-param="' + esc(p) + '" value="' + esc(v === undefined ? "" : v) + '"></label>';
+  });
+  h += '<label><span>query</span><input data-query placeholder="a=1&amp;b=2" value="' + esc(urlFor("", { query: ex.query }).replace(/^\\?/, "")) + '"></label>';
+  h += '<label><span>headers</span><textarea data-headers rows="2" placeholder="name: value">' + esc(headerText(ex.headers)) + "</textarea></label>";
+  if (op.requestBody || ex.body !== undefined) {
+    h += '<label><span>body</span><textarea data-body rows="7">' + esc(ex.body === undefined ? "" : JSON.stringify(ex.body, null, 2)) + "</textarea></label>";
+  }
+  return h + '<div class="edit-foot"><button class="btn" data-reset>reset to the example</button>' +
+    '<span class="muted">an edited request is sent as it is and not held to the example</span></div></div>';
+}
+function hasHeader(h, name) { return Object.keys(h).some(function (k) { return k.toLowerCase() === name.toLowerCase(); }); }
+function request(i) {
+  var r = ROUTES[i], ex = r.ex, ed = document.getElementById(r.el).querySelector(".edit");
+  var req = { method: r.method.toUpperCase(), url: urlFor(r.path, ex), headers: Object.assign({}, ex.headers || {}),
+    body: ex.body === undefined ? undefined : JSON.stringify(ex.body), edited: false };
+  if (ed && !ed.hidden) {
+    var params = {};
+    ed.querySelectorAll("[data-param]").forEach(function (inp) { params[inp.dataset.param] = inp.value; });
+    var q = ed.querySelector("[data-query]").value.trim().replace(/^\\?/, "");
+    req.url = urlFor(r.path, { params: params }) + (q ? "?" + q : "");
+    req.headers = {};
+    ed.querySelector("[data-headers]").value.split("\\n").forEach(function (line) {
+      var k = line.indexOf(":");
+      if (k > 0) req.headers[line.slice(0, k).trim()] = line.slice(k + 1).trim();
+    });
+    var b = ed.querySelector("[data-body]");
+    req.body = b && b.value.trim() ? b.value : undefined;
+    req.edited = true;
+  }
+  if (req.body !== undefined && !hasHeader(req.headers, "content-type")) req.headers["content-type"] = "application/json";
+  var auth = authValue();
+  if (auth && !hasHeader(req.headers, auth.name)) req.headers[auth.name] = auth.value;
+  return req;
+}
+function toggleEdit(i, btn) {
+  var el = document.getElementById(ROUTES[i].el), ed = el.querySelector(".edit"), pre = el.querySelector(".exbody");
+  ed.hidden = !ed.hidden;
+  if (pre) pre.hidden = !ed.hidden;
+  btn.classList.toggle("on", !ed.hidden);
+}
+function resetEdit(i) {
+  var r = ROUTES[i], ed = document.getElementById(r.el).querySelector(".edit"), tmp = document.createElement("div");
+  tmp.innerHTML = editor(r.path, r.op, r.ex);
+  tmp.firstChild.hidden = false;
+  ed.replaceWith(tmp.firstChild);
+}
+// ----- auth: one header for every request, kept for this tab only, never in a URL -----
+var store = {
+  get: function (k) { try { return sessionStorage.getItem(k) || ""; } catch (e) { return ""; } },
+  set: function (k, v) { try { if (v) sessionStorage.setItem(k, v); else sessionStorage.removeItem(k); } catch (e) {} }
+};
+function authValue() { var v = $("#auth").value.trim(); return v ? { name: $("#authName").value, value: v } : null; }
+$("#auth").value = store.get("inkan:auth");
+$("#authName").value = store.get("inkan:auth-header") || "authorization";
+$("#auth").addEventListener("input", function () { store.set("inkan:auth", this.value.trim()); });
+$("#authName").addEventListener("change", function () { store.set("inkan:auth-header", this.value); });
+// ----- curl -----
+function sq(s) { return "'" + String(s).replace(/'/g, "'\\\\''") + "'"; }
+function curl(i) {
+  var req = request(i), auth = authValue(), parts = ["curl"];
+  if (req.method !== "GET") parts.push("-X " + req.method);
+  parts.push(sq(location.origin + req.url));
+  Object.keys(req.headers).forEach(function (k) { parts.push("-H " + sq(k + ": " + req.headers[k])); });
+  if (req.body !== undefined) parts.push("--data-raw " + sq(req.body));
+  var text = parts.join(" \\\\\\n  ");
+  var shown = auth ? text.split(auth.value).join("•••") : text; // the token goes to the clipboard, not onto the screen
+  var out = document.getElementById(ROUTES[i].el).querySelector(".out");
+  var done = function (msg) { out.innerHTML = '<p class="mono muted" style="margin:8px 0 0">' + msg + "</p><pre>" + esc(shown) + "</pre>"; };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(function () { done("copied to the clipboard"); }, function () { done("copy it from here"); });
+  } else done("copy it from here");
+}
 function send(i) {
-  var r = ROUTES[i], ex = r.ex, el = document.getElementById(r.el), out = el.querySelector(".out");
-  var headers = Object.assign({}, ex.headers || {}), init = { method: r.method.toUpperCase(), headers: headers };
-  if (ex.body !== undefined) { headers["content-type"] = "application/json"; init.body = JSON.stringify(ex.body); }
+  var r = ROUTES[i], el = document.getElementById(r.el), out = el.querySelector(".out"), req = request(i);
+  var init = { method: req.method, headers: req.headers };
+  if (req.body !== undefined) init.body = req.body;
   var t0 = performance.now();
   out.innerHTML = '<p class="muted mono">sending…</p>';
-  return fetch(urlFor(r.path, ex), init).then(function (res) {
+  return fetch(req.url, init).then(function (res) {
     return res.text().then(function (text) {
-      var ms = Math.round(performance.now() - t0), want = expected(r.op, ex);
+      var ms = Math.round(performance.now() - t0), want = expected(r.op, r.ex);
       var ok = want === undefined ? res.status < 300 : res.status === want, pretty = text;
       try { pretty = JSON.stringify(JSON.parse(text), null, 2); } catch (e) {}
+      var verdict = req.edited ? '<span class="verdict muted">edited · not compared</span>'
+        : '<span class="verdict ' + (ok ? "ok" : "no") + '">' + (ok ? "✓ as promised" : "✗ expected " + (want || "a 2xx")) + "</span>";
       out.innerHTML = '<p class="mono" style="margin:8px 0 0"><span class="status s' + String(res.status)[0] + '">' + res.status +
-        '</span> <span class="muted">' + ms + 'ms</span> <span class="verdict ' + (ok ? "ok" : "no") + '">' +
-        (ok ? "✓ as promised" : "✗ expected " + (want || "a 2xx")) + "</span></p>" + (pretty ? "<pre>" + esc(pretty) + "</pre>" : "");
-      el.dataset.ok = ok ? "1" : "0";
-      stampCard(r.id);
+        '</span> <span class="muted">' + ms + "ms</span> " + verdict + "</p>" + (pretty ? "<pre>" + esc(pretty) + "</pre>" : "");
+      if (!req.edited) { el.dataset.ok = ok ? "1" : "0"; stampCard(r.id); }
       return ok;
     });
-  }).catch(function (e) { out.innerHTML = '<p class="verdict no">' + esc(e.message) + "</p>"; el.dataset.ok = "0"; stampCard(r.id); });
+  }).catch(function (e) {
+    out.innerHTML = '<p class="verdict no">' + esc(e.message) + "</p>";
+    if (!req.edited) { el.dataset.ok = "0"; stampCard(r.id); }
+  });
 }
 function stampCard(id) {
   var win = document.getElementById(id), all = win.querySelectorAll(".ex"), done = 0, good = 0;
@@ -231,7 +322,14 @@ function boot(spec) {
   }
   $("#nav").innerHTML = nav;
   $("#main").innerHTML = cards.join("") || '<p class="empty">No routes yet.</p>';
-  document.addEventListener("click", function (e) { var b = e.target.closest("[data-run]"); if (b) send(Number(b.dataset.run)); });
+  document.addEventListener("click", function (e) {
+    var b = e.target.closest("[data-run],[data-edit],[data-curl],[data-reset]");
+    if (!b) return;
+    if (b.dataset.run !== undefined) send(Number(b.dataset.run));
+    else if (b.dataset.edit !== undefined) toggleEdit(Number(b.dataset.edit), b);
+    else if (b.dataset.curl !== undefined) curl(Number(b.dataset.curl));
+    else { var exEl = b.closest(".ex"); resetEdit(ROUTES.findIndex(function (r) { return r.el === exEl.id; })); }
+  });
   if (!ROUTES.length) $("#all").remove();
 }
 $("#all").addEventListener("click", sendAll);
@@ -242,7 +340,8 @@ else $("#main").innerHTML = '<p class="empty">The OpenAPI document is switched o
 export function docsPage(cfg: { title: string; specUrl: string; inspector?: string }) {
   const body = `
 <header class="top"><span class="stamp">印</span><h1 id="title">${cfg.title.replace(/[<>&]/g, "")}</h1><span class="ver" id="ver"></span>
-<nav><button class="btn seal" id="all" title="Sends every example. Examples that change data change it for real.">▶ send every example</button>
+<nav><span class="auth"><select id="authName" title="The header the token goes into"><option value="authorization">authorization</option><option value="x-api-key">x-api-key</option></select><input id="auth" type="password" autocomplete="off" spellcheck="false" placeholder="token, kept for this tab" title="Sent with every request from this page. Kept in sessionStorage, never in a URL."></span>
+<button class="btn seal" id="all" title="Sends every example. Examples that change data change it for real.">▶ send every example</button>
 ${cfg.specUrl ? `<a class="btn" href="${cfg.specUrl}">openapi.json</a>` : ""}
 ${cfg.inspector ? `<a class="btn" href="${cfg.inspector}">inspector</a>` : ""}</nav></header>
 <div class="layout"><aside id="nav"></aside><main><p class="intro" id="intro">Every route below carries its contract. The examples are the same ones <code>inkan check</code> runs, so what you read here is what the server was tested to do.</p><div id="main"><p class="empty">loading…</p></div></main></div>`;

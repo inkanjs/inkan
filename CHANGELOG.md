@@ -18,6 +18,14 @@
 - **Structured logs.** `log: "json"` writes one JSON line per request (time, id, method, path,
   route, status, ms, notes), and `logger: (entry) => …` hands every entry to your own logger
   instead of the console. ([#15](https://github.com/vxnsin/inkan/issues/15))
+- **Edit a request on the docs page.** Every example has an **edit** button: params, query,
+  headers and body, filled in from the example, sent as you changed them. An edited request
+  says so and never counts towards a route's seal. **reset** brings the example back, and
+  **curl** copies the request as a curl command. ([#8](https://github.com/vxnsin/inkan/issues/8))
+- **A token for the docs page.** A field at the top puts an `authorization` or `x-api-key`
+  header on every request from the page. It lives in `sessionStorage`, so it is gone with
+  the tab, never lands in a URL, and shows as ••• in a copied curl command.
+  ([#8](https://github.com/vxnsin/inkan/issues/8))
 
 ### Changed
 
