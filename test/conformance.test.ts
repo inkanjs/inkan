@@ -22,7 +22,7 @@ conformance("app.fetch", async (app) => {
     const chunks: Buffer[] = [];
     for await (const c of req) chunks.push(c as Buffer);
     const body = chunks.length ? Buffer.concat(chunks) : undefined;
-    const answer = await app.fetch(new Request(`http://localhost${req.url}`, { method: req.method, headers: req.headers as HeadersInit, body }), { remote: "127.0.0.1" });
+    const answer = await app.fetch(new Request(`http://localhost${req.url}`, { method: req.method, headers: req.headers as Record<string, string>, body }), { remote: "127.0.0.1" });
     res.writeHead(answer.status, Object.fromEntries(answer.headers));
     if (!answer.body) return void res.end();
     const reader = answer.body.getReader();
