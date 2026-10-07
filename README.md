@@ -1,6 +1,6 @@
 <picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/inkanjs/inkan/main/assets/wordmark-dark.svg"><img src="https://raw.githubusercontent.com/inkanjs/inkan/main/assets/wordmark-light.svg" alt="inkan" width="340"></picture>
 
-**An API server for Node where the docs can't lie.**
+**An API framework for Node where the docs can't lie.** It runs on `node:http`, and on Bun, Deno and serverless through `app.fetch`.
 
 [![npm](https://img.shields.io/npm/v/@vxnsin/inkan?color=c4381f&labelColor=2b2420&label=npm)](https://www.npmjs.com/package/@vxnsin/inkan)
 [![CI](https://img.shields.io/github/actions/workflow/status/inkanjs/inkan/ci.yml?branch=main&color=3d7a4b&labelColor=2b2420&label=ci)](https://github.com/inkanjs/inkan/actions/workflows/ci.yml)
@@ -91,6 +91,11 @@ server to what its docs say.
 | **Examples run as tests** | – | – | – | ✓ `inkan check` |
 | **Live request inspector** | – | – | – | ✓ `/_inkan` |
 | Every error in one shape ([RFC 9457](https://www.rfc-editor.org/rfc/rfc9457)) | – | – | – | ✓ |
+| Credentials in the contract, refused with a 401 when missing | middleware | plugin | middleware | ✓ `security`, in OpenAPI too |
+| Contracts as compiled code | – | at runtime, with `new Function` | – | ✓ ahead of time, `inkan seal`, no eval |
+| Hooks, plugins, decorators | middleware | ✓ | middleware | ✓ |
+| Bun, Deno, serverless | – | – | ✓ | ✓ `app.fetch` |
+| **A tutorial in the terminal** | – | – | – | ✓ `inkan learn` |
 | Runtime dependencies | several | several | none | **none** |
 
 ## Install
@@ -524,6 +529,35 @@ runs unsealed, as it would without the file, and inkan says which one and to run
 `inkan seal` again. `refine`, `transform`, unions, records, dates and lazy schemas
 run unsealed for now; `inkan seal` lists them.
 
+## How fast
+
+Not to win, but to know. Twelve scenarios, from a fixed answer to a body of 50
+objects checked one by one, a router of 400 routes, 404s and 400s. Every server
+does the same work: inkan and Fastify check with schemas, the others by hand, and
+every answer is checked before it is measured. All servers run at once and each
+scenario is measured for all of them back to back, so a runner that slows down
+slows everybody alike. One GitHub runner with 4 cores, 10 seconds per scenario
+after a warm-up, the median of 3 rounds:
+
+| | score | hello, 100 connections | params + query | body of 50 | answer of 100 | 400 routes | 404 | 400 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| **inkan on uWebSockets.js** | **133.5** | **143 %** | **143 %** | **101 %** | 99 % | **145 %** | **163 %** | **121 %** |
+| node:http, by hand | 100 | 100 % | 100 % | 100 % | 100 % | 100 % | 100 % | 100 % |
+| Fastify | 88.1 | 95 % | 93 % | 91 % | 79 % | 95 % | 100 % | 59 % |
+| **inkan** | **85.4** | 89 % | 87 % | 79 % | 85 % | 91 % | 106 % | 69 % |
+| Hono | 85.0 | 93 % | 79 % | 90 % | **103 %** | 76 % | 86 % | 81 % |
+| Express | 40.6 | 41 % | 44 % | 56 % | 68 % | 19 % | 20 % | 43 % |
+
+The score is the geometric mean over all twelve scenarios against bare `node:http`,
+so no single one can carry or sink a server. inkan does a little more per request
+than the others: it gives every request an id and keeps back every key an answer's
+contract does not list. Read the numbers as a range, not a rank: a run on another
+day moves each server by a few points, and inkan and Hono swap places within that.
+With `inkan seal`, a body of 50 objects is checked in about half the time.
+
+Run it yourself: `cd bench && npm install && node run.mjs`, or the `bench` workflow
+on GitHub, which also measures what one request costs the server in CPU time.
+
 ## Running it
 
 `app.listen()` takes the port from its argument, then `$PORT`, then 3000. So it
@@ -675,9 +709,8 @@ node src/cli.ts check examples/shop.ts
 ## Not yet
 
 What comes next lives in the [issues](https://github.com/inkanjs/inkan/issues) and the
-[milestones](https://github.com/inkanjs/inkan/milestones): routes from the file tree,
-`app.fetch()` for Bun, Deno and serverless, security schemes in OpenAPI, honest benchmarks.
-What changed lives in the [changelog](CHANGELOG.md). Issues marked
+[milestones](https://github.com/inkanjs/inkan/milestones). What changed lives in the
+[changelog](CHANGELOG.md). Issues marked
 [good first issue](https://github.com/inkanjs/inkan/labels/good%20first%20issue) are a good place to start.
 
 Where things live:

@@ -47,37 +47,37 @@
 </head>
 <body>
   <div class="left">
-    <div class="badge">v0.3.0</div>
-    <h1>inkan now knows<br>when you <em>break</em><br><em>your clients</em>.</h1>
+    <div class="badge">v0.4.0</div>
+    <h1 style="font-size:50px">inkan learned <em>hooks</em>,<br>a <em>seal</em> and how<br>to <em>teach</em>.</h1>
     <ul>
-      <li><span><b>inkan diff</b> names every breaking change</span></li>
-      <li><span><b>inkan examples</b>: six explained projects</span></li>
-      <li><span><b>A typed client</b>, no codegen</span></li>
-      <li><span><b>Server-sent events</b>, streams, uploads</span></li>
-      <li><span><b>Examples</b> that build on each other</span></li>
-      <li><span><b>Replay</b> in the inspector, <b>edit</b> in /docs</span></li>
+      <li><span><b>inkan learn</b>: 12 quests in your terminal</span></li>
+      <li><span><b>Hooks, plugins</b> and typed <b>decorators</b></span></li>
+      <li><span><b>inkan seal</b>: contracts as code, no eval</span></li>
+      <li><span><b>app.fetch</b> for Bun, Deno, serverless</span></li>
+      <li><span><b>security</b> and response headers, enforced</span></li>
+      <li><span><b>workers</b>, file routes, a <b>uWS</b> adapter</span></li>
     </ul>
-    <div class="install">npm install @vxnsin/inkan</div>
+    <div class="install">npx @vxnsin/inkan learn</div>
   </div>
 
   <div class="term">
     <div class="bar">
       <div class="dot" style="background:#e5534b"></div><div class="dot" style="background:#e3b341"></div><div class="dot" style="background:#57c26a"></div>
-      <span>PowerShell — inkan</span>
+      <span>PowerShell — inkan learn</span>
     </div>
-<pre><span class="p">PS tea-shop&gt;</span> npx inkan diff openapi.json src/app.ts
+<pre>  <span class="r">印</span> <span class="b">inkan learn</span> <span class="d">· quest 3 of 12 ·</span> <span class="b">rules for a body</span>
 
-  <span class="r">印</span> <span class="b">inkan diff</span>  <span class="d">·</span>  <span class="d">openapi.json → src/app.ts</span>
+  <span class="d">A body schema is checked before your handler</span>
+  <span class="d">runs. A body that breaks it never reaches you.</span>
 
-  <span class="r">breaks clients</span>
-    <span class="r">✗</span> <span class="b">POST /teas</span>  body.kind is required now
-    <span class="r">✗</span> <span class="b">DELETE /teas/{id}</span>  is gone
+  Add POST /teas: name at least 1 character,
+  grams a whole number of at least 1.
 
-  <span class="g">safe</span>
-    <span class="g">·</span> <span class="b">POST /teas</span>  body.note is taken now
-    <span class="g">·</span> <span class="b">GET /teas/{id}/brew</span>  is new
+  <span class="r">✗</span> POST /teas with { grams: -5 } answered 201:
+    it got in. Give grams a .min(1)
+  <span class="g">✓</span> <span class="b">quest 3 done!</span> <span class="d">rules for a body</span>
 
-  <span class="r">2 breaking</span> <span class="d">·</span> 2 safe</pre>
+  <span class="r">印</span> <span class="b">inkan learn</span> <span class="d">· quest 4 of 12 ·</span> <span class="b">examples are tests</span></pre>
   </div>
 </body>
 </html>
