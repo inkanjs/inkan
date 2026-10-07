@@ -46,6 +46,15 @@
   contract lists, the usual case, is checked by counting keys and then written by the native
   `JSON.stringify`; only an answer with keys the contract does not list takes the exact writer.
   A list of 100 nested objects: 80 → 51 µs.
+- **No promise unless something is asynchronous.** A request without a body whose handler
+  answers at once now goes from socket to answer in one turn, without a promise, a closure
+  per step or a trip through the microtask queue; only a body to read, middleware or an async
+  handler makes it asynchronous. A 404 or 405 is answered, not thrown, and a problem is no
+  longer built by the `Error` constructor, which records a stack even when told not to
+  (`instanceof Error` still holds, and `.stack` is its first line). The router walks the path
+  in place instead of splitting it into an array. Per request in `bench/inproc.mjs`: 404
+  6.9 → 4.4 µs, 400 14.0 → 10.9 µs, a deep parameter route 3.9 → 3.5 µs, an async handler
+  7.3 → 6.5 µs.
 
 ## 0.3.0
 

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { HttpProblem, problem, type ProblemBody } from "./problem.ts";
-import { Router } from "./router.ts";
+import { type Match, Router } from "./router.ts";
 import { EventsSchema, t, type Infer, type Issue, type Schema, type UploadedFile } from "./schema.ts";
 import { encodeEvents, EventStream, hasFiles, isStream, parseEvents, toFormData, type SseEvent } from "./stream.ts";
 import { buildOpenAPI, type OpenAPIInfo } from "./openapi.ts";
@@ -409,8 +409,14 @@ export class App<Defs extends RouteDefs = any> extends Routes<Defs> {
 
   // ----- the request path -----
 
-  /** @internal */
-  async handle(raw: RawRequest): Promise<RawResponse> {
+  /**
+   * @internal
+   * Synchronous as long as nothing on the way is asynchronous: a promise only for a body
+   * that has to be read, middleware, or a handler that returns one. Everything else answers
+   * in the same turn, without a promise, a closure per step or an extra trip through the
+   * microtask queue.
+   */
+  handle(raw: RawRequest): RawResponse | Promise<RawResponse> {
     const timed = Boolean(this.options.log || this.options.inspector);
     const started = timed ? performance.now() : 0;
     const url = target(raw.url);
@@ -426,48 +432,114 @@ export class App<Defs extends RouteDefs = any> extends Routes<Defs> {
     const incoming = idHeader ? headers[idHeader] : undefined;
     const id = incoming && SAFE_ID.test(incoming) ? incoming : randomUUID();
     if (idHeader) out.headers[idHeader] = id;
-    let result: unknown;
-
     const ctx = new RequestContext(raw, url, id, headers, out) as Context<any, any, any, any, any>;
+    const x: Exchange = { raw, url, ctx, out, notes, headers, started, timed, id: idHeader ? id : undefined, route: undefined };
 
-    let route: RouteRecord | undefined;
+    if (this.global.length) return this.throughGlobal(x);
+    let res: RawResponse;
+    try {
+      const m = this.router.match(raw.method, url.pathname);
+      if (m.kind !== "found") {
+        const p = this.unmatched(m, raw.method, url.pathname, out);
+        res = p ? this.fail(p, x) : this.respond(undefined, x);
+      } else {
+        const r = (x.route = m.route);
+        ctx.route = { method: r.method, path: r.path };
+        const reading = validateInput(ctx, r, m.params, raw); // a promise only when a body has to be parsed
+        if (reading || r.use.length) return this.later(x, r, reading);
+        const result = r.handler(ctx);
+        if (result instanceof Promise) return this.settle(x, result);
+        res = this.respond(result, x);
+      }
+    } catch (err) {
+      res = this.fail(err, x);
+    }
+    return this.finish(x, res);
+  }
+
+  /** No route for the path, or not for this method. A problem to answer with, or nothing for an OPTIONS. */
+  private unmatched(m: Match<RouteRecord>, method: string, path: string, out: Exchange["out"]): HttpProblem | undefined {
+    if (m.kind === "none") return problem(404, "not-found", `No route for ${method} ${path}`);
+    if (m.kind !== "method") return;
+    const allow = [...m.allow, "OPTIONS"].join(", ");
+    if (method === "OPTIONS") {
+      out.status = 204;
+      out.headers.allow = allow;
+      return;
+    }
+    const p = problem(405, "method-not-allowed", `${path} does not take ${method}`);
+    p.headers.allow = allow;
+    return p;
+  }
+
+  /** The rest of a request once something on its way returned a promise. */
+  private async later(x: Exchange, r: RouteRecord, reading: void | Promise<void>): Promise<RawResponse> {
+    let res: RawResponse;
+    try {
+      if (reading) await reading;
+      let result: unknown;
+      if (r.use.length) {
+        await compose(r.use, async () => {
+          result = await r.handler(x.ctx);
+        })(x.ctx);
+      } else {
+        const y = r.handler(x.ctx);
+        result = y instanceof Promise ? await y : y;
+      }
+      res = this.respond(result, x);
+    } catch (err) {
+      res = this.fail(err, x);
+    }
+    return this.finish(x, res);
+  }
+
+  private async settle(x: Exchange, pending: Promise<unknown>): Promise<RawResponse> {
+    let res: RawResponse;
+    try {
+      res = this.respond(await pending, x);
+    } catch (err) {
+      res = this.fail(err, x);
+    }
+    return this.finish(x, res);
+  }
+
+  /** With app-wide middleware every request goes through the chain, so it is asynchronous. */
+  private async throughGlobal(x: Exchange): Promise<RawResponse> {
+    const { raw, url, ctx, out } = x;
+    let result: unknown;
     const dispatch = async () => {
       const m = this.router.match(raw.method, url.pathname);
-      if (m.kind === "none") throw problem(404, "not-found", `No route for ${raw.method} ${url.pathname}`);
-      if (m.kind === "method") {
-        const allow = [...m.allow, "OPTIONS"].join(", ");
-        if (raw.method === "OPTIONS") {
-          out.status = 204;
-          out.headers.allow = allow;
-          return;
-        }
-        const p = problem(405, "method-not-allowed", `${url.pathname} does not take ${raw.method}`);
-        p.headers.allow = allow;
-        throw p;
+      if (m.kind !== "found") {
+        const p = this.unmatched(m, raw.method, url.pathname, out);
+        if (p) throw p;
+        return;
       }
-      const r = m.route;
-      route = r;
+      const r = (x.route = m.route);
       ctx.route = { method: r.method, path: r.path };
-      const reading = validateInput(ctx, r, m.params, raw); // a promise only when a body has to be parsed
+      const reading = validateInput(ctx, r, m.params, raw);
       if (reading) await reading;
       if (r.use.length) {
         await compose(r.use, async () => {
           result = await r.handler(ctx);
         })(ctx);
       } else {
-        const x = r.handler(ctx);
-        result = x instanceof Promise ? await x : x; // a sync handler costs no extra turn
+        const y = r.handler(ctx);
+        result = y instanceof Promise ? await y : y;
       }
     };
-
     let res: RawResponse;
     try {
-      if (this.global.length) await compose(this.global, dispatch)(ctx);
-      else await dispatch();
-      res = this.respond(result, out, route, notes);
+      await compose(this.global, dispatch)(ctx);
+      res = this.respond(result, x);
     } catch (err) {
-      res = this.fail(err, ctx, url.pathname, notes, out.headers, idHeader ? id : undefined);
+      res = this.fail(err, x);
     }
+    return this.finish(x, res);
+  }
+
+  /** HEAD, the log line and the inspector: what every answer goes through last. */
+  private finish(x: Exchange, res: RawResponse): RawResponse {
+    const { raw, url, route, notes } = x;
     if (raw.method === "HEAD") {
       // a HEAD answers with the length the GET would have, and without the body
       if (res.body !== undefined) res.headers["content-length"] = String(Buffer.byteLength(res.body));
@@ -476,12 +548,12 @@ export class App<Defs extends RouteDefs = any> extends Routes<Defs> {
       res.stream = undefined;
     }
 
-    if (!timed) return res;
-    const ms = Math.round((performance.now() - started) * 10) / 10;
+    if (!x.timed) return res;
+    const ms = Math.round((performance.now() - x.started) * 10) / 10;
     if (this.options.log) {
       this.logRequest({
         time: new Date().toISOString(),
-        id: idHeader ? id : undefined,
+        id: x.id,
         method: raw.method,
         path: url.pathname + url.search,
         route: route?.path,
@@ -490,7 +562,7 @@ export class App<Defs extends RouteDefs = any> extends Routes<Defs> {
         notes,
       });
     }
-    if (this.options.inspector) this.remember(raw, url, res, route, ms, notes, headers, idHeader ? id : undefined);
+    if (this.options.inspector) this.remember(raw, url, res, route, ms, notes, x.headers, x.id);
     return res;
   }
 
@@ -504,12 +576,8 @@ export class App<Defs extends RouteDefs = any> extends Routes<Defs> {
     console.log(`  ${c.method(entry.method, entry.method.padEnd(6))} ${entry.path}  ${c.status(entry.status)}  ${c.dim(entry.ms + "ms")}${flag}`);
   }
 
-  private respond(
-    result: unknown,
-    out: { status: number; headers: Record<string, string> },
-    route: RouteRecord | undefined,
-    notes: string[],
-  ): RawResponse {
+  private respond(result: unknown, x: Exchange): RawResponse {
+    const { out, route, notes } = x;
     const plan = route ? planOf(route) : undefined;
     let status = out.status;
     let body = result;
@@ -569,29 +637,22 @@ export class App<Defs extends RouteDefs = any> extends Routes<Defs> {
     return encode(status, body, headers);
   }
 
-  private fail(
-    err: unknown,
-    ctx: Context<any, any, any, any, any>,
-    path: string,
-    notes: string[],
-    set: Record<string, string>,
-    requestId?: string,
-  ): RawResponse {
+  private fail(err: unknown, x: Exchange): RawResponse {
     let p: HttpProblem;
     if (err instanceof HttpProblem) p = err;
     else {
-      if (this.options.onError) this.options.onError(err, ctx);
+      if (this.options.onError) this.options.onError(err, x.ctx);
       else console.error(err);
       const detail = this.dev && err instanceof Error ? err.message : "Something went wrong on our side";
       p = problem(500, "internal", detail);
     }
-    if (p.type === "validation") notes.push("input broke the contract");
+    if (p.type === "validation") x.notes.push("input broke the contract");
     const body = p.toJSON();
-    body.instance = path;
-    if (requestId) body.requestId = requestId; // so a user's bug report points at the right log line
+    body.instance = x.url.pathname;
+    if (x.id) body.requestId = x.id; // so a user's bug report points at the right log line
     return {
       status: p.status,
-      headers: withProblemHeaders(set, p.headers),
+      headers: withProblemHeaders(x.out.headers, p.headers),
       body: JSON.stringify(body),
     };
   }
@@ -657,34 +718,55 @@ export class App<Defs extends RouteDefs = any> extends Routes<Defs> {
     return (req: IncomingMessage, res: ServerResponse) => void this.serve(req, res);
   }
 
-  private async serve(req: IncomingMessage, res: ServerResponse) {
+  // Synchronous for a request without a body whose handler is: no promise, no extra turn.
+  private serve(req: IncomingMessage, res: ServerResponse) {
     const limit = this.options.bodyLimit!;
     const hasBody = req.headers["content-length"] !== undefined || req.headers["transfer-encoding"] !== undefined;
-    let tooLarge = Number(req.headers["content-length"] ?? 0) > limit;
-    let body: Buffer | undefined;
-    if (!tooLarge && hasBody && req.method !== "GET" && req.method !== "HEAD") {
-      const read = await readRequestBody(req, limit);
-      if (read === TOO_LARGE) tooLarge = true;
-      else body = read;
+    if (Number(req.headers["content-length"] ?? 0) > limit) return this.tooLarge(req, res, limit);
+    if (hasBody && req.method !== "GET" && req.method !== "HEAD") {
+      readRequestBody(req, limit).then(
+        (read) => (read === TOO_LARGE ? this.tooLarge(req, res, limit) : this.pass(req, res, read)),
+        (err) => this.broken(req, res, err),
+      );
+      return;
     }
-    let out: RawResponse;
-    if (tooLarge) {
-      const p = problem(413, "body-too-large", `Request bodies may be at most ${limit} bytes`);
-      out = {
-        status: 413,
-        headers: { "content-type": "application/problem+json", connection: "close" },
-        body: JSON.stringify({ ...p.toJSON(), instance: req.url }),
-      };
-    } else {
-      out = await this.handle({
-        method: req.method ?? "GET",
-        url: req.url ?? "/",
-        headers: req.headers,
-        body,
-        req,
-        res,
-      });
+    this.pass(req, res, undefined);
+  }
+
+  private pass(req: IncomingMessage, res: ServerResponse, body: Buffer | undefined) {
+    let out: RawResponse | Promise<RawResponse>;
+    try {
+      out = this.handle({ method: req.method ?? "GET", url: req.url ?? "/", headers: req.headers, body, req, res });
+    } catch (err) {
+      return this.broken(req, res, err);
     }
+    if (out instanceof Promise) {
+      out.then(
+        (o) => this.send(res, o),
+        (err) => this.broken(req, res, err),
+      );
+    } else this.send(res, out);
+  }
+
+  private tooLarge(req: IncomingMessage, res: ServerResponse, limit: number) {
+    const p = problem(413, "body-too-large", `Request bodies may be at most ${limit} bytes`);
+    this.send(res, {
+      status: 413,
+      headers: { "content-type": "application/problem+json", connection: "close" },
+      body: JSON.stringify({ ...p.toJSON(), instance: req.url }),
+    });
+  }
+
+  /** Something failed outside every handler (the socket, inkan itself): log it and answer 500. */
+  private broken(req: IncomingMessage, res: ServerResponse, err: unknown) {
+    if (this.options.onError) this.options.onError(err, { req, res } as never);
+    else console.error(err);
+    if (res.headersSent) return void res.destroy();
+    const body = JSON.stringify({ type: "internal", title: "Internal Server Error", status: 500, instance: req.url });
+    this.send(res, { status: 500, headers: { "content-type": "application/problem+json" }, body });
+  }
+
+  private send(res: ServerResponse, out: RawResponse) {
     if (res.headersSent || res.writableEnded) return; // a handler wrote to `res` itself
     if (!out.stream) {
       // writeHead fixes the headers at once; without a length Node falls back to chunked
@@ -696,7 +778,10 @@ export class App<Defs extends RouteDefs = any> extends Routes<Defs> {
       return void res.end(out.body);
     }
     res.writeHead(out.status, out.headers);
+    void this.pipe(res, out);
+  }
 
+  private async pipe(res: ServerResponse, out: RawResponse) {
     const source = out.stream as AsyncIterable<Uint8Array | string> & { destroy?: () => void };
     const stop = () => {
       out.abort?.abort();
@@ -709,7 +794,7 @@ export class App<Defs extends RouteDefs = any> extends Routes<Defs> {
         if (!res.write(chunk)) await new Promise((resolve) => res.once("drain", resolve));
       }
     } catch (err) {
-      if (this.options.onError) this.options.onError(err, { req, res } as never);
+      if (this.options.onError) this.options.onError(err, { req: res.req, res } as never);
       else console.error(err);
     } finally {
       res.off("close", stop);
@@ -804,6 +889,21 @@ function compose(mw: Middleware[], last: () => Promise<void>) {
     await run(0);
   };
 }
+
+/** One request on its way through the app: what every step after routing needs. */
+type Exchange = {
+  raw: RawRequest;
+  url: Target;
+  ctx: Context<any, any, any, any, any>;
+  out: { status: number; headers: Record<string, string> };
+  notes: string[];
+  headers: Record<string, string>;
+  started: number;
+  timed: boolean;
+  /** The request id, when the app sends one. */
+  id: string | undefined;
+  route: RouteRecord | undefined;
+};
 
 /** A request target split into its path and its query. A class, so every one has the same shape. */
 class Target {

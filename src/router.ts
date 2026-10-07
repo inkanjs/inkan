@@ -67,17 +67,13 @@ export class Router<R> {
     let routes = encoded ? undefined : this.exact.get(path);
     const params: Record<string, string> = {};
     if (!routes) {
-      let segments = splitPath(path);
-      if (encoded) {
-        try {
-          segments = segments.map(decodeURIComponent);
-        } catch {
-          return NONE;
-        }
-      }
       const names: string[] = [];
       const values: string[] = [];
-      routes = this.walk(this.root, segments, 0, names, values);
+      try {
+        routes = this.walk(this.root, path, 0, encoded, names, values);
+      } catch {
+        return NONE; // a broken %-escape
+      }
       if (!routes) return NONE;
       for (let i = 0; i < names.length; i++) params[names[i]] = values[i];
     }
@@ -88,9 +84,13 @@ export class Router<R> {
     return { kind: "method", allow };
   }
 
-  // Depth first; the names and values of the parameters on the winning path are left in the arrays.
-  private walk(n: Node<R>, segs: string[], i: number, names: string[], values: string[]): Map<string, R> | undefined {
-    if (i === segs.length) {
+  // Depth first, straight over the path: one segment at a time, no array of them. Empty
+  // segments (`//`, a trailing `/`) are skipped. The names and values of the parameters on
+  // the winning path are left in the arrays.
+  private walk(n: Node<R>, path: string, at: number, decode: boolean, names: string[], values: string[]): Map<string, R> | undefined {
+    let i = at;
+    while (path.charCodeAt(i) === 47) i++; // "/"
+    if (i >= path.length) {
       if (n.routes.size) return n.routes;
       if (n.wildcard) {
         names.push(n.wildcard.name);
@@ -99,22 +99,26 @@ export class Router<R> {
       }
       return undefined;
     }
-    const s = n.statics.get(segs[i]);
+    let end = path.indexOf("/", i);
+    if (end < 0) end = path.length;
+    const seg = decode ? decodeURIComponent(path.slice(i, end)) : path.slice(i, end);
+    const s = n.statics.get(seg);
     if (s) {
-      const hit = this.walk(s, segs, i + 1, names, values);
+      const hit = this.walk(s, path, end, decode, names, values);
       if (hit) return hit;
     }
     if (n.param) {
       names.push(n.param.name);
-      values.push(segs[i]);
-      const hit = this.walk(n.param.node, segs, i + 1, names, values);
+      values.push(seg);
+      const hit = this.walk(n.param.node, path, end, decode, names, values);
       if (hit) return hit;
       names.pop();
       values.pop();
     }
     if (n.wildcard) {
+      const rest = splitPath(path.slice(i));
       names.push(n.wildcard.name);
-      values.push(segs.slice(i).join("/"));
+      values.push((decode ? rest.map(decodeURIComponent) : rest).join("/"));
       return n.wildcard.routes;
     }
     return undefined;

@@ -13,7 +13,13 @@ export type ProblemBody = {
   [extra: string]: unknown;
 };
 
-export class HttpProblem extends Error {
+// A problem is an answer, not a crash: nobody reads its stack. So it is not built by the
+// Error constructor, which records one even with `stackTraceLimit` at 0 and made every
+// 404 and 400 cost sixty times what the object does. Its prototype chain still runs
+// through Error.prototype, so `instanceof Error` holds and loggers print it as an error.
+export class HttpProblem implements Error {
+  name = "HttpProblem";
+  message: string;
   status: number;
   type: string;
   title: string;
@@ -28,19 +34,18 @@ export class HttpProblem extends Error {
     extra: Record<string, unknown> = {},
     headers: Record<string, string> = {},
   ) {
-    // A problem is an answer, not a crash: nobody reads its stack, and capturing one made
-    // every 404 and 400 several times slower than a 200. So none is captured.
-    const limit = Error.stackTraceLimit;
-    Error.stackTraceLimit = 0;
-    super(detail ?? type);
-    Error.stackTraceLimit = limit;
-    this.name = "HttpProblem";
+    this.message = detail ?? type;
     this.status = status;
     this.type = type;
     this.title = STATUS_CODES[status] ?? "Error";
     this.detail = detail;
     this.extra = extra;
     this.headers = headers;
+  }
+
+  /** The one line a stack would start with; there are no frames behind it. */
+  get stack(): string {
+    return `${this.name}: ${this.message}`;
   }
 
   toJSON(): ProblemBody {
@@ -50,6 +55,8 @@ export class HttpProblem extends Error {
     return body;
   }
 }
+
+Object.setPrototypeOf(HttpProblem.prototype, Error.prototype);
 
 /**
  * Stops the handler with an error response.
