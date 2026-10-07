@@ -57,6 +57,22 @@
   `after` rather than from the files, and a broken step, an `after` that points nowhere or a
   circle each fail with a sentence that says which. The docs page runs the chain when you
   press send, and the tea-shop example shows it. ([#10](https://github.com/vxnsin/inkan/issues/10))
+- **Streams.** A handler may return a Node `Readable`, a web `ReadableStream` or any async
+  iterable; it goes out piece by piece, with backpressure, and stops when the client leaves.
+  ([#5](https://github.com/vxnsin/inkan/issues/5))
+- **Server-sent events.** `sse(async function* (signal) { … })` answers with an event stream,
+  and `t.events({ tick: … })` puts one schema per event into the contract and into OpenAPI as
+  `text/event-stream`. The signal fires when the client goes away, quiet streams get a
+  keep-alive comment, and in development an event that breaks its schema ends the stream with
+  an `error` event. `inkan check`, `app.inject({ events: n })` and the docs page read as many
+  events as an example expects, so endless streams can be examples too.
+  ([#5](https://github.com/vxnsin/inkan/issues/5))
+- **Uploads.** `t.file().max(bytes).accept("image/*")` in a body makes it
+  `multipart/form-data`, parsed by the platform itself, with no dependency. Files arrive as
+  `{ name, type, size, data }`, the fields next to them are coerced like a query, and a file
+  that is too big or of the wrong type is a 400 that says which. `fileExample(name, content,
+  type)` puts a file into an example; `inject` takes a `FormData` too.
+  ([#5](https://github.com/vxnsin/inkan/issues/5))
 
 ### Changed
 
