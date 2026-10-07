@@ -4,6 +4,7 @@
 
 import { contractFor, type App, type Example, type InjectResponse, type RouteRecord } from "./app.ts";
 import { paint } from "./color.ts";
+import { EventsSchema } from "./schema.ts";
 
 export type CheckOptions = {
   /** Runs before every example, e.g. to reset an in-memory store. */
@@ -163,8 +164,12 @@ async function runChain(app: App, chain: Step[]): Promise<Kept> {
   return kept;
 }
 
+// An event stream may never end, so an example reads as many events as it expects, or five.
+const eventsFor = (r: RouteRecord, ex: Example) =>
+  contractFor(r, expectedStatus(r, ex) ?? 200) instanceof EventsSchema ? (Array.isArray(ex.expect) ? ex.expect.length : 5) : undefined;
+
 const send = (app: App, r: RouteRecord, ex: Example) =>
-  app.inject({ method: r.method, url: fill(r.path, ex.params) + queryString(ex.query), headers: ex.headers, body: ex.body });
+  app.inject({ method: r.method, url: fill(r.path, ex.params) + queryString(ex.query), headers: ex.headers, body: ex.body, events: eventsFor(r, ex) });
 
 async function runOne(app: App, r: RouteRecord, raw: Example, i: number, index: Map<string, Step>, beforeEach?: () => unknown): Promise<CheckResult> {
   const name = raw.name ?? `example ${i + 1}`;
@@ -187,6 +192,11 @@ async function runOne(app: App, r: RouteRecord, raw: Example, i: number, index: 
       const schema = contractFor(r, status);
       if (status === 204) {
         if (res.text) problems.push("answered 204 with a body");
+      } else if (schema instanceof EventsSchema) {
+        (res.body as unknown[]).forEach((event, n) => {
+          const v = schema.safeParse(event);
+          if (!v.ok) for (const issue of v.issues) problems.push(`event ${n + 1} ${issue.path || ""} ${issue.message}`.replace(/\s+/g, " "));
+        });
       } else if (schema) {
         const v = schema.safeParse(res.body === "" ? undefined : res.body);
         if (!v.ok) for (const issue of v.issues) problems.push(`response ${issue.path || "(body)"} ${issue.message}`);

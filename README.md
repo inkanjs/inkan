@@ -261,6 +261,56 @@ res.status; // 400
 res.body.errors; // [{ in: "body", path: "kind", message: "is required" }, …]
 ```
 
+## Streams, events and uploads
+
+A handler may return a stream instead of a value: a Node `Readable`, a web `ReadableStream`
+or any async iterable. It goes out piece by piece, as it comes.
+
+**Server-sent events** have a contract like any other answer, one schema per event:
+
+```ts
+import { sse, t } from "@vxnsin/inkan";
+
+app.get(
+  "/clock",
+  {
+    response: { 200: t.events({ tick: t.object({ n: t.int() }) }) },
+    examples: [{ name: "three ticks", expect: [{ data: { n: 1 } }, { data: { n: 2 } }, { data: { n: 3 } }] }],
+  },
+  () =>
+    sse(async function* (signal) {
+      for (let n = 1; !signal.aborted; n++) {
+        yield { event: "tick", data: { n } };
+        await sleep(1000);
+      }
+    }),
+);
+```
+
+The `signal` fires when the client goes away, so the loop stops. Quiet streams get a
+keep-alive comment every 15 seconds. In development, an event that breaks its schema ends the
+stream with an `error` event and a line on the console. `inkan check` and the docs page read
+as many events as an example expects, so a stream that never ends can still be an example.
+
+**Uploads** are a `t.file()` in the body. A body with a file is read as
+`multipart/form-data`, and OpenAPI says so:
+
+```ts
+import { fileExample, t } from "@vxnsin/inkan";
+
+app.post(
+  "/avatars",
+  {
+    body: t.object({ user: t.int(), image: t.file().max(200_000).accept("image/png", "image/jpeg") }),
+    examples: [{ name: "a tiny png", body: { user: 1, image: fileExample("me.png", "…", "image/png") } }],
+  },
+  ({ body }) => save(body.user, body.image.data), // name, type, size and data: a Buffer
+);
+```
+
+Fields next to the file are coerced like a query (`"1"` becomes `1`). A file that is too big
+or of the wrong type is a 400 that says which, and `bodyLimit` still caps the whole upload.
+
 ## Middleware and groups
 
 ```ts

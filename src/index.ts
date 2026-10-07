@@ -15,7 +15,9 @@ export type {
   RouteSpec,
 } from "./app.ts";
 export { t, Schema, ValidationError } from "./schema.ts";
-export type { Infer, Issue, JsonSchema, SafeResult } from "./schema.ts";
+export type { Infer, Issue, JsonSchema, SafeResult, ServerEvent, UploadedFile } from "./schema.ts";
+export { sse, fileExample, EventStream } from "./stream.ts";
+export type { SseEvent } from "./stream.ts";
 export { problem, HttpProblem } from "./problem.ts";
 export type { ProblemBody } from "./problem.ts";
 export { buildOpenAPI } from "./openapi.ts";

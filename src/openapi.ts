@@ -3,7 +3,12 @@
 
 import { STATUS_CODES } from "node:http";
 import type { RouteRecord } from "./app.ts";
-import { ObjectSchema, t, type JsonSchema, type RefContext, type Schema } from "./schema.ts";
+import { ArraySchema, EventsSchema, FileSchema, ObjectSchema, t, type JsonSchema, type RefContext, type Schema } from "./schema.ts";
+
+/** A body with a file anywhere at its top level goes as multipart/form-data. */
+const carriesFiles = (s: Schema<any>) =>
+  s instanceof ObjectSchema &&
+  Object.values(s.shape as Record<string, Schema<any>>).some((f) => f instanceof FileSchema || (f instanceof ArraySchema && f.item instanceof FileSchema));
 
 export type OpenAPIInfo = {
   title?: string;
@@ -80,7 +85,8 @@ export function buildOpenAPI(records: RouteRecord[], info: OpenAPIInfo = {}) {
       if (examples.length) {
         media.examples = Object.fromEntries(examples.map((e, i) => [e.name ?? `example${i + 1}`, { value: e.body }]));
       }
-      op.requestBody = { required: !spec.body.meta.optional, content: { "application/json": media } };
+      const type = carriesFiles(spec.body) ? "multipart/form-data" : "application/json";
+      op.requestBody = { required: !spec.body.meta.optional, content: { [type]: media } };
     }
 
     const responses: Record<string, unknown> = {};
@@ -88,7 +94,8 @@ export function buildOpenAPI(records: RouteRecord[], info: OpenAPIInfo = {}) {
       const code = Number(status);
       const res: Record<string, unknown> = { description: schema.meta.description ?? STATUS_CODES[code] ?? "" };
       if (code !== 204) {
-        res.content = { [code >= 400 ? "application/problem+json" : "application/json"]: { schema: schema._schema(ctx) } };
+        const type = schema instanceof EventsSchema ? "text/event-stream" : code >= 400 ? "application/problem+json" : "application/json";
+        res.content = { [type]: { schema: schema._schema(ctx) } };
       }
       responses[status] = res;
     }

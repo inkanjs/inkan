@@ -94,7 +94,7 @@ function lit(s) { return '<span class="lit">' + esc(s) + "</span>"; }
 function ty(s) { return '<span class="ty">' + esc(s) + "</span>"; }
 function note(s) {
   var n = [];
-  if (s.format) n.push(s.format);
+  if (s.format && s.format !== "binary") n.push(s.format);
   if (s.minimum !== undefined || s.maximum !== undefined) n.push((s.minimum !== undefined ? s.minimum : "") + ".." + (s.maximum !== undefined ? s.maximum : ""));
   if (s.minLength !== undefined || s.maxLength !== undefined) n.push("length " + (s.minLength || 0) + ".." + (s.maxLength !== undefined ? s.maxLength : ""));
   if (s.pattern) n.push("/" + s.pattern + "/");
@@ -106,7 +106,8 @@ function render(s, pad) {
   pad = pad || "";
   if (!s || !Object.keys(s).length) return ty("any");
   if (s.$ref) { var name = s.$ref.split("/").pop(); return '<a class="ty-ref" href="#schema-' + esc(name) + '">' + esc(name) + "</a>"; }
-  if (s.anyOf) return s.anyOf.map(function (x) { return render(x, pad); }).join(" | ");
+  if (s.anyOf || s.oneOf) return (s.anyOf || s.oneOf).map(function (x) { return render(x, pad); }).join(" | ");
+  if (s.format === "binary") return ty("file") + (s.contentMediaType ? '  <span class="cm">// ' + esc(s.contentMediaType) + "</span>" : "");
   if (s.const !== undefined) return lit(JSON.stringify(s.const));
   if (s.enum) return s.enum.map(function (v) { return lit(JSON.stringify(v)); }).join(" | ");
   if (s.type === "null") return ty("null");
@@ -248,7 +249,8 @@ function runChain(i) {
   chain.forEach(function (s) {
     done = done.then(function () {
       var req = request(s, kept, true), init = { method: req.method, headers: req.headers };
-      if (req.body !== undefined) init.body = req.body;
+      if (req.form) init.body = req.form;
+      else if (req.body !== undefined) init.body = req.body;
       return fetch(req.url, init).then(function (res) {
         return res.text().then(function (text) {
           var a = answerOf(res, text), want = expected(ROUTES[s].op, ROUTES[s].ex), label = ROUTES[s].method.toUpperCase() + " " + ROUTES[s].path + " > " + ROUTES[s].name;
@@ -280,6 +282,7 @@ function request(i, kept, plain) {
     if (req.body !== undefined) { try { req.body = JSON.stringify(substitute(JSON.parse(req.body), kept)); } catch (e) { req.body = substitute(req.body, kept); } }
     req.edited = true;
   }
+  if (!req.edited && hasFiles(ex.body)) { req.form = toForm(ex.body); req.body = undefined; } // the browser writes the multipart boundary
   if (req.body !== undefined && !hasHeader(req.headers, "content-type")) req.headers["content-type"] = "application/json";
   var auth = authValue();
   if (auth && !hasHeader(req.headers, auth.name)) req.headers[auth.name] = auth.value;
@@ -323,17 +326,47 @@ function curl(i) {
     navigator.clipboard.writeText(text).then(function () { done("copied to the clipboard"); }, function () { done("copy it from here"); });
   } else done("copy it from here");
 }
+// ----- files in examples, and event streams that may never end -----
+function isFile(v) { return v && typeof v === "object" && typeof v.$file === "string"; }
+function hasFiles(body) {
+  return !!body && typeof body === "object" && Object.keys(body).some(function (k) { var v = body[k]; return isFile(v) || (Array.isArray(v) && v.some(isFile)); });
+}
+function toForm(body) {
+  var form = new FormData();
+  Object.keys(body).forEach(function (k) {
+    [].concat(body[k]).forEach(function (v) {
+      if (isFile(v)) form.append(k, new Blob([v.content], { type: v.type }), v.$file);
+      else if (v !== undefined) form.append(k, typeof v === "object" ? JSON.stringify(v) : String(v));
+    });
+  });
+  return form;
+}
+// An event stream is read until it has as many events as the example expects, then let go.
+function readAll(res, events) {
+  if (!/text\\/event-stream/.test(res.headers.get("content-type") || "")) return res.text();
+  var reader = res.body.getReader(), dec = new TextDecoder(), text = "";
+  var count = function () { return text.split("\\n\\n").filter(function (b) { return b.trim() && b.trim()[0] !== ":"; }).length; };
+  return (function pump() {
+    return reader.read().then(function (r) {
+      if (!r.done) text += dec.decode(r.value, { stream: true });
+      if (r.done || count() >= events) { reader.cancel(); return text; }
+      return pump();
+    });
+  })();
+}
 function send(i) {
   var r = ROUTES[i], el = document.getElementById(r.el), out = el.querySelector(".out"), req, t0;
   out.innerHTML = '<p class="muted mono">' + (r.ex.after ? "running what comes first…" : "sending…") + "</p>";
   return Promise.resolve().then(function () { return r.ex.after ? runChain(i) : {}; }).then(function (kept) {
     req = request(i, kept);
     var init = { method: req.method, headers: req.headers };
-    if (req.body !== undefined) init.body = req.body;
+    if (req.form) init.body = req.form;
+    else if (req.body !== undefined) init.body = req.body;
     t0 = performance.now();
     return fetch(req.url, init);
   }).then(function (res) {
-    return res.text().then(function (text) {
+    var limit = Array.isArray(r.ex.expect) ? r.ex.expect.length : 5;
+    return readAll(res, limit).then(function (text) {
       var ms = Math.round(performance.now() - t0), want = expected(r.op, r.ex);
       var ok = want === undefined ? res.status < 300 : res.status === want, pretty = text;
       try { pretty = JSON.stringify(JSON.parse(text), null, 2); } catch (e) {}

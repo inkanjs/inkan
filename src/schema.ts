@@ -544,6 +544,78 @@ export class DiscriminatedSchema<K extends string, S extends Record<string, Obje
   }
 }
 
+// ---------- files and server-sent events ----------
+
+/** A file from a multipart/form-data upload. */
+export type UploadedFile = { name: string; type: string; size: number; data: Buffer };
+
+const isUploaded = (v: unknown): v is UploadedFile =>
+  typeof v === "object" && v !== null && Buffer.isBuffer((v as UploadedFile).data) && typeof (v as UploadedFile).name === "string";
+
+export class FileSchema extends Schema<UploadedFile> {
+  private rules: { max?: number; accept?: string[] } = {};
+
+  /** The largest file in bytes. The request body limit of the app still applies to the whole upload. */
+  max(bytes: number) { const c = this.clone(); c.rules = { ...this.rules, max: bytes }; return c; }
+  /** Media types that may come in: `"image/png"`, or `"image/*"` for a whole family. */
+  accept(...types: string[]) { const c = this.clone(); c.rules = { ...this.rules, accept: types }; return c; }
+
+  protected check(v: unknown, path: string, _coerce: boolean, issues: Issue[]) {
+    if (!isUploaded(v)) {
+      issues.push({ path, message: "expected a file, sent as multipart/form-data" });
+      return FAIL;
+    }
+    const { max, accept } = this.rules;
+    if (max !== undefined && v.size > max) issues.push({ path, message: `is ${v.size} bytes, at most ${max} are allowed` });
+    if (accept && !accept.some((a) => (a.endsWith("/*") ? v.type.startsWith(a.slice(0, -1)) : v.type === a))) {
+      issues.push({ path, message: `has to be ${accept.join(" or ")}, got ${v.type || "no type"}` });
+    }
+    return v;
+  }
+
+  protected json() {
+    const s: JsonSchema = { type: "string", format: "binary" };
+    if (this.rules.accept?.length === 1) s.contentMediaType = this.rules.accept[0];
+    if (this.rules.max !== undefined) s["x-max-bytes"] = this.rules.max;
+    return s;
+  }
+}
+
+/** One event of a server-sent event stream, as a handler yields it and a client reads it. */
+export type ServerEvent<E extends Record<string, Schema<any>>> = {
+  [K in keyof E & string]: { event: K; data: Infer<E[K]>; id?: string };
+}[keyof E & string];
+
+/** The events a stream may send, by name. Every event is checked against its schema. */
+export class EventsSchema<E extends Record<string, Schema<any>>> extends Schema<ServerEvent<E>> {
+  events: E;
+  constructor(events: E) {
+    super();
+    this.events = events;
+  }
+  protected check(v: unknown, path: string, coerce: boolean, issues: Issue[]) {
+    const e = v as { event?: unknown; data?: unknown; id?: unknown };
+    const name = typeof e?.event === "string" ? e.event : "message";
+    const schema = this.events[name];
+    if (!schema) {
+      issues.push({ path, message: `the event ${JSON.stringify(name)} is not in the contract` });
+      return FAIL;
+    }
+    const data = schema._run(e?.data, path ? `${path}.data` : "data", coerce, issues);
+    if (data === FAIL) return FAIL;
+    return { ...e, event: name, data } as ServerEvent<E>;
+  }
+  protected json(ctx?: RefContext) {
+    return {
+      oneOf: Object.entries(this.events).map(([name, s]) => ({
+        type: "object",
+        properties: { event: { const: name }, data: s._schema(ctx), id: { type: "string" } },
+        required: ["event", "data"],
+      })),
+    };
+  }
+}
+
 const problemShape = {
   type: new StringSchema().describe("A stable code for this kind of problem"),
   title: new StringSchema(),
@@ -569,6 +641,10 @@ export const t = {
   any: <T = unknown>() => new AnySchema<T>(),
   /** No body at all, for a 204. */
   empty: () => new AnySchema<undefined>().optional().describe("No content"),
+  /** A file in a multipart/form-data body. A body with a file in it is read as multipart. */
+  file: () => new FileSchema(),
+  /** A server-sent event stream: the events it may send, each with the schema of its data. */
+  events: <E extends Record<string, Schema<any>>>(events: E) => new EventsSchema(events),
   /** An RFC 9457 problem document, the shape every inkan error has. */
   problem: () =>
     new ObjectSchema(problemShape).passthrough().named("Problem").describe("An RFC 9457 problem document"),

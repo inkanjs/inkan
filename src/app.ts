@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { HttpProblem, problem, type ProblemBody } from "./problem.ts";
 import { Router } from "./router.ts";
-import { t, type Infer, type Issue, type Schema } from "./schema.ts";
+import { EventsSchema, t, type Infer, type Issue, type Schema, type UploadedFile } from "./schema.ts";
+import { encodeEvents, EventStream, hasFiles, isStream, parseEvents, toFormData, type SseEvent } from "./stream.ts";
 import { buildOpenAPI, type OpenAPIInfo } from "./openapi.ts";
 import { docsPage, inspectorPage } from "./pages.ts";
 import { exampleFrom } from "./record.ts";
@@ -106,7 +107,7 @@ export type Context<P = Record<string, string>, Q = RawQuery, B = unknown, H = R
   res?: ServerResponse;
 };
 
-type Result<R extends Responses> = SuccessBody<R> | Reply | void;
+type Result<R extends Responses> = SuccessBody<R> | Reply | EventStream | AsyncIterable<Uint8Array | string> | void;
 export type Handler<P, Q, B, H, R extends Responses> = (ctx: Context<P, Q, B, H, R>) => Result<R> | Promise<Result<R>>;
 export type Middleware = (ctx: Context<any, any, any, any, any>, next: () => Promise<void>) => unknown;
 
@@ -210,15 +211,17 @@ export type InjectOptions = {
   method?: string;
   url: string;
   headers?: Record<string, string>;
-  /** Objects are sent as JSON. */
+  /** Objects are sent as JSON, a FormData (or an object holding a `fileExample`) as multipart. */
   body?: unknown;
+  /** For a server-sent event stream: stop reading after this many events. Endless streams need it. */
+  events?: number;
 };
 
 export type InjectResponse = {
   status: number;
   headers: Record<string, string>;
   text: string;
-  /** Parsed JSON when the answer was JSON, otherwise the text. */
+  /** Parsed JSON when the answer was JSON, the events of an event stream, otherwise the text. */
   body: any;
 };
 
@@ -232,7 +235,15 @@ type RawRequest = {
   res?: ServerResponse;
 };
 
-type RawResponse = { status: number; headers: Record<string, string>; body?: string | Buffer };
+type RawResponse = {
+  status: number;
+  headers: Record<string, string>;
+  body?: string | Buffer;
+  /** Sent piece by piece instead of `body`. */
+  stream?: AsyncIterable<Uint8Array | string>;
+  /** Tells the stream's source that nobody is reading any more. */
+  abort?: AbortController;
+};
 
 /** What gets logged for every request. */
 export type RequestLog = {
@@ -338,17 +349,32 @@ export class App extends Routes {
     const headers: Record<string, string> = {};
     for (const [k, v] of Object.entries(opts.headers ?? {})) headers[k.toLowerCase()] = v;
     let body: Buffer | undefined;
-    if (opts.body !== undefined) {
-      if (Buffer.isBuffer(opts.body)) body = opts.body;
-      else if (typeof opts.body === "string") body = Buffer.from(opts.body);
-      else {
-        body = Buffer.from(JSON.stringify(opts.body));
+    const given = hasFiles(opts.body) ? toFormData(opts.body as Record<string, unknown>) : opts.body;
+    if (given !== undefined) {
+      if (Buffer.isBuffer(given)) body = given;
+      else if (typeof given === "string") body = Buffer.from(given);
+      else if (given instanceof FormData) {
+        const encoded = new Response(given); // the platform writes the multipart body and its boundary
+        body = Buffer.from(await encoded.arrayBuffer());
+        headers["content-type"] ??= encoded.headers.get("content-type")!;
+      } else {
+        body = Buffer.from(JSON.stringify(given));
         headers["content-type"] ??= "application/json";
       }
     }
     const res = await this.handle({ method: (opts.method ?? "GET").toUpperCase(), url: opts.url, headers, body });
-    const text = res.body === undefined ? "" : res.body.toString();
-    const json = /json/.test(res.headers["content-type"] ?? "");
+    const type = res.headers["content-type"] ?? "";
+    let text = res.body === undefined ? "" : res.body.toString();
+    if (res.stream) {
+      const sse = type.startsWith("text/event-stream");
+      for await (const chunk of res.stream) {
+        text += typeof chunk === "string" ? chunk : Buffer.from(chunk).toString();
+        if (sse && opts.events !== undefined && parseEvents(text).length >= opts.events) break; // stops the source too
+      }
+      res.abort?.abort();
+      if (type.startsWith("text/event-stream")) return { status: res.status, headers: res.headers, text, body: parseEvents(text) };
+    }
+    const json = /json/.test(type);
     return { status: res.status, headers: res.headers, text, body: json && text ? JSON.parse(text) : text };
   }
 
@@ -409,7 +435,7 @@ export class App extends Routes {
       const r = m.route;
       route = r;
       ctx.route = { method: r.method, path: r.path };
-      validateInput(ctx, r, m.params, raw);
+      await validateInput(ctx, r, m.params, raw);
       await compose(r.use, async () => {
         result = await r.handler(ctx);
       })(ctx);
@@ -422,7 +448,11 @@ export class App extends Routes {
     } catch (err) {
       res = this.fail(err, ctx, url.pathname, notes, out.headers, idHeader ? id : undefined);
     }
-    if (raw.method === "HEAD") res.body = undefined;
+    if (raw.method === "HEAD") {
+      res.body = undefined;
+      res.abort?.abort();
+      res.stream = undefined;
+    }
 
     const ms = Math.round((performance.now() - started) * 10) / 10;
     this.logRequest({
@@ -468,6 +498,27 @@ export class App extends Routes {
       // No body means 204. Otherwise the first 2xx the contract lists, or 200.
       const declared = Object.keys(responses).map(Number).filter((s) => s >= 200 && s < 300 && s !== 204).sort();
       status = body === undefined ? 204 : (declared[0] ?? 200);
+    }
+
+    if (body instanceof EventStream) {
+      const schema = route ? contractFor(route, status) : undefined;
+      const abort = new AbortController();
+      const check =
+        schema instanceof EventsSchema && this.options.validateResponses
+          ? (e: SseEvent) => {
+              const r = schema.safeParse({ event: e.event ?? "message", data: e.data, id: e.id });
+              if (r.ok) return;
+              const lines = r.issues.map((i) => `${i.path || "(event)"} ${i.message}`).join("; ");
+              console.error(`inkan: ${route!.method} ${route!.path} sent an event that breaks its contract: ${lines}`);
+              return `An event broke the contract: ${lines}`;
+            }
+          : undefined;
+      const sseHeaders = { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache", "x-accel-buffering": "no", ...headers };
+      return { status, headers: sseHeaders, stream: encodeEvents(body, abort.signal, check), abort };
+    }
+    if (isStream(body)) {
+      // a stream cannot be checked against a schema before it is sent; it goes out as it comes
+      return { status, headers: { "content-type": "application/octet-stream", ...headers }, stream: body };
     }
 
     if (route && Object.keys(responses).length && status !== 204) {
@@ -562,7 +613,7 @@ export class App extends Routes {
       ms,
       notes,
       request: { headers: shown, body: body === undefined ? undefined : clip(body), clipped: body !== undefined && body.length > CLIP },
-      response: { body: res.body === undefined ? undefined : clip(res.body.toString()) },
+      response: { body: res.stream ? "(a stream)" : res.body === undefined ? undefined : clip(res.body.toString()) },
     };
     entry.example = exampleFrom(entry);
     this.log.push(entry);
@@ -612,7 +663,26 @@ export class App extends Routes {
     }
     if (res.headersSent || res.writableEnded) return; // a handler wrote to `res` itself
     res.writeHead(out.status, out.headers);
-    res.end(out.body);
+    if (!out.stream) return void res.end(out.body);
+
+    const source = out.stream as AsyncIterable<Uint8Array | string> & { destroy?: () => void };
+    const stop = () => {
+      out.abort?.abort();
+      source.destroy?.();
+    };
+    res.once("close", stop); // the client went away: tell the source, so it stops producing
+    try {
+      for await (const chunk of source) {
+        if (res.destroyed) break;
+        if (!res.write(chunk)) await new Promise((resolve) => res.once("drain", resolve));
+      }
+    } catch (err) {
+      if (this.options.onError) this.options.onError(err, { req, res } as never);
+      else console.error(err);
+    } finally {
+      res.off("close", stop);
+      res.end();
+    }
   }
 
   /**
@@ -700,12 +770,33 @@ function queryObject(sp: URLSearchParams): RawQuery {
 
 const lower = (h: Record<string, string>) => Object.fromEntries(Object.entries(h).map(([k, v]) => [k.toLowerCase(), v]));
 
-type Body = { kind: "none" | "json" | "form" | "text" | "binary"; value: unknown };
+type Body = { kind: "none" | "json" | "form" | "multipart" | "text" | "binary"; value: unknown };
 
-function readBody(raw: RawRequest, contentType: string): Body {
+async function readMultipart(raw: RawRequest, contentType: string): Promise<Body> {
+  let form: FormData;
+  try {
+    // the platform's own multipart parser, so there is no dependency to trust
+    form = await new Request("http://inkan.local/", { method: "POST", headers: { "content-type": contentType }, body: raw.body }).formData();
+  } catch (e) {
+    throw problem(400, "invalid-multipart", `The body is not valid multipart/form-data: ${(e as Error).message}`);
+  }
+  const value: Record<string, unknown> = {};
+  for (const [key, entry] of form) {
+    const item: unknown =
+      typeof entry === "string"
+        ? entry
+        : ({ name: entry.name, type: entry.type, size: entry.size, data: Buffer.from(await entry.arrayBuffer()) } satisfies UploadedFile);
+    const prev = value[key];
+    value[key] = prev === undefined ? item : Array.isArray(prev) ? [...prev, item] : [prev, item];
+  }
+  return { kind: "multipart", value };
+}
+
+async function readBody(raw: RawRequest, contentType: string): Promise<Body> {
   if (!raw.body?.length) return { kind: "none", value: undefined };
   const ct = contentType.split(";")[0].trim().toLowerCase();
   const text = () => raw.body!.toString("utf8");
+  if (ct === "multipart/form-data") return readMultipart(raw, contentType);
   if (ct === "application/json" || ct.endsWith("+json")) {
     try {
       return { kind: "json", value: JSON.parse(text()) };
@@ -718,7 +809,7 @@ function readBody(raw: RawRequest, contentType: string): Body {
   return { kind: "binary", value: raw.body };
 }
 
-function validateInput(ctx: Context<any, any, any, any, any>, route: RouteRecord, params: Record<string, string>, raw: RawRequest) {
+async function validateInput(ctx: Context<any, any, any, any, any>, route: RouteRecord, params: Record<string, string>, raw: RawRequest) {
   const { spec } = route;
   const errors: { in: string; path: string; message: string }[] = [];
   const take = (where: string, schema: Schema<any> | undefined, value: unknown, coerce: boolean) => {
@@ -735,11 +826,12 @@ function validateInput(ctx: Context<any, any, any, any, any>, route: RouteRecord
   ctx.query = take("query", spec.query, ctx.query, true);
   ctx.headers = take("headers", spec.headers, ctx.headers, true);
 
-  const body = readBody(raw, contentType);
+  const body = await readBody(raw, contentType);
   if (spec.body && (body.kind === "binary" || body.kind === "text")) {
-    throw problem(415, "unsupported-media-type", "Send the body as application/json or application/x-www-form-urlencoded");
+    throw problem(415, "unsupported-media-type", "Send the body as application/json, application/x-www-form-urlencoded or multipart/form-data");
   }
-  ctx.body = take("body", spec.body, body.value, body.kind === "form");
+  // form fields arrive as text, like a query, so they are turned into what the schema asks for
+  ctx.body = take("body", spec.body, body.value, body.kind === "form" || body.kind === "multipart");
 
   if (errors.length) {
     const where = [...new Set(errors.map((e) => e.in))].join(" and ");
