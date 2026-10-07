@@ -31,7 +31,7 @@ const helloBody = await hello.json();
 check("a route with typed params, trimmed to its contract", hello.status === 200 && JSON.stringify(helloBody) === JSON.stringify({ hello: runtime }), helloBody);
 
 const bad = await app.fetch(req("/teas", { method: "POST", headers: json, body: '{"grams":0}' }));
-const badBody = await bad.json();
+const badBody = (await bad.json()) as { errors?: { path: string }[] };
 check("a body that breaks its contract is a 400 problem", bad.status === 400 && badBody.errors?.[0]?.path === "grams", badBody);
 
 const ok = await app.fetch(req("/teas", { method: "POST", headers: json, body: '{"grams":"5"}' }));
