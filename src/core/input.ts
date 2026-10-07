@@ -6,6 +6,7 @@ import { HttpProblem, problem } from "./problem.ts";
 import type { Issue, Schema, UploadedFile } from "../schema/schema.ts";
 import type { Context, RouteRecord } from "./route.ts";
 import { queryObject, type RawRequest } from "./context.ts";
+import { Buffer } from "node:buffer"; // explicit, for runtimes without a global Buffer
 
 export type Body = { kind: "none" | "json" | "form" | "multipart" | "text" | "binary"; value: unknown };
 

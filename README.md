@@ -497,6 +497,28 @@ otherwise. It is `ctx.id` in the handler, goes back out as a header, sits in eve
 line and in every problem document as `requestId`, so a bug report points at the right
 line in the logs.
 
+### Bun, Deno and serverless
+
+`app.fetch(request)` is the app as a web-standard handler: a `Request` in, a `Response`
+out, with the same contracts, hooks, problems and streams.
+
+```ts
+// Bun
+Bun.serve({ port: 3000, fetch: (req, server) => app.fetch(req, { remote: server.requestIP(req)?.address }) });
+
+// Deno
+Deno.serve({ port: 3000 }, (req, info) => app.fetch(req, { remote: info.remoteAddr.hostname }));
+
+// a platform that calls a fetch handler: Vercel, Netlify, …
+export default { fetch: (req: Request) => app.fetch(req) };
+```
+
+`remote` is the client's address where the platform knows it. The inspector only
+answers a loopback address, so without one it stays shut; the docs page is for
+everybody. The body limit holds while the body is read, with or without a
+`content-length`, and a stream the client stops reading stops its source. CI runs
+the same requests on Bun and Deno on every push.
+
 ## CLI
 
 ```sh

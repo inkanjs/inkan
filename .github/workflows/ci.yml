@@ -34,3 +34,18 @@ jobs:
       - run: npm run build
       - name: every example keeps its promise
         run: node src/cli.ts check examples/shop.ts --strict
+
+  # app.fetch on the runtimes it is for: the same requests, Request in and Response out
+  platforms:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+      - name: bun
+        run: bun test/platforms/smoke.ts
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - name: deno
+        run: deno run --allow-env --allow-read test/platforms/smoke.ts

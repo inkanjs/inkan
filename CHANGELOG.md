@@ -40,6 +40,13 @@
   which; a seal of another format is not used at all. Equal contracts share one entry.
   `refine`, `transform`, unions, records, dates and lazy schemas run unsealed for now.
   ([#18](https://github.com/inkanjs/inkan/issues/18))
+- **`app.fetch(request)`**: the app as a web-standard handler, a `Request` in and a `Response`
+  out, for Bun, Deno and serverless platforms, with the same contracts, hooks, problems and
+  streams. The body limit holds while the body is read, with or without a `content-length`;
+  a stream the client stops reading stops its source; it waits for plugins like `listen`
+  does. `{ remote }` passes the client's address where the platform knows it: the inspector
+  answers only a loopback address, so without one it stays shut. CI runs the same requests
+  on Bun and Deno. ([#14](https://github.com/inkanjs/inkan/issues/14))
 - **`bench/cpu.mjs`**: the CPU time one request costs the server, next to the others, which
   does not depend on how fast the load generator is. The bench workflow runs it with
   `kind: cpu` (or `both`).
