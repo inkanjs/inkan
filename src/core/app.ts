@@ -78,6 +78,35 @@ export type InjectResponse = {
   body: any;
 };
 
+/** A request as an adapter hands it to `app.exchange`. */
+export type AdapterRequest = {
+  /** Upper case: GET, POST, … */
+  method: string;
+  /** The path and the query, as the request line had them: `/teas?page=2`. */
+  url: string;
+  /** Names in lower case. */
+  headers: Record<string, string | string[] | undefined>;
+  /** The whole body, or undefined for none. */
+  body?: Uint8Array;
+  /** The client's address; the inspector only answers a loopback one. Leave it out and the inspector stays shut. */
+  remote?: string;
+};
+
+/** The answer `app.exchange` hands back for the adapter to write. */
+export type AdapterResponse = {
+  status: number;
+  /** Names in lower case; `content-length` is set when the body is whole. */
+  headers: Record<string, string>;
+  /** The whole body; undefined when there is none or when `stream` is the body. */
+  body?: string | Uint8Array;
+  /** A body that goes out piece by piece: server-sent events, files. */
+  stream?: AsyncIterable<Uint8Array | string>;
+  /** Abort it when the client goes away, so the stream's source stops. */
+  abort?: AbortController;
+  /** Call it once the answer is written: onResponse hooks run then. */
+  done?: () => void;
+};
+
 /** What gets logged for every request. */
 export type RequestLog = {
   time: string;
@@ -715,6 +744,34 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
 
   private tooLarge(req: IncomingMessage, res: ServerResponse, limit: number) {
     this.send(res, tooLargeAnswer(req.url ?? "/", limit));
+  }
+
+  // ----- adapters -----
+
+  /**
+   * The app for any server: a request in plain values, the answer in plain values. This is
+   * all `listen` and `fetch` use, and all an adapter for another server needs (see
+   * adapters/ in the repository). The adapter reads the body itself, up to
+   * `app.options.bodyLimit`, and answers 413 past it; it writes `body` or every chunk of
+   * `stream`, calls `abort.abort()` when the client goes away, and `done()` once the answer
+   * is out.
+   */
+  async exchange(request: AdapterRequest): Promise<AdapterResponse> {
+    if (this.loading) await this.ready();
+    const { body } = request;
+    if (body && body.byteLength > this.options.bodyLimit!) return tooLargeAnswer(request.url, this.options.bodyLimit!);
+    const buf = body === undefined || body.byteLength === 0 ? undefined : Buffer.isBuffer(body) ? body : Buffer.from(body.buffer, body.byteOffset, body.byteLength);
+    return this.handle({ method: request.method, url: request.url, headers: request.headers, body: buf, remote: request.remote });
+  }
+
+  /** For adapters: runs the onListen hooks, once the adapter's server listens. */
+  async started(): Promise<void> {
+    for (const hook of this._onListen) await hook();
+  }
+
+  /** For adapters: runs the onClose hooks, once the adapter's server has stopped taking requests. */
+  async stopped(): Promise<void> {
+    for (const hook of this._onClose) await hook();
   }
 
   // ----- web standard -----

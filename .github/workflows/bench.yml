@@ -15,7 +15,7 @@ on:
         description: Rounds (the median is shown)
         default: "3"
       servers:
-        description: Servers, comma separated (node, fastify, hono, inkan, inkan-sealed, inkan-cluster, inkan-dev, express)
+        description: Servers, comma separated (node, fastify, hono, inkan, inkan-sealed, inkan-cluster, inkan-uws, inkan-dev, express)
         default: "node,fastify,hono,inkan,express"
       kind:
         description: "http: req/s, latency and memory · cpu: what one request costs the server · both"
@@ -39,6 +39,9 @@ jobs:
       - run: npm ci
       - run: npm install --no-audit --no-fund
         working-directory: bench
+      - name: uWebSockets.js for inkan-uws, installed on purpose from its GitHub release
+        run: npm install --no-audit --no-fund --ignore-scripts --legacy-peer-deps --no-save --allow-git=all "uWebSockets.js@github:uNetworking/uWebSockets.js#v20.71.0"
+        working-directory: adapters/uws
       - name: the seal for inkan-sealed
         run: node ../src/cli.ts seal seal-entry.mjs -o inkan.seal.js
         working-directory: bench

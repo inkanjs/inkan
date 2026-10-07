@@ -12,7 +12,7 @@
 //   GET  /async/:id                 a handler that waits one event-loop hop
 //   anything else                   404
 //
-//   node servers.mjs <node|express|fastify|hono|inkan|inkan-sealed|inkan-cluster|inkan-dev> <port>
+//   node servers.mjs <node|express|fastify|hono|inkan|inkan-sealed|inkan-cluster|inkan-uws|inkan-dev> <port>
 
 import http from "node:http";
 import { isBulk, isUser, LIST, ROUTE_COUNT, user } from "./data.mjs";
@@ -220,7 +220,12 @@ if (name.startsWith("inkan")) {
   const { app } = await import("./inkan-app.mjs");
   // inkan-sealed runs on the seal `inkan seal seal-entry.mjs -o inkan.seal.js` writes
   const seal = name === "inkan-sealed" ? (await import("./inkan.seal.js")).default : undefined;
-  if (name === "inkan-cluster") {
+  if (name === "inkan-uws") {
+    // the same app on uWebSockets.js, through the adapter in adapters/uws
+    const { serve } = await import("../adapters/uws/index.js");
+    await serve(app(false), { port: Number(port), host: "127.0.0.1" });
+    ready();
+  } else if (name === "inkan-cluster") {
     // two workers on one port; the first process only looks after them, so it says ready once both listen
     const { default: cluster } = await import("node:cluster");
     if (cluster.isPrimary) {
