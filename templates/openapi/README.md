@@ -41,6 +41,16 @@ include it:
 Now every pull request that changes the API also shows the change to the document, line by
 line, where reviewers can see what a client will notice.
 
+A diff shows *that* something changed. `inkan diff` says whether it **breaks** a client:
+
+```sh
+npx inkan diff openapi.json src/app.ts
+```
+
+It compares the saved document with the app as it is now, lists every change as breaking or
+safe, and exits with `1` only for the breaking ones. A new optional field passes, a field that
+is required now does not.
+
 ## Change this first
 
 Add `DELETE /bookmarks/:id` with an `operationId` of `removeBookmark`. Run `npm run openapi` and
@@ -49,8 +59,9 @@ Add `DELETE /bookmarks/:id` with an `operationId` of `removeBookmark`. Run `npm 
 ## Try this: break it on purpose
 
 1. **A breaking change.** Make `tags` in `NewBookmark` need at least one entry
-   (`t.array(Tag).min(1)`). Run `npm run openapi` and `git diff`: `minItems: 1` is exactly what an
-   old client would trip over. `npm run check` notices first: "saved already" sends no tags, and
+   (`t.array(Tag).min(1)`). Before you write the document again, run `npx inkan diff openapi.json src/app.ts`:
+   it says "body.tags needs minItems 1 now", breaking. `minItems: 1` is exactly what an old
+   client would trip over. `npm run check` notices first: "saved already" sends no tags, and
    now gets a 400 instead of the 409 it promises.
 2. **A quiet rename.** Rename `title` to `name`. The examples fail first, then the document shows it.
 

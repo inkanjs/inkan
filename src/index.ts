@@ -19,6 +19,8 @@ export type { Infer, Issue, JsonSchema, SafeResult } from "./schema.ts";
 export { problem, HttpProblem } from "./problem.ts";
 export type { ProblemBody } from "./problem.ts";
 export { buildOpenAPI } from "./openapi.ts";
+export { diffOpenAPI, formatDiff } from "./diff.ts";
+export type { Change } from "./diff.ts";
 export { cors } from "./cors.ts";
 export type { CorsOptions } from "./cors.ts";
 export { formatReport, partialMatch } from "./check.ts";

@@ -10,6 +10,7 @@ import { pathToFileURL } from "node:url";
 import type { App } from "./app.ts";
 import { formatReport } from "./check.ts";
 import { paint, useColor } from "./color.ts";
+import { diffOpenAPI, formatDiff } from "./diff.ts";
 import { copyExample, EXAMPLES, ExampleError } from "./examples.ts";
 
 const version = (): string => JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
@@ -61,6 +62,8 @@ const HELP = `
                 ${c.dim("--strict fails on promised statuses no example covers")}
   ${c.bold("inkan openapi")} ${c.dim("<entry> [-o <file>]")}   ${c.dim("write the OpenAPI 3.1 document")}
   ${c.bold("inkan routes")}  ${c.dim("<entry>")}               ${c.dim("list the routes")}
+  ${c.bold("inkan diff")}    ${c.dim("<before> <after> [--json]")}
+                ${c.dim("what would break a client; each side a .json file or an app")}
   ${c.bold("inkan examples")} ${c.dim("[name] [folder] [--list] [--force]")}
                 ${c.dim("copy an explained example project into a folder")}
 
@@ -99,6 +102,25 @@ switch (command) {
       console.log(`  ${c.method(r.method, r.method.padEnd(7))} ${r.path.padEnd(32)} ${tail}`);
     }
     process.exit(0);
+  }
+  case "diff": {
+    const json = has("--json");
+    const [before, after] = args;
+    if (!before || !after) fail("Compare what with what? For example: inkan diff openapi.json src/app.ts");
+    const read = async (file: string) => {
+      if (file.endsWith(".json")) {
+        try {
+          return JSON.parse(readFileSync(file, "utf8"));
+        } catch (err) {
+          fail(`Could not read ${file}: ${(err as Error).message}`);
+        }
+      }
+      return (await load(file)).app.openapi();
+    };
+    const changes = diffOpenAPI(await read(before), await read(after));
+    if (json) console.log(JSON.stringify(changes, null, 2));
+    else console.log(formatDiff(changes, `${before} → ${after}`, color));
+    process.exit(changes.some((x) => x.breaking) ? 1 : 0);
   }
   case "examples": {
     const force = has("--force");

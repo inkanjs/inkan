@@ -43,6 +43,13 @@
   `--force`. The templates ship inside the package, so it works offline and fits the installed
   version, and every one of them passes `inkan check --strict` in CI.
   ([#1](https://github.com/vxnsin/inkan/issues/1))
+- **`inkan diff`.** Compares a saved OpenAPI document with the app, or two documents, and says
+  what would break a client written against the old one: a route or a status that is gone, a
+  field or parameter that is required now, a value a request may no longer send, a tighter
+  limit or pattern, a field an answer may leave out or set to null now. Requests may only get
+  looser and answers only stricter. Everything else is listed as safe. It exits with `1` when
+  something breaks, so CI can ask for a major version; `--json` for tools. Also as
+  `diffOpenAPI(before, after)`. ([#11](https://github.com/vxnsin/inkan/issues/11))
 
 ### Changed
 

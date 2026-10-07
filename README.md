@@ -327,8 +327,15 @@ line in the logs.
 npx inkan check   src/app.ts [--only <text>] [--json] [--strict]
 npx inkan openapi src/app.ts [-o openapi.json]
 npx inkan routes  src/app.ts
+npx inkan diff    openapi.json src/app.ts [--json]
 npx inkan examples [name] [folder] [--list] [--force]
 ```
+
+`inkan diff` compares a saved OpenAPI document with the app (or two documents) and names
+what would break a client written against the old one: a route or status that is gone, a
+field that is required now, a value a request may no longer send, a value an answer may
+send now. Requests may only get looser and answers only stricter; it exits with `1` when
+something breaks, so CI can ask for a major version.
 
 Exit codes: `0` everything sealed, `1` something broke, `2` the command was
 used wrong. Colours turn off when the output is not a terminal or `NO_COLOR`
@@ -366,8 +373,7 @@ node src/cli.ts check examples/shop.ts
 
 What comes next lives in the [issues](https://github.com/vxnsin/inkan/issues) and the
 [milestones](https://github.com/vxnsin/inkan/milestones): a typed client that reads the
-routes with no codegen, streaming answers and uploads, examples that build on each other,
-a check for breaking changes against the last release. What changed lives in the
+routes with no codegen, streaming answers and uploads, examples that build on each other. What changed lives in the
 [changelog](CHANGELOG.md). Issues marked
 [good first issue](https://github.com/vxnsin/inkan/labels/good%20first%20issue) are a good place to start.
 
