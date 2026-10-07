@@ -1,6 +1,8 @@
 // Answers that are not one finished body: streams, server-sent events, and the
 // files that examples upload.
 
+import { Buffer } from "node:buffer"; // explicit, for runtimes without a global Buffer
+
 export type SseEvent = { event?: string; data: unknown; id?: string; retry?: number };
 export type EventSource = (signal: AbortSignal) => AsyncIterable<SseEvent>;
 

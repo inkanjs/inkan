@@ -16,6 +16,7 @@ import { Reply, type Context, type Example, type Middleware, type RawQuery, type
 import { target, queryObject, type Exchange, type RawRequest, type RawResponse, type Target } from "./context.ts";
 import { NO_HOOKS, runHooks, Scope, type Hooks, type Root } from "./scope.ts";
 import { readRequestBody, TOO_LARGE, validateInput } from "./input.ts";
+import { Buffer } from "node:buffer"; // explicit, for runtimes without a global Buffer
 
 // ---------- the app ----------
 
@@ -679,12 +680,34 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
   }
 
   private tooLarge(req: IncomingMessage, res: ServerResponse, limit: number) {
-    const p = problem(413, "body-too-large", `Request bodies may be at most ${limit} bytes`);
-    this.send(res, {
-      status: 413,
-      headers: { "content-type": "application/problem+json", connection: "close" },
-      body: JSON.stringify({ ...p.toJSON(), instance: req.url }),
-    });
+    this.send(res, tooLargeAnswer(req.url ?? "/", limit));
+  }
+
+  // ----- web standard -----
+
+  /**
+   * The app as a web-standard handler, Request in and Response out, for Bun, Deno and
+   * serverless platforms. `remote` is the client's address where the platform knows it;
+   * the inspector answers only a loopback address, so without one it stays shut.
+   *
+   *   Bun.serve({ fetch: (req, server) => app.fetch(req, { remote: server.requestIP(req)?.address }) })
+   *   Deno.serve((req, info) => app.fetch(req, { remote: info.remoteAddr.hostname }))
+   */
+  async fetch(request: Request, info: { remote?: string } = {}): Promise<Response> {
+    if (this.loading) await this.ready();
+    const url = new URL(request.url);
+    const target = url.pathname + url.search;
+    const headers: Record<string, string> = {};
+    request.headers.forEach((value, name) => (headers[name] = value)); // names come lower-cased
+    const limit = this.options.bodyLimit!;
+    let body: Buffer | undefined;
+    if (request.body && request.method !== "GET" && request.method !== "HEAD") {
+      const read = Number(headers["content-length"] ?? 0) > limit ? TOO_LARGE : await readWebBody(request.body, limit);
+      if (read === TOO_LARGE) return toWebResponse(tooLargeAnswer(target, limit));
+      body = read;
+    }
+    const out = await this.handle({ method: request.method, url: target, headers, body, remote: info.remote ?? "unknown" });
+    return toWebResponse(out);
   }
 
   /** Something failed outside every handler (the socket, inkan itself): log it and answer 500. */
@@ -852,6 +875,74 @@ function encode(status: number, body: unknown, headers: Record<string, string>):
   }
   h["content-type"] ??= "application/json; charset=utf-8";
   return { status, headers: h, body: JSON.stringify(body) };
+}
+
+function tooLargeAnswer(instance: string, limit: number): RawResponse {
+  const p = problem(413, "body-too-large", `Request bodies may be at most ${limit} bytes`);
+  return {
+    status: 413,
+    headers: { "content-type": "application/problem+json", connection: "close" },
+    body: JSON.stringify({ ...p.toJSON(), instance }),
+  };
+}
+
+/** Reads a web body up to the limit, and stops reading the moment it is passed. */
+async function readWebBody(stream: ReadableStream<Uint8Array>, limit: number): Promise<Buffer | undefined | typeof TOO_LARGE> {
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > limit) {
+      void reader.cancel();
+      return TOO_LARGE;
+    }
+    chunks.push(value);
+  }
+  return size ? Buffer.concat(chunks, size) : undefined;
+}
+
+const textEncoder = new TextEncoder();
+
+/** An answer as a web Response. A stream stays a stream, and a client that goes away stops its source. */
+function toWebResponse(out: RawResponse): Response {
+  const headers = new Headers();
+  for (const [k, v] of Object.entries(out.headers)) if (k !== "connection") headers.set(k, v); // hop-by-hop: the platform's business
+  if (!out.stream) {
+    const empty = out.status === 204 || out.status === 304 || out.body === undefined;
+    const res = new Response(empty ? null : out.body, { status: out.status, headers });
+    out.done?.();
+    return res;
+  }
+  const source = out.stream[Symbol.asyncIterator]();
+  let finished = false;
+  const finish = () => {
+    if (finished) return;
+    finished = true;
+    out.done?.();
+  };
+  const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const { done, value } = await source.next();
+        if (done) {
+          controller.close();
+          finish();
+        } else controller.enqueue(typeof value === "string" ? textEncoder.encode(value) : value);
+      } catch (err) {
+        controller.error(err);
+        finish();
+      }
+    },
+    async cancel() {
+      out.abort?.abort(); // the client went away: tell the source, so it stops producing
+      await source.return?.();
+      finish();
+    },
+  });
+  return new Response(body, { status: out.status, headers });
 }
 
 let shuttingDown = false;

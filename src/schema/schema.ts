@@ -1,6 +1,8 @@
 // A small schema builder. One definition gives you a runtime check,
 // a TypeScript type and a JSON Schema, so they cannot drift apart.
 
+import { Buffer } from "node:buffer"; // explicit, for runtimes without a global Buffer
+
 export type Issue = { path: string; message: string };
 export type JsonSchema = Record<string, unknown>;
 
