@@ -11,6 +11,14 @@
   mode, and it writes only what the schema lists, at every depth: objects, arrays, records,
   discriminated unions and recursive shapes. `.passthrough()` still keeps everything, and a
   `.transform()` writes what it made. Affects every release up to 0.3.0; update.
+- **A path that starts with `//` is routed as that path.** The request target was read with
+  `new URL()`, which takes `//elsewhere/x` for a host and a path, so such a request was routed
+  as `/x`. inkan now splits the target itself; `ctx.url` is still a `URL`, built from the
+  `Host` header when a handler asks for it.
+- **The docs page and the inspector escape everything they render**, including operation ids,
+  methods, statuses and the links from the app's options, and they only send a request (with
+  its token) when it stays on the same origin. A replay of a recorded `//elsewhere/x` is
+  refused instead of going to another host. Found by Socket's code analysis.
 
 ### Changed
 

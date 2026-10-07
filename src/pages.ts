@@ -73,8 +73,13 @@ input.filter{font:13px var(--mono);padding:6px 10px;border:1px solid var(--ink);
 `;
 
 const esc = /* js */ `
+// A request from these pages carries the token, so it may only go to this server: a path like
+// //elsewhere/x would otherwise be read as another host.
+function sameOrigin(u){try{return new URL(u,location.href).origin===location.origin}catch(e){return false}}
 function esc(s){return String(s).replace(/[&<>"']/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]})}
 `;
+
+const attr = (s: string) => s.replace(/[&"<>]/g, (c) => ({ "&": "&amp;", '"': "&quot;", "<": "&lt;", ">": "&gt;" })[c]!);
 
 const page = (title: string, cfg: unknown, body: string, script: string) => `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -146,7 +151,7 @@ function urlFor(path, ex) {
 var ROUTES = [];
 function card(path, method, op, idx) {
   var id = "op-" + (op.operationId || idx);
-  var h = '<section class="win" id="' + esc(id) + '"><header class="bar"><span class="m m-' + method + '">' + method.toUpperCase() +
+  var h = '<section class="win" id="' + esc(id) + '"><header class="bar"><span class="m m-' + esc(method) + '">' + esc(method.toUpperCase()) +
     "</span><code>" + esc(path) + "</code>" + (op.deprecated ? '<span class="dep">deprecated</span>' : "") +
     '<span class="stamp sealmark" title="every example answered as promised">印</span></header><div class="pad">';
   if (op.summary) h += '<p class="sum">' + esc(op.summary) + "</p>";
@@ -166,7 +171,7 @@ function card(path, method, op, idx) {
   Object.keys(op.responses || {}).forEach(function (s) {
     var r = op.responses[s], sc = firstContent(r.content);
     var gap = exs.length && !r["x-inkan-implied"] && covered.indexOf(Number(s)) < 0 ? ' <span class="muted" title="inkan check --strict fails on this">· no example answers with it</span>' : "";
-    h += '<tr><td style="width:60px"><span class="status s' + s[0] + '">' + esc(s) + "</span></td><td>" + esc(r.description || "") + gap +
+    h += '<tr><td style="width:60px"><span class="status s' + esc(s[0]) + '">' + esc(s) + "</span></td><td>" + esc(r.description || "") + gap +
       (sc ? '<pre class="type" style="margin-top:6px">' + render(sc, "") + "</pre>" : "") + "</td></tr>";
   });
   h += "</table>";
@@ -175,8 +180,8 @@ function card(path, method, op, idx) {
     exs.forEach(function (ex, i) {
       var want = expected(op, ex), n = ROUTES.length;
       ROUTES.push({ id: id, path: path, method: method, op: op, ex: ex, el: id + "-ex" + i, name: ex.name || "example " + (i + 1) });
-      h += '<div class="ex" id="' + id + "-ex" + i + '"><div class="ex-head"><span class="name">' + esc(ex.name || "example " + (i + 1)) +
-        '</span><span class="req">' + method.toUpperCase() + " " + esc(urlFor(path, ex)) + (want ? " → " + want : "") +
+      h += '<div class="ex" id="' + esc(id + "-ex" + i) + '"><div class="ex-head"><span class="name">' + esc(ex.name || "example " + (i + 1)) +
+        '</span><span class="req">' + esc(method.toUpperCase() + " " + urlFor(path, ex) + (want ? " → " + want : "")) +
         '</span><span class="acts"><button class="btn" data-edit="' + n + '">edit</button><button class="btn" data-curl="' + n +
         '">curl</button><button class="btn" data-run="' + n + '">send</button></span></div>' +
         (ex.after ? '<p class="mono muted chain">after ' + esc(ex.after) + "</p>" : "") +
@@ -251,6 +256,7 @@ function runChain(i) {
       var req = request(s, kept, true), init = { method: req.method, headers: req.headers };
       if (req.form) init.body = req.form;
       else if (req.body !== undefined) init.body = req.body;
+      if (!sameOrigin(req.url)) throw new Error("not sent: " + req.url + " is not on this server");
       return fetch(req.url, init).then(function (res) {
         return res.text().then(function (text) {
           var a = answerOf(res, text), want = expected(ROUTES[s].op, ROUTES[s].ex), label = ROUTES[s].method.toUpperCase() + " " + ROUTES[s].path + " > " + ROUTES[s].name;
@@ -362,6 +368,7 @@ function send(i) {
     var init = { method: req.method, headers: req.headers };
     if (req.form) init.body = req.form;
     else if (req.body !== undefined) init.body = req.body;
+    if (!sameOrigin(req.url)) throw new Error("not sent: " + req.url + " is not on this server");
     t0 = performance.now();
     return fetch(req.url, init);
   }).then(function (res) {
@@ -371,9 +378,9 @@ function send(i) {
       var ok = want === undefined ? res.status < 300 : res.status === want, pretty = text;
       try { pretty = JSON.stringify(JSON.parse(text), null, 2); } catch (e) {}
       var verdict = req.edited ? '<span class="verdict muted">edited · not compared</span>'
-        : '<span class="verdict ' + (ok ? "ok" : "no") + '">' + (ok ? "✓ as promised" : "✗ expected " + (want || "a 2xx")) + "</span>";
-      out.innerHTML = '<p class="mono" style="margin:8px 0 0"><span class="status s' + String(res.status)[0] + '">' + res.status +
-        '</span> <span class="muted">' + ms + "ms</span> " + verdict + "</p>" + (pretty ? "<pre>" + esc(pretty) + "</pre>" : "");
+        : '<span class="verdict ' + (ok ? "ok" : "no") + '">' + esc(ok ? "✓ as promised" : "✗ expected " + (want || "a 2xx")) + "</span>";
+      out.innerHTML = '<p class="mono" style="margin:8px 0 0"><span class="status s' + esc(String(res.status)[0]) + '">' + esc(res.status) +
+        '</span> <span class="muted">' + esc(ms) + "ms</span> " + verdict + "</p>" + (pretty ? "<pre>" + esc(pretty) + "</pre>" : "");
       if (!req.edited) { el.dataset.ok = ok ? "1" : "0"; stampCard(r.id); }
       return ok;
     });
@@ -410,7 +417,7 @@ function boot(spec) {
   Object.keys(groups).forEach(function (g) {
     nav += "<h4>" + esc(g) + "</h4>";
     groups[g].forEach(function (r) {
-      nav += '<a href="#op-' + esc(r.op.operationId || r.idx) + '"><span class="m m-' + r.method + '">' + r.method.toUpperCase() +
+      nav += '<a href="#op-' + esc(r.op.operationId || r.idx) + '"><span class="m m-' + esc(r.method) + '">' + esc(r.method.toUpperCase()) +
         '</span><span class="p">' + esc(r.path) + "</span></a>";
     });
   });
@@ -443,8 +450,8 @@ export function docsPage(cfg: { title: string; specUrl: string; inspector?: stri
 <header class="top"><span class="stamp">印</span><h1 id="title">${cfg.title.replace(/[<>&]/g, "")}</h1><span class="ver" id="ver"></span>
 <nav><span class="auth"><select id="authName" title="The header the token goes into"><option value="authorization">authorization</option><option value="x-api-key">x-api-key</option></select><input id="auth" type="password" autocomplete="off" spellcheck="false" placeholder="token, kept for this tab" title="Sent with every request from this page. Kept in sessionStorage, never in a URL."></span>
 <button class="btn seal" id="all" title="Sends every example. Examples that change data change it for real.">▶ send every example</button>
-${cfg.specUrl ? `<a class="btn" href="${cfg.specUrl}">openapi.json</a>` : ""}
-${cfg.inspector ? `<a class="btn" href="${cfg.inspector}">inspector</a>` : ""}</nav></header>
+${cfg.specUrl ? `<a class="btn" href="${attr(cfg.specUrl)}">openapi.json</a>` : ""}
+${cfg.inspector ? `<a class="btn" href="${attr(cfg.inspector)}">inspector</a>` : ""}</nav></header>
 <div class="layout"><aside id="nav"></aside><main><p class="intro" id="intro">Every route below carries its contract. The examples are the same ones <code>inkan check</code> runs, so what you read here is what the server was tested to do.</p><div id="main"><p class="empty">loading…</p></div></main></div>`;
   return page(cfg.title + " · docs", { spec: cfg.specUrl }, body, docsScript);
 }
@@ -456,19 +463,20 @@ var since = 0, paused = false, rows = [], open = {}, results = {};
 var $ = function (s) { return document.querySelector(s); };
 function line(e) {
   var t = e.at.slice(11, 19);
-  return '<tr class="row" data-id="' + e.id + '"><td class="muted">' + t + '</td><td><span class="m m-' + e.method.toLowerCase() + '">' + esc(e.method) +
-    '</span></td><td class="path">' + esc(e.path) + '</td><td><span class="status s' + String(e.status)[0] + '">' + e.status +
-    '</span></td><td class="muted">' + e.ms + "ms</td><td class=muted>" + esc(e.route || "—") + '</td><td class="note">' + esc(e.notes.join("; ")) + "</td></tr>" +
+  return '<tr class="row" data-id="' + esc(e.id) + '"><td class="muted">' + esc(t) + '</td><td><span class="m m-' + esc(e.method.toLowerCase()) + '">' + esc(e.method) +
+    '</span></td><td class="path">' + esc(e.path) + '</td><td><span class="status s' + esc(String(e.status)[0]) + '">' + esc(e.status) +
+    '</span></td><td class="muted">' + esc(e.ms) + "ms</td><td class=muted>" + esc(e.route || "—") + '</td><td class="note">' + esc(e.notes.join("; ")) + "</td></tr>" +
     (open[e.id] ? '<tr class="detail"><td colspan="7">' + detail(e) + "</td></tr>" : "");
 }
 function pretty(s) { if (s === undefined || s === "") return "—"; try { return JSON.stringify(JSON.parse(s), null, 2); } catch (x) { return s; } }
 // what may differ between two runs of the same request without the answer having changed
 function comparable(s) { try { var v = JSON.parse(s); if (v && typeof v === "object") delete v.requestId; return JSON.stringify(v); } catch (x) { return s || ""; } }
-function statusTag(s) { return '<span class="status s' + String(s)[0] + '">' + s + "</span>"; }
+function statusTag(s) { return '<span class="status s' + esc(String(s)[0]) + '">' + esc(s) + "</span>"; }
 var FORBIDDEN = /^(host|connection|content-length|accept-encoding|accept-charset|cookie|date|dnt|expect|keep-alive|origin|referer|te|trailer|transfer-encoding|upgrade|via|x-request-id|x-inkan-replay)$|^(sec-|proxy-)/;
 function find(id) { return rows.filter(function (r) { return String(r.id) === String(id); })[0]; }
 function replay(id) {
   var e = find(id), h = {}, dropped = false;
+  if (!sameOrigin(e.path)) { results[id] = '<p class="verdict no">not replayed: this path would leave the server</p>'; draw(); return; }
   Object.keys(e.request.headers).forEach(function (k) {
     var v = e.request.headers[k];
     if (v === "•••") dropped = true;
@@ -485,7 +493,7 @@ function replay(id) {
       var ms = Math.round(performance.now() - t0);
       var same = res.status === e.status && comparable(text) === comparable(e.response.body);
       results[id] = '<div class="pair"><div><h5>then · ' + statusTag(e.status) + '</h5><pre>' + esc(pretty(e.response.body)) +
-        '</pre></div><div><h5>now · ' + statusTag(res.status) + " · " + ms + 'ms</h5><pre>' + esc(pretty(text)) + "</pre></div></div>" +
+        '</pre></div><div><h5>now · ' + statusTag(res.status) + " · " + esc(ms) + 'ms</h5><pre>' + esc(pretty(text)) + "</pre></div></div>" +
         '<p class="verdict ' + (same ? "ok" : "no") + '">' + (same ? "✓ the same answer" : "✗ the answer changed") + "</p>" +
         (dropped ? '<p class="muted">Secret headers were not sent again, so a route behind auth may answer differently.</p>' : "");
       draw();
@@ -503,8 +511,8 @@ function copyExample(id) {
 function detail(e) {
   var acts = '<div class="acts-row">' +
     (e.request.clipped ? '<span class="muted">the body was too long to keep, so this one cannot be replayed</span>'
-      : '<button class="btn" data-replay="' + e.id + '">replay</button>') +
-    (e.example ? '<button class="btn" data-example="' + e.id + '">copy as example</button>' : '<span class="muted">no route answered, so there is no example to make</span>') +
+      : '<button class="btn" data-replay="' + esc(e.id) + '">replay</button>') +
+    (e.example ? '<button class="btn" data-example="' + esc(e.id) + '">copy as example</button>' : '<span class="muted">no route answered, so there is no example to make</span>') +
     '</div><div class="replay">' + (results[e.id] || "") + "</div>";
   return acts + (e.requestId ? '<h5>request id</h5><pre>' + esc(e.requestId) + "</pre>" : "") + '<h5>request headers</h5><pre>' + esc(Object.keys(e.request.headers).map(function (k) { return k + ": " + e.request.headers[k]; }).join("\\n")) +
     '</pre><h5>request body</h5><pre>' + esc(pretty(e.request.body)) + '</pre><h5>response body</h5><pre>' + esc(pretty(e.response.body)) + "</pre>";
@@ -540,7 +548,7 @@ export function inspectorPage(cfg: { title: string; base: string; docs: string }
 <header class="top"><span class="stamp">印</span><h1>${cfg.title.replace(/[<>&]/g, "")}</h1><span class="ver">inspector · only on this machine</span>
 <nav><input class="filter" id="filter" placeholder="filter: path, status, note…">
 <button class="btn" id="pause">❚❚ pause</button><button class="btn" id="clear">clear</button>
-${cfg.docs ? `<a class="btn" href="${cfg.docs}">docs</a>` : ""}</nav></header>
+${cfg.docs ? `<a class="btn" href="${attr(cfg.docs)}">docs</a>` : ""}</nav></header>
 <div style="max-width:1180px;margin:0 auto;padding:22px">
 <p class="intro">The last 200 requests, newest first. A red note means a request or an answer broke the contract. Secret headers show as •••. <span id="count" class="mono"></span></p>
 <section class="win"><div class="pad" style="overflow:auto"><table class="log"><thead><tr><th>time</th><th>method</th><th>path</th><th>status</th><th>took</th><th>route</th><th>notes</th></tr></thead><tbody id="body"></tbody></table></div></section></div>`;

@@ -412,7 +412,7 @@ export class App<Defs extends RouteDefs = any> extends Routes<Defs> {
   /** @internal */
   async handle(raw: RawRequest): Promise<RawResponse> {
     const started = performance.now();
-    const url = new URL(raw.url, "http://inkan.local");
+    const url = target(raw.url);
     const own = this.builtin(raw, url);
     if (own) return own;
 
@@ -432,7 +432,13 @@ export class App<Defs extends RouteDefs = any> extends Routes<Defs> {
     const ctx: Context<any, any, any, any, any> = {
       method: raw.method,
       path: url.pathname,
-      url,
+      // built only when a handler asks for it; most never do
+      get url() {
+        const u = new URL("http://" + (headers.host || "localhost"));
+        u.pathname = url.pathname;
+        u.search = url.search;
+        return u;
+      },
       id,
       params: {},
       query: queryObject(url.searchParams),
@@ -601,7 +607,7 @@ export class App<Defs extends RouteDefs = any> extends Routes<Defs> {
     };
   }
 
-  private builtin(raw: RawRequest, url: URL): RawResponse | undefined {
+  private builtin(raw: RawRequest, url: Target): RawResponse | undefined {
     if (raw.method !== "GET" && raw.method !== "HEAD") return;
     const { docs, openapi, inspector } = this.options;
     const p = url.pathname;
@@ -626,7 +632,7 @@ export class App<Defs extends RouteDefs = any> extends Routes<Defs> {
 
   private remember(
     raw: RawRequest,
-    url: URL,
+    url: Target,
     res: RawResponse,
     route: RouteRecord | undefined,
     ms: number,
@@ -794,6 +800,27 @@ function compose(mw: Middleware[], last: () => Promise<void>) {
   };
 }
 
+type Target = { pathname: string; search: string; readonly searchParams: URLSearchParams };
+
+/**
+ * Splits a request target into its path and its query. Not `new URL()`: that reads a path
+ * like `//elsewhere/x` as a host and routes it as `/x`. A proxy's absolute form
+ * (`scheme://host/path`) loses its scheme and host first.
+ */
+function target(raw: string): Target {
+  const local = raw.startsWith("/") ? raw : raw.replace(/^[a-z][a-z0-9+.-]*:\/\/[^/?#]*/i, "") || "/";
+  const q = local.indexOf("?");
+  const pathname = q < 0 ? local : local.slice(0, q);
+  const search = q < 0 || q === local.length - 1 ? "" : local.slice(q);
+  return {
+    pathname: pathname || "/",
+    search,
+    get searchParams() {
+      return new URLSearchParams(search);
+    },
+  };
+}
+
 function queryObject(sp: URLSearchParams): RawQuery {
   const o: RawQuery = {};
   for (const [k, v] of sp) {
@@ -811,7 +838,7 @@ async function readMultipart(raw: RawRequest, contentType: string): Promise<Body
   let form: FormData;
   try {
     // the platform's own multipart parser, so there is no dependency to trust
-    form = await new Request("http://inkan.local/", { method: "POST", headers: { "content-type": contentType }, body: raw.body }).formData();
+    form = await new Response(raw.body, { headers: { "content-type": contentType } }).formData();
   } catch (e) {
     throw problem(400, "invalid-multipart", `The body is not valid multipart/form-data: ${(e as Error).message}`);
   }

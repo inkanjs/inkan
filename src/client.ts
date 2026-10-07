@@ -5,7 +5,7 @@
 //   import type { api } from "./server.ts";
 //   import { client } from "@vxnsin/inkan/client";
 //
-//   const shop = client<typeof api>("https://shop.example.com");
+//   const shop = client<typeof api>(baseUrl);
 //   const res = await shop.get("/teas/:id", { params: { id: 1 } });
 //   if (res.ok) res.data.name; // typed from the contract
 //   else res.problem.detail;   // every error is a problem document
