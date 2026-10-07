@@ -1,0 +1,82 @@
+<!doctype html>
+<!-- The image for the v0.3.0 release. Render it with:
+     msedge --headless --hide-scrollbars --window-size=1600,900 --screenshot=v0.3.0.png v0.3.0.html -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>inkan v0.3.0</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700;800&display=swap" rel="stylesheet">
+<style>
+  :root { --bg: #1a1614; --ink: #ece1cf; --soft: #cbbda8; --muted: #8a7d72; --seal: #c4381f; --hot: #e2583e;
+          --ok: #79c08a; --term: #2a2421; --bar: #312a26; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 1600px; height: 900px; overflow: hidden; }
+  body {
+    font-family: "JetBrains Mono", ui-monospace, monospace; color: var(--ink);
+    background:
+      radial-gradient(1100px 700px at 100% 0%, #3a2a22 0%, transparent 60%),
+      radial-gradient(900px 600px at 0% 100%, #15110f 0%, transparent 70%),
+      var(--bg);
+  }
+  .left { position: absolute; left: 86px; top: 128px; width: 590px; }
+  .badge {
+    display: inline-block; background: var(--seal); color: #fbf1e6; font-weight: 800; font-size: 29px;
+    padding: 12px 22px 14px; border-radius: 8px; transform: rotate(-3deg); letter-spacing: .5px;
+    box-shadow: 0 6px 18px rgba(0,0,0,.35);
+  }
+  h1 { margin-top: 36px; font-size: 59px; line-height: 1.04; font-weight: 800; letter-spacing: -.5px; }
+  h1 em { font-style: normal; color: var(--hot); }
+  ul { list-style: none; margin-top: 44px; }
+  li { display: flex; gap: 12px; font-size: 21px; line-height: 1.5; color: var(--soft); margin-bottom: 12px; }
+  li::before { content: "印"; color: var(--hot); font-size: 17px; padding-top: 3px; font-family: "Yu Gothic", "Meiryo", sans-serif; }
+  li b { color: var(--ink); font-weight: 700; }
+  .install { margin-top: 30px; font-size: 18px; color: var(--muted); }
+
+  .term {
+    position: absolute; left: 715px; top: 190px; width: 800px; height: 520px; background: var(--term);
+    border-radius: 14px; box-shadow: 0 30px 70px rgba(0,0,0,.45), 0 0 0 1px rgba(255,255,255,.04); overflow: hidden;
+  }
+  .bar { height: 58px; background: var(--bar); display: flex; align-items: center; gap: 10px; padding: 0 22px; }
+  .dot { width: 15px; height: 15px; border-radius: 50%; }
+  .bar span { margin-left: 18px; color: var(--muted); font-size: 16px; }
+  pre { font-family: inherit; font-size: 19.5px; line-height: 1.62; padding: 26px 32px; color: var(--ink); white-space: pre; }
+  .p { color: var(--muted); } .r { color: var(--hot); } .g { color: var(--ok); } .d { color: var(--muted); } .b { font-weight: 700; }
+</style>
+</head>
+<body>
+  <div class="left">
+    <div class="badge">v0.3.0</div>
+    <h1>inkan now knows<br>when you <em>break</em><br><em>your clients</em>.</h1>
+    <ul>
+      <li><span><b>inkan diff</b> names every breaking change</span></li>
+      <li><span><b>inkan examples</b>: six explained projects</span></li>
+      <li><span><b>A typed client</b>, no codegen</span></li>
+      <li><span><b>Server-sent events</b>, streams, uploads</span></li>
+      <li><span><b>Examples</b> that build on each other</span></li>
+      <li><span><b>Replay</b> in the inspector, <b>edit</b> in /docs</span></li>
+    </ul>
+    <div class="install">npm install @vxnsin/inkan</div>
+  </div>
+
+  <div class="term">
+    <div class="bar">
+      <div class="dot" style="background:#e5534b"></div><div class="dot" style="background:#e3b341"></div><div class="dot" style="background:#57c26a"></div>
+      <span>PowerShell — inkan</span>
+    </div>
+<pre><span class="p">PS tea-shop&gt;</span> npx inkan diff openapi.json src/app.ts
+
+  <span class="r">印</span> <span class="b">inkan diff</span>  <span class="d">·</span>  <span class="d">openapi.json → src/app.ts</span>
+
+  <span class="r">breaks clients</span>
+    <span class="r">✗</span> <span class="b">POST /teas</span>  body.kind is required now
+    <span class="r">✗</span> <span class="b">DELETE /teas/{id}</span>  is gone
+
+  <span class="g">safe</span>
+    <span class="g">·</span> <span class="b">POST /teas</span>  body.note is taken now
+    <span class="g">·</span> <span class="b">GET /teas/{id}/brew</span>  is new
+
+  <span class="r">2 breaking</span> <span class="d">·</span> 2 safe</pre>
+  </div>
+</body>
+</html>
