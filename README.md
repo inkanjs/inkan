@@ -78,19 +78,20 @@ drifts, the check goes red before anyone reads something false.
 
 ## Why another one
 
-Express gets out of the way, FastAPI writes your docs. inkan wants both, plus
-the one thing neither does: holding the server to what its docs say.
+Express gets out of the way, Fastify is fast, Hono runs everywhere. inkan wants to be
+easy to start and deep when you need it, plus the one thing none of them does: holding the
+server to what its docs say.
 
-| | Express | Fastify | Hono | FastAPI | inkan |
-| --- | :-: | :-: | :-: | :-: | :-: |
-| Handler types come from the schema | – | with a type provider | with a validator | ✓ | ✓ |
-| OpenAPI document | plugin | plugin | plugin | ✓ | ✓ |
-| Docs page | plugin | plugin | plugin | ✓ | ✓ no CDN, works offline |
-| Answers trimmed to the contract | – | ✓ | – | ✓ | ✓ and checked in dev |
-| **Examples run as tests** | – | – | – | – | ✓ `inkan check` |
-| **Live request inspector** | – | – | – | – | ✓ `/_inkan` |
-| Every error in one shape ([RFC 9457](https://www.rfc-editor.org/rfc/rfc9457)) | – | – | – | – | ✓ |
-| Runtime dependencies | several | several | none | several | **none** |
+| | Express | Fastify | Hono | inkan |
+| --- | :-: | :-: | :-: | :-: |
+| Handler types come from the schema | – | with a type provider | with a validator | ✓ |
+| OpenAPI document | plugin | plugin | plugin | ✓ |
+| Docs page | plugin | plugin | plugin | ✓ no CDN, works offline |
+| Answers trimmed to the contract | – | ✓ | – | ✓ and checked in dev |
+| **Examples run as tests** | – | – | – | ✓ `inkan check` |
+| **Live request inspector** | – | – | – | ✓ `/_inkan` |
+| Every error in one shape ([RFC 9457](https://www.rfc-editor.org/rfc/rfc9457)) | – | – | – | ✓ |
+| Runtime dependencies | several | several | none | **none** |
 
 ## Install
 
