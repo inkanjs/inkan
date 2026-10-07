@@ -54,6 +54,15 @@
   long to keep whole is not offered for replay, and its example leaves the body out instead
   of guessing.
 
+### License
+
+- **inkan is no longer MIT.** From this release on it is under the
+  [Non-Sale & No Misrepresentation License](LICENSE). You may still use, copy, change and
+  share it for free, also inside commercial products and services. What is new: inkan itself
+  may not be sold, rented or licensed for money, and nobody may claim to be its original
+  author. The license text has to travel with every copy. Versions up to 0.2.0 stay under
+  MIT, as they were published.
+
 ## 0.2.0
 
 ### New
