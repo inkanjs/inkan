@@ -67,15 +67,24 @@ async function verify(name, base, s) {
 
 const results = {}; // scenario -> server -> { rps: [], p99: [] }
 const memory = {}; // server -> [MB]
+
+// Every server runs at once, each in a process of its own, idle until its turn. Each
+// scenario is measured for all of them back to back, in an order that turns every time:
+// a runner that gets slower over the hour then slows everybody alike, instead of whoever
+// happens to come last.
+const running = {};
 let port = 4800;
+for (const name of servers) {
+  const p = port++;
+  running[name] = { child: await start(name, p), base: `http://127.0.0.1:${p}` };
+}
+let turn = 0;
 for (let round = 0; round < rounds; round++) {
-  // a different order every round, so warm-up and thermals do not favour anybody
-  const order = round % 2 ? [...servers].reverse() : servers;
-  for (const name of order) {
-    const p = port++;
-    const child = await start(name, p);
-    const base = `http://127.0.0.1:${p}`;
-    for (const s of scenarios) {
+  for (const s of scenarios) {
+    const shift = turn++ % servers.length;
+    const order = [...servers.slice(shift), ...servers.slice(0, shift)];
+    for (const name of order) {
+      const { base } = running[name];
       await verify(name, base, s);
       const opts = { url: base + s.path, method: s.method ?? "GET", headers: s.headers, body: s.body, connections: s.connections ?? 100, workers };
       await cannon({ ...opts, duration: warmup }); // warm the JIT
@@ -90,11 +99,13 @@ for (let round = 0; round < rounds; round++) {
       cell.errors += r.errors + r.timeouts;
       cell.rps.push(r.requests.average);
       cell.p99.push(r.latency.p99);
-      process.stderr.write(`round ${round + 1}/${rounds}  ${name.padEnd(10)} ${s.name.padEnd(26)} ${Math.round(r.requests.average)} req/s\n`);
+      process.stderr.write(`round ${round + 1}/${rounds}  ${name.padEnd(13)} ${s.name.padEnd(26)} ${Math.round(r.requests.average)} req/s\n`);
     }
-    (memory[name] ??= []).push(peakMemory(child.pid));
-    child.kill();
   }
+}
+for (const name of servers) {
+  memory[name] = [peakMemory(running[name].child.pid)];
+  running[name].child.kill();
 }
 
 // ---------- the report ----------

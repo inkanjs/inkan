@@ -71,6 +71,14 @@
   asks every worker to finish its open requests and run its `onClose`. Log lines, the
   `listening` line and the inspector say which worker answered. The bench has an
   `inkan-cluster` entry next to the one-core ones. ([#24](https://github.com/inkanjs/inkan/issues/24))
+- **Adapters: `app.exchange()`**, the one door for any server: a request in plain values, the
+  answer in plain values, plus `app.started()` and `app.stopped()` for the onListen and
+  onClose hooks. `listen` and `fetch` go through it too. The first adapter,
+  [`@inkanjs/uws`](adapters/uws), runs an app on uWebSockets.js; it is installed apart, with
+  uWebSockets.js as a peer you add on purpose (it comes from GitHub, which npm 12 only
+  allows when asked), so inkan keeps no dependencies. One set of requests runs in CI against
+  `listen`, `fetch` and every adapter, and the bench has an `inkan-uws` entry.
+  ([#25](https://github.com/inkanjs/inkan/issues/25))
 - **`bench/cpu.mjs`**: the CPU time one request costs the server, next to the others, which
   does not depend on how fast the load generator is. The bench workflow runs it with
   `kind: cpu` (or `both`).

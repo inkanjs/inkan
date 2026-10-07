@@ -592,6 +592,24 @@ everybody. The body limit holds while the body is read, with or without a
 `content-length`, and a stream the client stops reading stops its source. CI runs
 the same requests on Bun and Deno on every push.
 
+### Other servers
+
+`app.exchange({ method, url, headers, body, remote })` is the one door inkan has for
+any server: plain values in, `{ status, headers, body | stream }` out. `listen` and
+`fetch` use nothing else, and neither does an adapter. The first one is
+[`@inkanjs/uws`](adapters/uws), for [uWebSockets.js](https://github.com/uNetworking/uWebSockets.js):
+
+```ts
+import { serve } from "@inkanjs/uws";
+const server = await serve(app, { port: 3000 });
+```
+
+It is installed apart, so inkan itself keeps no dependencies, and CI runs the same
+set of requests against `listen`, `fetch` and every adapter. An adapter reads the
+body up to `app.options.bodyLimit`, writes the answer, aborts a stream whose client
+left, calls `done()` when the answer is out, and runs `app.started()` and
+`app.stopped()` around its server for the onListen and onClose hooks.
+
 ## CLI
 
 ```sh
