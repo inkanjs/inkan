@@ -10,6 +10,7 @@
 
 import type { RequestLog } from "./app.ts";
 import { RequestContext } from "./context.ts";
+import { folderOf, loadRoutes } from "./files.ts";
 import type { HttpProblem } from "./problem.ts";
 import { joinPath, Routes, type Context, type RouteDefs, type RouteRecord, type WithDeco } from "./route.ts";
 
@@ -181,6 +182,17 @@ export class Scope<Defs extends RouteDefs = any, Deco = any> extends Routes<Defs
     Object.defineProperty(proto, name, { value, writable: true, enumerable: true, configurable: true });
     return this;
   }) as never;
+
+  /**
+   * A route for every file in a folder: `teas/[id].ts` exporting `GET` is `GET /teas/:id`,
+   * under this scope's prefix. It loads in order with the plugins, and `ready()` waits for it.
+   * Pass `new URL("./routes", import.meta.url)` to name the folder next to the file.
+   */
+  load(dir: string | URL): this {
+    const folder = folderOf(dir);
+    this._root._load(() => loadRoutes(folder, (method, path, spec, handler) => void this.define(method, path, spec, handler)));
+    return this;
+  }
 
   /**
    * Runs a plugin with a scope of its own, under `prefix` if given. Plugins run in the order

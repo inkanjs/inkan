@@ -58,6 +58,13 @@
   goes into OpenAPI and onto the docs page, and in development an answer without a promised
   header (or with one of the wrong shape) breaks the contract like a wrong body does.
   ([#12](https://github.com/inkanjs/inkan/issues/12))
+- **Routes from the file tree.** `app.load(new URL("./routes", import.meta.url))` defines a
+  route for every file in a folder: `teas/[id].ts` exporting `GET` and `DELETE` is
+  `/teas/:id`, `index` is its folder, `[...rest]` takes the rest. `route(spec, handler)` types
+  the handler from the contract as `app.get` does. Nothing happens at import time; `load`
+  runs in order with the plugins, `listen` waits for it, and in a plugin the routes go under
+  its prefix. Files starting with `_`, `.d.ts` and test files are left alone. A file that
+  exports no route says so by name. ([#6](https://github.com/inkanjs/inkan/issues/6))
 - **`bench/cpu.mjs`**: the CPU time one request costs the server, next to the others, which
   does not depend on how fast the load generator is. The bench workflow runs it with
   `kind: cpu` (or `both`).

@@ -407,6 +407,35 @@ Preflights are answered before routing, and error answers carry the headers
 too, so the page can read a 404 instead of a CORS error. `allowHeaders`,
 `exposeHeaders` and `methods` are there when the defaults are not enough.
 
+### Routes from the file tree
+
+For a bigger API, one file per path:
+
+```
+routes/index.ts            /
+routes/teas/index.ts       /teas
+routes/teas/[id].ts        /teas/:id
+routes/files/[...rest].ts  /files/*rest
+```
+
+```ts
+// routes/teas/[id].ts
+import { route, t } from "@vxnsin/inkan";
+
+export const GET = route({ params: t.object({ id: t.int() }), response: { 200: Tea } }, ({ params }) => find(params.id));
+export const DELETE = route({ params: t.object({ id: t.int() }) }, ({ params }) => remove(params.id));
+```
+
+```ts
+app.load(new URL("./routes", import.meta.url));
+```
+
+Nothing happens at import time: `load` reads the folder when you call it, in order
+with the plugins, and `listen` waits for it. In a plugin the routes go under its
+prefix. They are routes like any other, with the same contracts, in OpenAPI and
+in `inkan check`. Files starting with `_`, `.d.ts` and test files are left alone,
+so helpers can live next to the routes.
+
 ## Hooks, plugins and decorators
 
 Hooks run at fixed points of every request, in this order:
