@@ -550,8 +550,9 @@ export class App<Defs extends RouteDefs = any> extends Routes<Defs> {
       return { status, headers: { "content-type": "application/octet-stream", ...headers }, stream: body };
     }
 
+    let schema: Schema<any> | undefined;
     if (route && Object.keys(responses).length && status !== 204) {
-      const schema = contractFor(route, status);
+      schema = contractFor(route, status);
       if (!schema) notes.push(`status ${status} is not in the contract`);
       else if (this.options.validateResponses) {
         const r = schema.safeParse(body);
@@ -563,8 +564,13 @@ export class App<Defs extends RouteDefs = any> extends Routes<Defs> {
             errors: r.issues.map((i) => ({ in: "response", path: i.path, message: i.message })),
           });
         }
-        body = r.value; // this also drops keys the contract does not list, so nothing leaks by accident
+        body = r.value;
       }
+    }
+    // Only what the contract lists leaves the server, in development and in production alike.
+    // The writer is built once per schema and knows the shape, so this is also the fast path.
+    if (schema && typeof body === "object" && body !== null && !Buffer.isBuffer(body) && !(body instanceof Uint8Array)) {
+      return encode(status, schema._serializer()(body), { "content-type": "application/json; charset=utf-8", ...headers });
     }
     return encode(status, body, headers);
   }

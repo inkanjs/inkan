@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Keys the contract does not list no longer leave the server in production.** The README
+  promised that a `passwordHash` on a returned row never goes out, but only development
+  dropped such keys: with `NODE_ENV=production` the answer went out as the handler returned
+  it. Every answer with a schema is now written by a writer built from that schema, in every
+  mode, and it writes only what the schema lists, at every depth: objects, arrays, records,
+  discriminated unions and recursive shapes. `.passthrough()` still keeps everything, and a
+  `.transform()` writes what it made. Affects every release up to 0.3.0; update.
+
+### Changed
+
+- Answers with a schema are written by that schema's own writer, built once per schema,
+  instead of by `JSON.stringify`.
+
 ## 0.3.0
 
 ### New

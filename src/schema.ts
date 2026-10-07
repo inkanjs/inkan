@@ -88,6 +88,7 @@ export abstract class Schema<T = unknown> {
     const copy = Object.create(Object.getPrototypeOf(this));
     Object.assign(copy, this);
     copy.meta = { ...this.meta, ...patch };
+    copy._ser = undefined; // a copy with other rules writes its own way
     return copy;
   }
 
@@ -112,14 +113,18 @@ export abstract class Schema<T = unknown> {
   }
   /** Runs after validation. Custom rules have no JSON Schema representation. */
   refine(fn: (value: T) => boolean, message: string): Schema<T> {
-    return new EffectSchema(this, (value, path, issues) => {
-      if (!fn(value)) issues.push({ path, message });
-      return value;
-    });
+    return new EffectSchema(
+      this,
+      (value, path, issues) => {
+        if (!fn(value)) issues.push({ path, message });
+        return value;
+      },
+      true,
+    );
   }
   /** Changes the parsed value, while documenting the original wire schema. */
   transform<U>(fn: (value: T) => U): Schema<U> {
-    return new EffectSchema(this, fn);
+    return new EffectSchema(this, fn, false);
   }
   /** Names the schema, so OpenAPI lists it once under components and refers to it. */
   named(name: string): this {
@@ -144,7 +149,33 @@ export abstract class Schema<T = unknown> {
     const schema = this._schema(ctx);
     return ctx.components.size ? { ...schema, $defs: Object.fromEntries(ctx.components) } : schema;
   }
+
+  private _ser?: (v: unknown) => string;
+
+  /**
+   * @internal A function that writes a value as JSON with only what this schema lists,
+   * built once per schema and kept. It does not validate; it is what keeps keys the
+   * contract does not list on the server, in production too, and it is faster than
+   * JSON.stringify because it knows the shape in advance.
+   */
+  _serializer(): (v: unknown) => string {
+    if (!this._ser) {
+      const inner = this.serialize();
+      this._ser = this.meta.nullable ? (v) => (v === null ? "null" : inner(v)) : inner;
+    }
+    return this._ser;
+  }
+
+  /** How this kind of schema writes a value. The fallback lets the parser strip, then writes that. */
+  protected serialize(): (v: unknown) => string {
+    return (v) => {
+      const r = this.safeParse(v);
+      return JSON.stringify(r.ok ? r.value : v) ?? "null";
+    };
+  }
 }
+
+const json = (v: unknown) => JSON.stringify(v) ?? "null";
 
 class EffectSchema<T, U> extends Schema<U> {
   private source: Schema<T>;
@@ -152,11 +183,18 @@ class EffectSchema<T, U> extends Schema<U> {
   private outerOptional = false;
   private outerNullable = false;
   private outerDefault = false;
-  constructor(source: Schema<T>, effect: (value: T, path: string, issues: Issue[]) => U) {
+  /** A refinement keeps the value's shape, a transform makes a new one. */
+  private sameShape: boolean;
+  constructor(source: Schema<T>, effect: (value: T, path: string, issues: Issue[]) => U, sameShape: boolean) {
     super();
     this.source = source;
     this.effect = effect;
+    this.sameShape = sameShape;
     this.meta = { ...source.meta };
+  }
+  protected override serialize() {
+    // a refined value still has the source's shape; a transformed one has none we know
+    return this.sameShape ? this.source._serializer() : json;
   }
   override optional(): Schema<U | undefined> {
     const copy = this.clone({ optional: true });
@@ -237,6 +275,10 @@ export class StringSchema extends Schema<string> {
     return s;
   }
 
+  protected override serialize() {
+    return json;
+  }
+
   protected json() {
     const { min, max, pattern, format } = this.rules;
     const s: JsonSchema = { type: "string" };
@@ -277,6 +319,10 @@ export class NumberSchema extends Schema<number> {
     return n;
   }
 
+  protected override serialize() {
+    return (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? String(v) : json(v));
+  }
+
   protected json() {
     const s: JsonSchema = { type: this.rules.int ? "integer" : "number" };
     if (this.rules.min !== undefined) s.minimum = this.rules.min;
@@ -294,6 +340,9 @@ export class BooleanSchema extends Schema<boolean> {
     }
     issues.push({ path, message: `expected a boolean, got ${typeOf(v)}` });
     return FAIL;
+  }
+  protected override serialize() {
+    return (v: unknown) => (v === true ? "true" : v === false ? "false" : json(v));
   }
   protected json() {
     return { type: "boolean" };
@@ -313,6 +362,9 @@ export class DateSchema extends Schema<Date> {
     issues.push({ path, message: "expected a valid ISO date-time or Date" });
     return FAIL;
   }
+  protected override serialize() {
+    return (v: unknown) => (v instanceof Date ? `"${v.toISOString()}"` : json(v));
+  }
   protected json() { return { type: "string", format: "date-time" }; }
 }
 
@@ -330,6 +382,9 @@ export class EnumSchema<const V extends string | number | boolean> extends Schem
     }
     return hit;
   }
+  protected override serialize() {
+    return json;
+  }
   protected json() {
     return this.values.length === 1 ? { const: this.values[0] } : { enum: [...this.values] };
   }
@@ -338,6 +393,9 @@ export class EnumSchema<const V extends string | number | boolean> extends Schem
 export class AnySchema<T = unknown> extends Schema<T> {
   protected check(v: unknown) {
     return v as T;
+  }
+  protected override serialize() {
+    return json;
   }
   protected json() {
     return {};
@@ -372,6 +430,16 @@ export class ArraySchema<S extends Schema<any>> extends Schema<Infer<S>[]> {
       if (r !== FAIL) out.push(r);
     });
     return out;
+  }
+
+  protected override serialize() {
+    const item = this.item._serializer();
+    return (v: unknown) => {
+      if (!Array.isArray(v)) return json(v);
+      let out = "[";
+      for (let i = 0; i < v.length; i++) out += (i ? "," : "") + (v[i] === undefined ? "null" : item(v[i]));
+      return out + "]";
+    };
   }
 
   protected json(ctx?: RefContext) {
@@ -434,6 +502,25 @@ export class ObjectSchema<S extends Shape> extends Schema<InferShape<S>> {
     return out as InferShape<S>;
   }
 
+  protected override serialize() {
+    if (this.unknownKeys === "keep") return json; // passthrough: everything goes, by definition
+    // the key and its colon, written once; per request only the values are written
+    const fields = Object.entries(this.shape).map(([key, schema]) => ({ key, head: `${JSON.stringify(key)}:`, write: schema._serializer() }));
+    return (v: unknown) => {
+      if (typeof v !== "object" || v === null || Array.isArray(v)) return json(v);
+      const o = v as Record<string, unknown>;
+      let out = "{";
+      let first = true;
+      for (const f of fields) {
+        const x = o[f.key];
+        if (x === undefined) continue;
+        out += (first ? "" : ",") + f.head + f.write(x);
+        first = false;
+      }
+      return out + "}";
+    };
+  }
+
   protected json(ctx?: RefContext) {
     const properties: Record<string, JsonSchema> = {};
     const required: string[] = [];
@@ -465,6 +552,20 @@ export class RecordSchema<S extends Schema<any>> extends Schema<Record<string, I
       if (r !== FAIL) out[k] = r;
     }
     return out;
+  }
+  protected override serialize() {
+    const write = this.value._serializer();
+    return (v: unknown) => {
+      if (typeof v !== "object" || v === null || Array.isArray(v)) return json(v);
+      let out = "{";
+      let first = true;
+      for (const [k, x] of Object.entries(v)) {
+        if (x === undefined) continue;
+        out += (first ? "" : ",") + JSON.stringify(k) + ":" + write(x);
+        first = false;
+      }
+      return out + "}";
+    };
   }
   protected json(ctx?: RefContext) {
     return { type: "object", additionalProperties: this.value._schema(ctx) };
@@ -499,6 +600,11 @@ export class LazySchema<T> extends Schema<T> {
   protected check(value: unknown, path: string, coerce: boolean, issues: Issue[]) {
     return this.resolve()._run(value, path, coerce, issues);
   }
+  protected override serialize() {
+    // resolved on first use, so a recursive shape does not build itself forever
+    let write: ((v: unknown) => string) | undefined;
+    return (v: unknown) => (write ??= this.resolve()._serializer())(v);
+  }
   protected json(ctx?: RefContext) {
     const target = this.resolve();
     return target._schema(ctx);
@@ -532,6 +638,15 @@ export class DiscriminatedSchema<K extends string, S extends Record<string, Obje
       return FAIL;
     }
     return this.options[tag]!._run(value, path, coerce, issues) as this["_type"] | Fail;
+  }
+  protected override serialize() {
+    // the tag says which option it is, so that option's writer is used
+    const writers = new Map(Object.entries(this.options).map(([tag, option]) => [tag, option._serializer()]));
+    return (v: unknown) => {
+      const tag = typeof v === "object" && v !== null ? (v as Record<string, unknown>)[this.key] : undefined;
+      const write = typeof tag === "string" ? writers.get(tag) : undefined;
+      return write ? write(v) : json(v);
+    };
   }
   protected json(ctx?: RefContext) {
     const mapping: Record<string, string> = {};
