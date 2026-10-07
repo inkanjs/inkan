@@ -102,6 +102,11 @@
   contract lists, the usual case, is checked by counting keys and then written by the native
   `JSON.stringify`; only an answer with keys the contract does not list takes the exact writer.
   A list of 100 nested objects: 80 → 51 µs.
+- **Big bodies and big answers, without a seal.** A checked value no longer builds the path of
+  every field on the way (`items[3].name`); children are checked relative to their parent, and
+  only an issue gets its full path. And the check that an answer holds nothing extra tests
+  primitive fields inline instead of calling out for each. Checking a body of 50 objects:
+  21.7 → 11.3 µs; writing an answer of 100: 64 → 46 µs. Messages and paths are the same.
 - **No promise unless something is asynchronous.** A request without a body whose handler
   answers at once now goes from socket to answer in one turn, without a promise, a closure
   per step or a trip through the microtask queue; only a body to read, middleware or an async
