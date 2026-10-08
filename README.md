@@ -785,6 +785,14 @@ src/
   cli/        inkan examples
 ```
 
+## How inkan is made
+
+inkan is designed and maintained by Vensin. Much of the code is written together with an AI
+assistant (Claude Code), and none of it goes in unchecked: I read every change, run it on my
+own hardware and put it through a full security review before it is merged. Every change
+lands with tests, over 200 of them, run on every commit, and every example in the docs is
+one of them. I make mistakes too; this process is there to catch them before you do.
+
 ## License
 
 [MIT](LICENSE)
