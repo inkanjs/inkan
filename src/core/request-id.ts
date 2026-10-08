@@ -1,7 +1,7 @@
 // Request ids: unique without asking anyone, and cheap enough to give every request one.
 
 import cluster from "node:cluster";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 
 /**
  * Hands out request ids: a random prefix made once per process, the cluster worker's id when
@@ -19,4 +19,4 @@ export function idSource(worker: number | undefined = cluster.isWorker ? cluster
 const randomPrefix = () => randomBytes(4).readUInt32BE(0).toString(36).padStart(7, "0");
 
 /** The one source of this process, for every app in it. */
-export const nextId = idSource();
+export const nextId: () => string = randomUUID; // experiment: the id as before
