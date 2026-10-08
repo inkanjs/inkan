@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.7.0 (not released yet)
+
+### New
+
+- **More than JSON, from the context.** `ctx.text(body)`, `ctx.html(markup)`,
+  `ctx.redirect(to, status)` (301, 302, 303, 307 or 308) and `ctx.notFound(detail)`, the
+  same 404 problem an unknown route gets, through `onProblem` like any other. Each can be
+  taken apart like `status` (`({ html }) => …`) and costs nothing until used.
+- **The `html` tag**, which escapes every value put into it, joins lists and writes nothing
+  for `null`, `undefined` and `false`. A handler can return `` html`…` `` as it is.
+  `raw(markup)` lets markup you made yourself through.
+- **Layouts.** `app.layout((content, props, ctx) => …)` and `ctx.render(content, props)`:
+  pages in the look of their scope; a plugin can have its own, and the closest wins.
+- **Cookies.** `ctx.cookies` reads them, `ctx.setCookie(name, value, options)` sets one,
+  HttpOnly and SameSite=Lax unless told otherwise, and `ctx.clearCookie(name)` lets one
+  expire. Every cookie goes out as a Set-Cookie of its own, over node:http, `fetch` and
+  `inject` (`res.cookies`).
+
+### For adapters
+
+- `AdapterResponse.cookies` holds the Set-Cookie headers, one per cookie; an adapter writes
+  each as a header of its own.
+
 ## 0.5.0
 
 ### New

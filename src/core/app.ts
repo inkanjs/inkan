@@ -18,6 +18,7 @@ import { Reply, type Context, type Example, type Middleware, type RawQuery, type
 import { target, queryObject, type Exchange, type RawRequest, type RawResponse, type Target } from "./context.ts";
 import { NO_HOOKS, runHooks, Scope, type Hooks, type Root } from "./scope.ts";
 import { nextId } from "./request-id.ts";
+import { SafeHtml } from "./helpers.ts";
 import { readRequestBody, requestStream, TOO_LARGE, validateInput } from "./input.ts";
 import { Buffer } from "node:buffer"; // explicit, for runtimes without a global Buffer
 
@@ -74,6 +75,8 @@ export type InjectOptions = {
 export type InjectResponse = {
   status: number;
   headers: Record<string, string>;
+  /** The Set-Cookie headers, one per cookie. */
+  cookies: string[];
   text: string;
   /** Parsed JSON when the answer was JSON, the events of an event stream, otherwise the text. */
   body: any;
@@ -108,6 +111,8 @@ export type AdapterResponse = {
   abort?: AbortController;
   /** Call it once the answer is written: onResponse hooks run then. */
   done?: () => void;
+  /** Set-Cookie headers, one per cookie; write each as a header of its own. */
+  cookies?: string[];
 };
 
 /** What gets logged for every request. */
@@ -319,7 +324,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
       }
       res.abort?.abort();
       res.done?.();
-      return { status: res.status, headers: res.headers, text, body: parseEvents(text) };
+      return { status: res.status, headers: res.headers, cookies: res.cookies ?? [], text, body: parseEvents(text) };
     }
     const parts: Buffer[] = res.body === undefined ? [] : [Buffer.from(res.body)];
     if (res.stream) {
@@ -332,7 +337,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     const bytes = Buffer.concat(parts);
     text = (encoding === "br" ? brotliDecompressSync(bytes) : encoding === "gzip" ? gunzipSync(bytes) : bytes).toString();
     const json = /json/.test(type);
-    return { status: res.status, headers: res.headers, text, body: json && text ? JSON.parse(text) : text };
+    return { status: res.status, headers: res.headers, cookies: res.cookies ?? [], text, body: json && text ? JSON.parse(text) : text };
   }
 
   // ----- the request path -----
@@ -585,9 +590,13 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     let body = result;
     const headers = out.headers; // this request's own object: filled in place, never copied
     if (result instanceof Reply) {
-      status = result.status;
+      status = result.status || status; // 0: whatever status() set, or the usual one
       body = result.body;
       for (const [k, v] of Object.entries(result.headers)) headers[k.toLowerCase()] = v;
+    }
+    if (body instanceof SafeHtml) {
+      headers["content-type"] ??= "text/html; charset=utf-8"; // html`…` returned as it is
+      body = body.value;
     }
     // No body means 204. Otherwise the first 2xx the contract lists, or 200.
     if (!status) status = body === undefined ? 204 : (plan?.defaultStatus ?? 200);
@@ -872,11 +881,11 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
       if (out.status !== 204 && out.status !== 304 && out.status >= 200) {
         out.headers["content-length"] ??= String(out.body === undefined ? 0 : Buffer.byteLength(out.body));
       }
-      res.writeHead(out.status, out.headers);
+      res.writeHead(out.status, withCookies(out));
       res.end(out.body);
       return void out.done?.();
     }
-    res.writeHead(out.status, out.headers);
+    res.writeHead(out.status, withCookies(out));
     void this.pipe(res, out);
   }
 
@@ -1047,6 +1056,9 @@ function withProblemHeaders(set: Record<string, string>, extra: Record<string, s
 
 const lower = (h: Record<string, string>) => Object.fromEntries(Object.entries(h).map(([k, v]) => [k.toLowerCase(), v]));
 
+/** The headers to write, with every cookie as a Set-Cookie of its own. */
+const withCookies = (out: RawResponse): Record<string, string | string[]> => (out.cookies?.length ? { ...out.headers, "set-cookie": out.cookies } : out.headers);
+
 /** An answer still to be written, with these headers. */
 const fresh = (headers: Record<string, string> = {}): RawResponse => ({ status: 0, headers, body: undefined });
 
@@ -1106,6 +1118,7 @@ const textEncoder = new TextEncoder();
 function toWebResponse(out: RawResponse): Response {
   const headers = new Headers();
   for (const [k, v] of Object.entries(out.headers)) if (k !== "connection") headers.set(k, v); // hop-by-hop: the platform's business
+  for (const c of out.cookies ?? []) headers.append("set-cookie", c);
   if (!out.stream) {
     const empty = out.status === 204 || out.status === 304 || out.body === undefined;
     const res = new Response(empty ? null : out.body, { status: out.status, headers });

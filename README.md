@@ -172,6 +172,48 @@ A handler returns a value, or `reply(status, body, headers)` for anything
 else. `ctx.reply` is typed to the statuses in the contract, so `reply(418)`
 on a route that never promised a teapot does not compile.
 
+### More than JSON
+
+The context answers in other ways too. Every one of these can be taken apart like the
+rest, `({ html, params }) => …`, and costs nothing on a request that does not use it.
+
+```ts
+import { html } from "@vxnsin/inkan";
+
+app
+  .get("/hello", ({ text }) => text("hello"))
+  .get("/tea/:name", ({ params }) => html`<h1>${params.name}</h1>`) // every value escaped
+  .get("/old", ({ redirect }) => redirect("/new", 301))
+  .get("/teas/:id", spec, ({ params, notFound }) => findTea(params.id) ?? notFound(`No tea ${params.id}`))
+  .post("/login", ({ setCookie }) => {
+    setCookie("sid", session.id, { maxAge: 60 * 60 * 24 }); // HttpOnly and SameSite=Lax by default
+    return { ok: true };
+  })
+  .get("/me", ({ cookies }) => sessions.get(cookies.sid));
+```
+
+| on the context | answers with |
+| --- | --- |
+| `text(body, status?)` | text/plain |
+| `html(markup, status?)` | text/html; or return `` html`…` `` as it is |
+| `redirect(to, status?)` | 302, or 301, 303, 307, 308, with the location |
+| `notFound(detail?)` | the same 404 problem an unknown route gets, through `onProblem` |
+| `render(content, props?)` | HTML in the layout of the route's scope |
+| `cookies`, `setCookie(name, value, options?)`, `clearCookie(name)` | the request's cookies; one Set-Cookie per cookie set |
+
+The `html` tag escapes every `${…}` put into it, so a name a user typed cannot become a
+script on the page. Lists are joined, and `null`, `undefined` and `false` write nothing, so
+`${items.map((i) => html`<li>${i}</li>`)}` and `${admin && html`…`}` work. `raw(markup)`
+lets markup through unescaped, for markup you made yourself.
+
+A layout is how the pages of a scope look around what `render` hands in. A plugin can have
+its own, and inside one the closest wins:
+
+```ts
+app.layout((content, { title }) => html`<!doctype html><title>${title}</title><main>${content}</main>`);
+app.get("/", ({ render }) => render(html`<p>Tea, checked.</p>`, { title: "Home" }));
+```
+
 ## Schemas
 
 ```ts
