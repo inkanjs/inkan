@@ -332,6 +332,32 @@ app.post(
 Fields next to the file are coerced like a query (`"1"` becomes `1`). A file that is too big
 or of the wrong type is a 400 that says which, and `bodyLimit` still caps the whole upload.
 
+**A file as the body itself**, as `fetch(url, { body: file })` sends it, is a `t.binary()`:
+the bytes, unparsed, with a limit and media types of their own. Its `max` is that route's
+body limit, so it can be larger than the app's:
+
+```ts
+app.post("/pictures", { body: t.binary().max(25_000_000).accept("image/*") }, ({ body, headers }) =>
+  store(body, headers["content-type"]), // body: a Buffer
+);
+```
+
+**Larger than memory**, a `t.stream()` hands the body to the handler unread, chunk by chunk
+as it arrives. Past its `max` the stream throws a 413 problem; an answer before the body is
+read, a 401 say, still reaches the client.
+
+```ts
+import { pipeline } from "node:stream/promises";
+
+app.post("/backups", { body: t.stream().max(2 * 1024 ** 3) }, async ({ body }) => {
+  await pipeline(body, createWriteStream(path)); // never all in memory
+  return reply(201, { stored: true });
+});
+```
+
+Any route can also say `bodyLimit: n` for itself. The typed client sends a `Blob`, bytes or
+a `ReadableStream` as they are, and the docs list the media types.
+
 ## A typed client
 
 The contract already knows every path, input and answer, so a client can take its types
@@ -617,7 +643,25 @@ inkan({
 Every request has an id: the one in `x-request-id` when it looks safe, a fresh UUID
 otherwise. It is `ctx.id` in the handler, goes back out as a header, sits in every log
 line and in every problem document as `requestId`, so a bug report points at the right
-line in the logs.
+line in the logs. `ctx.ip` is the client's address, from the socket or the platform.
+
+### The frontend next to it
+
+An app that serves its own built frontend registers two plugins: the files, with the
+fallback a single-page app needs, and compression for everything that pays.
+
+```ts
+import { compress, serveStatic } from "@vxnsin/inkan";
+
+app
+  .register(compress()) // brotli or gzip, as the client takes it; streams too, event streams not
+  .register(serveStatic({ dir: "client/dist", spa: true, exclude: ["/api"] }));
+```
+
+Every route of the app wins against the files. A hashed asset under `/assets/` is cached for
+a year, everything else and the page itself are asked for again (`no-cache`), with an ETag
+and a 304. A path without a file gets `index.html`, except under `exclude`: a mistyped API
+call is a 404 problem, not a page. Nothing outside the folder and no dotfile is served.
 
 ### Bun, Deno and serverless
 
@@ -737,7 +781,7 @@ src/
   openapi/    the OpenAPI document and inkan diff
   testing/    inkan check, examples that build on each other, examples from real requests
   pages/      the docs page and the inspector
-  plugins/    cors, and more to come
+  plugins/    cors, rate limits, static files, compression
   cli/        inkan examples
 ```
 
