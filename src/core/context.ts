@@ -6,6 +6,8 @@ import { Reply, type Context, type RouteRecord } from "./route.ts";
 import type { Hooks } from "./scope.ts";
 import type { RawQuery } from "./route.ts";
 import { NO_PARAMS } from "./router.ts";
+import { problem } from "./problem.ts";
+import { isRedirect, parseCookies, SafeHtml, serializeCookie, type CookieOptions, type RedirectStatus } from "./helpers.ts";
 
 export type RawRequest = {
   method: string;
@@ -29,7 +31,12 @@ export type RawResponse = {
   abort?: AbortController;
   /** Called once the answer is written, for onResponse hooks. */
   done?: () => void;
+  /** Set-Cookie headers, one per cookie: a header object holds only one of each name. */
+  cookies?: string[];
 };
+
+/** How a scope wraps the pages its handlers render: `app.layout(...)`. */
+export type Layout = (content: SafeHtml, props: Record<string, unknown>, ctx: Context<any, any, any, any, any>) => SafeHtml | string | Promise<SafeHtml | string>;
 
 /** One request on its way through the app: what every step after routing needs. */
 export type Exchange = {
@@ -82,13 +89,20 @@ export class RequestContext {
   res?: ServerResponse;
   private target: Target;
   private host?: string;
+  private rawCookie?: string;
   private remote?: string;
-  private out: { status: number; headers: Record<string, string> };
+  private out: RawResponse;
   private _query: unknown = undefined;
   private _state: Record<string, unknown> | undefined = undefined;
   private _status: ((code: number) => void) | undefined = undefined;
   private _header: ((name: string, value: string) => void) | undefined = undefined;
-  constructor(raw: RawRequest, target: Target, id: string, headers: Record<string, string>, out: { status: number; headers: Record<string, string> }) {
+  private _cookies: Record<string, string> | undefined = undefined;
+  private _setCookie: ((name: string, value: string, options?: CookieOptions) => void) | undefined = undefined;
+  private _clearCookie: ((name: string, options?: Pick<CookieOptions, "path" | "domain">) => void) | undefined = undefined;
+  private _render: ((content: SafeHtml | string, props?: Record<string, unknown>) => Reply | Promise<Reply>) | undefined = undefined;
+  /** The layout of the scope this context belongs to; set on the prototype by `layout()`. */
+  declare _layout?: Layout;
+  constructor(raw: RawRequest, target: Target, id: string, headers: Record<string, string>, out: RawResponse) {
     this.remote = raw.remote;
     this.method = raw.method;
     this.path = target.pathname;
@@ -98,6 +112,7 @@ export class RequestContext {
     this.res = raw.res;
     this.target = target;
     this.host = headers.host; // kept here: a header schema may later strip it from ctx.headers
+    this.rawCookie = headers.cookie; // so is this
     this.out = out;
   }
   // Plain getters on the prototype: no proxy, nothing tracked. The setters are there because
@@ -134,6 +149,50 @@ export class RequestContext {
   }
   reply(status: number, body: unknown, headers?: Record<string, string>) {
     return new Reply(status, body, headers);
+  }
+
+  // ----- answers besides JSON. None of them needs `this`, or they are bound like `status`,
+  // so a handler can take them apart: `({ html, params }) => html(...)`.
+
+  /** Plain text. The status is the one `status()` set, or the usual one, unless given here. */
+  text(body: string, status?: number): Reply {
+    return new Reply(status ?? 0, body, { "content-type": "text/plain; charset=utf-8" });
+  }
+  /** HTML. Write it with the `html` tag, which escapes every value put into it. */
+  html(markup: SafeHtml | string, status?: number): Reply {
+    return new Reply(status ?? 0, String(markup), { "content-type": "text/html; charset=utf-8" });
+  }
+  /** Sends the client elsewhere, 302 unless told otherwise. */
+  redirect(to: string, status: RedirectStatus = 302): Reply {
+    if (!isRedirect(status)) throw new TypeError(`A redirect has the status 301, 302, 303, 307 or 308, not ${status}`);
+    // a header carries no character outside visible ASCII: anything else is percent-encoded first
+    return new Reply(status, undefined, { location: /[^\x21-\x7e]/.test(to) ? encodeURI(to) : to });
+  }
+  /** Ends the request with a 404 problem, the same one an unknown route gets. `return ctx.notFound()` reads well. */
+  notFound(detail?: string): never {
+    throw problem(404, "not-found", detail);
+  }
+
+  /** The request's cookies, by name, read on first use. */
+  get cookies(): Record<string, string> {
+    return (this._cookies ??= parseCookies(this.rawCookie));
+  }
+  /** Sets a cookie on the answer: HttpOnly and SameSite=Lax unless told otherwise. */
+  get setCookie(): (name: string, value: string, options?: CookieOptions) => void {
+    return (this._setCookie ??= (name, value, options) => void (this.out.cookies ??= []).push(serializeCookie(name, value, options)));
+  }
+  /** Tells the browser to forget a cookie. Give the path and domain it was set with, if they were not the defaults. */
+  get clearCookie(): (name: string, options?: Pick<CookieOptions, "path" | "domain">) => void {
+    return (this._clearCookie ??= (name, options) => this.setCookie(name, "", { ...options, maxAge: 0, expires: new Date(0) }));
+  }
+  /** HTML in the layout of this route's scope (`app.layout(...)`), or as it is when there is none. */
+  get render(): (content: SafeHtml | string, props?: Record<string, unknown>) => Reply | Promise<Reply> {
+    return (this._render ??= (content, props = {}) => {
+      const layout = this._layout;
+      if (!layout) return this.html(content);
+      const page = layout(content instanceof SafeHtml ? content : new SafeHtml(String(content)), props, this as never);
+      return page instanceof Promise ? page.then((p) => this.html(p)) : this.html(page);
+    });
   }
 }
 

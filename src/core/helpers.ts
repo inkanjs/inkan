@@ -1,0 +1,99 @@
+// What a handler answers with besides JSON: HTML that is safe by default, and cookies.
+
+/** HTML that is known to be safe: written by the `html` tag, or let through on purpose with `raw()`. */
+export class SafeHtml {
+  readonly value: string;
+  constructor(value: string) {
+    this.value = value;
+  }
+  toString() {
+    return this.value;
+  }
+}
+
+const ESCAPES: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
+
+/** Text as HTML: every character that could open a tag or leave an attribute is escaped. */
+export function escapeHtml(text: string): string {
+  return text.replace(/[&<>"']/g, (c) => ESCAPES[c]!);
+}
+
+/** One value put into HTML: escaped, unless it is HTML already; a list joined; nothing for null, undefined and false. */
+function part(v: unknown): string {
+  if (v instanceof SafeHtml) return v.value;
+  if (v === null || v === undefined || v === false) return "";
+  if (Array.isArray(v)) return v.map(part).join("");
+  return escapeHtml(String(v));
+}
+
+/**
+ * HTML from a template, with every `${…}` escaped: `` html`<h1>${name}</h1>` `` is safe
+ * whatever `name` holds. Lists are joined, so `${items.map((i) => html`<li>${i}</li>`)}`
+ * works, and null, undefined and false write nothing, for `${admin && html`…`}`.
+ */
+export function html(strings: TemplateStringsArray, ...values: unknown[]): SafeHtml {
+  let out = strings[0]!;
+  for (let i = 0; i < values.length; i++) out += part(values[i]) + strings[i + 1];
+  return new SafeHtml(out);
+}
+
+/** Lets HTML through unescaped. Only for markup you made yourself, never for what a user sent. */
+export const raw = (markup: string): SafeHtml => new SafeHtml(markup);
+
+export type CookieOptions = {
+  /** Seconds until it expires; 0 deletes it. Without this or `expires` it lasts until the browser closes. */
+  maxAge?: number;
+  expires?: Date;
+  /** Default `/`. */
+  path?: string;
+  domain?: string;
+  /** Only sent over HTTPS. Default false, so it works on plain HTTP too; turn it on behind TLS. */
+  secure?: boolean;
+  /** Out of reach of the page's scripts. Default true. */
+  httpOnly?: boolean;
+  /** Default `Lax`: sent on links into the site, not on requests other sites make. */
+  sameSite?: "Strict" | "Lax" | "None";
+  partitioned?: boolean;
+};
+
+const TOKEN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/; // a cookie name, as RFC 6265 allows it
+
+/** A Set-Cookie header value. The value is percent-encoded, so it can hold anything. */
+export function serializeCookie(name: string, value: string, o: CookieOptions = {}): string {
+  if (!TOKEN.test(name)) throw new TypeError(`Not a valid cookie name: ${JSON.stringify(name)}`);
+  if (o.sameSite === "None" && !o.secure) throw new TypeError(`The cookie ${name} has sameSite "None", which browsers only take with secure: true`);
+  let s = `${name}=${encodeURIComponent(value)}; Path=${o.path ?? "/"}`;
+  if (o.maxAge !== undefined) s += `; Max-Age=${Math.floor(o.maxAge)}`;
+  if (o.expires) s += `; Expires=${o.expires.toUTCString()}`;
+  if (o.domain) s += `; Domain=${o.domain}`;
+  if (o.secure) s += "; Secure";
+  if (o.httpOnly ?? true) s += "; HttpOnly";
+  s += `; SameSite=${o.sameSite ?? "Lax"}`;
+  if (o.partitioned) s += "; Partitioned";
+  return s;
+}
+
+/** The cookies of a request, by name; the first one wins when a name comes twice, as browsers send the most specific first. */
+export function parseCookies(header: string | undefined): Record<string, string> {
+  const out: Record<string, string> = Object.create(null); // a cookie named __proto__ is just a cookie
+  if (!header) return out;
+  for (const piece of header.split(";")) {
+    const eq = piece.indexOf("=");
+    if (eq < 0) continue;
+    const name = piece.slice(0, eq).trim();
+    if (!name || Object.hasOwn(out, name)) continue;
+    let value = piece.slice(eq + 1).trim();
+    if (value.startsWith('"') && value.endsWith('"')) value = value.slice(1, -1);
+    try {
+      out[name] = decodeURIComponent(value);
+    } catch {
+      out[name] = value; // a broken escape: kept as it came
+    }
+  }
+  return out;
+}
+
+/** The statuses a redirect can have. */
+export type RedirectStatus = 301 | 302 | 303 | 307 | 308;
+const REDIRECTS = new Set([301, 302, 303, 307, 308]);
+export const isRedirect = (status: number): status is RedirectStatus => REDIRECTS.has(status);

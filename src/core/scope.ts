@@ -9,7 +9,7 @@
 // none anywhere above it keeps the plain, fast request path.
 
 import type { RequestLog } from "./app.ts";
-import { RequestContext } from "./context.ts";
+import { RequestContext, type Layout } from "./context.ts";
 import { folderOf, loadRoutes } from "./files.ts";
 import type { HttpProblem } from "./problem.ts";
 import { joinPath, Routes, type Context, type RouteDefs, type RouteRecord, type WithDeco } from "./route.ts";
@@ -26,6 +26,8 @@ export type Outgoing = {
   body?: string | Buffer;
   /** Set when the body is a stream, which goes out piece by piece. */
   readonly stream?: AsyncIterable<Uint8Array | string>;
+  /** Set-Cookie headers, one per cookie. */
+  cookies?: string[];
 };
 
 /** Returns nothing to go on, or a value to answer with right away, as a handler would. Throws a problem to stop. */
@@ -54,7 +56,7 @@ export const NO_HOOKS: Hooks = Object.freeze({
 });
 
 /** Names a context has by itself; `decorate` will not cover them. */
-const RESERVED = new Set(["method", "path", "id", "ip", "remote", "params", "query", "headers", "body", "state", "route", "req", "res", "status", "header", "target", "host", "out", "_query", "_state", "_status", "_header"]);
+const RESERVED = new Set(["method", "path", "id", "ip", "remote", "params", "query", "headers", "body", "state", "route", "req", "res", "status", "header", "target", "host", "out", "_query", "_state", "_status", "_header", "text", "html", "redirect", "notFound", "render", "cookies", "setCookie", "clearCookie", "rawCookie", "_cookies", "_setCookie", "_clearCookie", "_render", "_layout"]);
 
 /**
  * What a scope holds. Its context class extends the one of the scope around it, so a
@@ -169,6 +171,17 @@ export class Scope<Defs extends RouteDefs = any, Deco = any> extends Routes<Defs
   /** Sees every problem before it becomes an answer, and may change it or return another. */
   onProblem(fn: ProblemHook<Deco>): this {
     return this.hook("onProblem", fn);
+  }
+
+  /**
+   * How the pages of this scope look around what `ctx.render(content, props)` hands in: the
+   * head, the header, the footer. A plugin can have its own; inside one, the closest wins.
+   *
+   *   app.layout((content, { title }) => html`<!doctype html><title>${title}</title><main>${content}</main>`);
+   */
+  layout(fn: Layout): this {
+    this._box.Ctx.prototype._layout = fn;
+    return this;
   }
 
   /**

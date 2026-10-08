@@ -2,6 +2,7 @@
 // and a table of routes that an app or a group holds.
 
 import type { IncomingMessage, ServerResponse } from "node:http";
+import type { CookieOptions, RedirectStatus, SafeHtml } from "./helpers.ts";
 import type { Infer, Schema } from "../schema/schema.ts";
 import type { EventStream } from "./stream.ts";
 import type { App } from "./app.ts";
@@ -120,6 +121,22 @@ export type Context<P = Record<string, string>, Q = RawQuery, B = unknown, H = R
   status(code: number): void;
   header(name: string, value: string): void;
   reply<S extends keyof R & number>(status: S, body: Infer<R[S]>, headers?: Record<string, string>): Reply<S>;
+  /** Plain text. The status is the one `status()` set, or the usual one, unless given here. */
+  text(body: string, status?: number): Reply;
+  /** HTML. Write it with the `html` tag, which escapes every value put into it. */
+  html(markup: SafeHtml | string, status?: number): Reply;
+  /** Sends the client elsewhere, 302 unless told otherwise. */
+  redirect(to: string, status?: RedirectStatus): Reply;
+  /** Ends the request with a 404 problem, the same one an unknown route gets. */
+  notFound(detail?: string): never;
+  /** HTML in the layout of this route's scope (`app.layout(...)`), or as it is when there is none. */
+  render(content: SafeHtml | string, props?: Record<string, unknown>): Reply | Promise<Reply>;
+  /** The request's cookies, by name. */
+  cookies: Record<string, string>;
+  /** Sets a cookie on the answer: HttpOnly and SameSite=Lax unless told otherwise. */
+  setCookie(name: string, value: string, options?: CookieOptions): void;
+  /** Tells the browser to forget a cookie. */
+  clearCookie(name: string, options?: Pick<CookieOptions, "path" | "domain">): void;
   /** Only there when the request came through a socket, not through `inject`. */
   req?: IncomingMessage;
   res?: ServerResponse;
