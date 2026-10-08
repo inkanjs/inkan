@@ -3,7 +3,7 @@
 
 import { STATUS_CODES } from "node:http";
 import type { RouteRecord, Security } from "../core/route.ts";
-import { ArraySchema, EventsSchema, FileSchema, ObjectSchema, t, type JsonSchema, type RefContext, type Schema } from "../schema/schema.ts";
+import { ArraySchema, EventsSchema, FileSchema, ObjectSchema, RawBodySchema, t, type JsonSchema, type RefContext, type Schema } from "../schema/schema.ts";
 
 /** A body with a file anywhere at its top level goes as multipart/form-data. */
 const carriesFiles = (s: Schema<any>) =>
@@ -95,8 +95,9 @@ export function buildOpenAPI(records: RouteRecord[], info: OpenAPIInfo = {}) {
       if (examples.length) {
         media.examples = Object.fromEntries(examples.map((e, i) => [e.name ?? `example${i + 1}`, { value: e.body }]));
       }
-      const type = carriesFiles(spec.body) ? "multipart/form-data" : "application/json";
-      op.requestBody = { required: !spec.body.meta.optional, content: { [type]: media } };
+      const types =
+        spec.body instanceof RawBodySchema ? spec.body.mediaTypes() : [carriesFiles(spec.body) ? "multipart/form-data" : "application/json"];
+      op.requestBody = { required: !spec.body.meta.optional, content: Object.fromEntries(types.map((type) => [type, media])) };
     }
 
     const responses: Record<string, unknown> = {};

@@ -30,7 +30,7 @@ export const rateLimit = (opts: RateLimitOptions) =>
       const window = opts.window ?? 60_000;
       const counts = new Map<string, Count>();
       let sweep = Date.now() + window;
-      const keyOf = opts.key ?? ((ctx) => ctx.req?.socket.remoteAddress ?? "local");
+      const keyOf = opts.key ?? ((ctx) => ctx.ip ?? "local");
 
       app.onRequest((ctx) => {
         const now = Date.now();

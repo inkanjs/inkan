@@ -33,7 +33,15 @@ type Field<R, K extends keyof RouteDef> = R extends { [P in K]: infer V } ? V : 
 type DefAt<D, K> = K extends keyof D ? D[K] : never;
 
 type ParamsInput<P> = keyof P extends never ? { params?: undefined } : { params: P };
-type BodyInput<B> = unknown extends B ? { body?: unknown } : [B] extends [undefined] ? { body?: undefined } : { body: B | FormData };
+/** What a body taken as it comes (`t.binary()`, `t.stream()`) is sent as: bytes, as they are. */
+export type RawBody = Blob | ArrayBuffer | Uint8Array | ReadableStream<Uint8Array>;
+type BodyInput<B> = unknown extends B
+  ? { body?: unknown }
+  : [B] extends [undefined]
+    ? { body?: undefined }
+    : [B] extends [Uint8Array | AsyncIterable<Uint8Array>]
+      ? { body: RawBody }
+      : { body: B | FormData };
 export type Input<R> = ParamsInput<Field<R, "params">> &
   BodyInput<Field<R, "body">> & { query?: Partial<Field<R, "query">>; headers?: Record<string, string> };
 type InputArgs<R> = {} extends Input<R> ? [input?: Input<R>] : [input: Input<R>];
@@ -92,6 +100,9 @@ function fill(path: string, params: Record<string, unknown> = {}): string {
     .join("/");
 }
 
+const isRaw = (v: unknown): v is RawBody =>
+  v instanceof Blob || v instanceof ArrayBuffer || v instanceof Uint8Array || (typeof ReadableStream !== "undefined" && v instanceof ReadableStream);
+
 function queryString(q: Record<string, unknown> = {}): string {
   const sp = new URLSearchParams();
   for (const [k, v] of Object.entries(q)) for (const x of Array.isArray(v) ? v : [v]) if (x !== undefined) sp.append(k, String(x));
@@ -105,13 +116,18 @@ export function client<A extends Routes<any>>(base: string, options: ClientOptio
     const url = base.replace(/\/+$/, "") + fill(path, input.params) + queryString(input.query);
     const shared = typeof options.headers === "function" ? await options.headers() : options.headers;
     const headers: Record<string, string> = { accept: "application/json", ...shared, ...input.headers };
-    let body: string | FormData | undefined;
+    let body: RequestInit["body"];
+    let duplex: "half" | undefined;
     if (input.body instanceof FormData) body = input.body; // fetch writes the multipart boundary itself
-    else if (input.body !== undefined) {
+    else if (isRaw(input.body)) {
+      body = input.body as RequestInit["body"]; // bytes go as they are; a Blob brings its own type
+      if (input.body instanceof ReadableStream) duplex = "half"; // fetch asks for it with a stream body
+      if (!(input.body instanceof Blob)) headers["content-type"] ??= "application/octet-stream";
+    } else if (input.body !== undefined) {
       body = JSON.stringify(input.body);
       headers["content-type"] ??= "application/json";
     }
-    const res = await (options.fetch ?? fetch)(url, { method, headers, body });
+    const res = await (options.fetch ?? fetch)(url, { method, headers, body, ...(duplex && { duplex }) } as RequestInit);
     const text = await res.text();
     let value: unknown = text === "" ? undefined : text;
     if (text && /json/.test(res.headers.get("content-type") ?? "")) value = JSON.parse(text);

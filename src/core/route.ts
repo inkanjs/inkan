@@ -46,6 +46,11 @@ export type RouteSpec<P, Q, B, H, R extends Responses> = {
   query?: Schema<Q>;
   headers?: Schema<H>;
   body?: Schema<B>;
+  /**
+   * The most bytes this route's request body may have, instead of the app's `bodyLimit`.
+   * A `t.binary().max(n)` or `t.stream().max(n)` body sets it by itself.
+   */
+  bodyLimit?: number;
   response?: R;
   /** Headers an answer carries, by status: `{ 201: { location: t.string() } }`. Checked in development, like the body. */
   responseHeaders?: { [status: number]: Record<string, Schema<any>> };
@@ -98,6 +103,11 @@ export type Context<P = Record<string, string>, Q = RawQuery, B = unknown, H = R
   url: URL;
   /** The request id: taken from the request id header when it looks safe, otherwise a fresh UUID. */
   id: string;
+  /**
+   * The client's address, as the socket or the platform says it. Behind a proxy that is the
+   * proxy; read its `x-forwarded-for` yourself when you trust it.
+   */
+  ip: string | undefined;
   params: P;
   query: Q;
   headers: H;
@@ -132,6 +142,10 @@ export type RouteRecord = {
   box?: Box;
   /** @internal Every hook from the app down to this route, joined once before the first request. */
   hooks?: Hooks;
+  /** @internal Its body limit in bytes, worked out once before the first request. */
+  bodyLimit?: number;
+  /** @internal Whether its body goes to the handler as a stream, unread. */
+  streamsBody?: boolean;
 };
 
 /** What the type of an app remembers about one route, for the typed client. */

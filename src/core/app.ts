@@ -1,10 +1,11 @@
 import cluster from "node:cluster";
 import { randomUUID } from "node:crypto";
 import { availableParallelism } from "node:os";
+import { brotliDecompressSync, gunzipSync } from "node:zlib";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { HttpProblem, problem, type ProblemBody } from "./problem.ts";
 import { type Match, Router } from "./router.ts";
-import { EventsSchema, t, type Infer, type Issue, type Schema, type UploadedFile } from "../schema/schema.ts";
+import { EventsSchema, RawBodySchema, StreamSchema, t, type Infer, type Issue, type Schema, type UploadedFile } from "../schema/schema.ts";
 import { encodeEvents, EventStream, hasFiles, isStream, parseEvents, toFormData, type SseEvent } from "./stream.ts";
 import { buildOpenAPI, type OpenAPIInfo } from "../openapi/openapi.ts";
 import { docsPage } from "../pages/docs.ts";
@@ -17,7 +18,7 @@ import { applySeal, type SealState } from "../seal/seal.ts";
 import { Reply, type Context, type Example, type Middleware, type RawQuery, type RouteRecord, type Responses, type RouteDefs } from "./route.ts";
 import { target, queryObject, type Exchange, type RawRequest, type RawResponse, type Target } from "./context.ts";
 import { NO_HOOKS, runHooks, Scope, type Hooks, type Root } from "./scope.ts";
-import { readRequestBody, TOO_LARGE, validateInput } from "./input.ts";
+import { readRequestBody, requestStream, TOO_LARGE, validateInput } from "./input.ts";
 import { Buffer } from "node:buffer"; // explicit, for runtimes without a global Buffer
 
 // ---------- the app ----------
@@ -88,6 +89,8 @@ export type AdapterRequest = {
   headers: Record<string, string | string[] | undefined>;
   /** The whole body, or undefined for none. */
   body?: Uint8Array;
+  /** The body unread, for a route that takes it as a stream (`app.bodyFor(…).stream`); instead of `body`. */
+  stream?: AsyncIterable<Uint8Array>;
   /** The client's address; the inspector only answers a loopback one. Leave it out and the inspector stays shut. */
   remote?: string;
 };
@@ -249,7 +252,13 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
 
   /** Joins every route's hooks, from the app down to its scope, once instead of per request. */
   private build() {
-    for (const r of this._records) r.hooks = r.box!.flatten();
+    for (const r of this._records) {
+      r.hooks = r.box!.flatten();
+      const { body, bodyLimit } = r.spec;
+      r.streamsBody = body instanceof StreamSchema;
+      // a stream has no limit unless it says so: it never sits in memory
+      r.bodyLimit = bodyLimit ?? (body instanceof RawBodySchema ? body.rules.max : undefined) ?? (r.streamsBody ? Infinity : this.options.bodyLimit);
+    }
     this.rootHooks = this._box.flatten();
     this.timeAll = this._records.some((r) => r.hooks!.onResponse.length) || this.rootHooks.onResponse.length > 0;
     this.built = true;
@@ -292,17 +301,26 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     }
     const res = await this.handle({ method: (opts.method ?? "GET").toUpperCase(), url: opts.url, headers, body });
     const type = res.headers["content-type"] ?? "";
-    let text = res.body === undefined ? "" : res.body.toString();
-    if (res.stream) {
-      const sse = type.startsWith("text/event-stream");
+    let text = "";
+    if (res.stream && type.startsWith("text/event-stream")) {
       for await (const chunk of res.stream) {
         text += typeof chunk === "string" ? chunk : Buffer.from(chunk).toString();
-        if (sse && opts.events !== undefined && parseEvents(text).length >= opts.events) break; // stops the source too
+        if (opts.events !== undefined && parseEvents(text).length >= opts.events) break; // stops the source too
       }
       res.abort?.abort();
       res.done?.();
-      if (type.startsWith("text/event-stream")) return { status: res.status, headers: res.headers, text, body: parseEvents(text) };
-    } else res.done?.();
+      return { status: res.status, headers: res.headers, text, body: parseEvents(text) };
+    }
+    const parts: Buffer[] = res.body === undefined ? [] : [Buffer.from(res.body)];
+    if (res.stream) {
+      for await (const chunk of res.stream) parts.push(Buffer.from(chunk));
+      res.abort?.abort();
+    }
+    res.done?.();
+    // unpacked as fetch would, so a test reads what was sent; the header still says how it went
+    const encoding = res.headers["content-encoding"];
+    const bytes = Buffer.concat(parts);
+    text = (encoding === "br" ? brotliDecompressSync(bytes) : encoding === "gzip" ? gunzipSync(bytes) : bytes).toString();
     const json = /json/.test(type);
     return { status: res.status, headers: res.headers, text, body: json && text ? JSON.parse(text) : text };
   }
@@ -712,25 +730,37 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     return (req: IncomingMessage, res: ServerResponse) => void this.serve(req, res);
   }
 
-  // Synchronous for a request without a body whose handler is: no promise, no extra turn.
-  private serve(req: IncomingMessage, res: ServerResponse) {
-    const limit = this.options.bodyLimit!;
-    const hasBody = req.headers["content-length"] !== undefined || req.headers["transfer-encoding"] !== undefined;
-    if (Number(req.headers["content-length"] ?? 0) > limit) return this.tooLarge(req, res, limit);
-    if (hasBody && req.method !== "GET" && req.method !== "HEAD") {
-      readRequestBody(req, limit).then(
-        (read) => (read === TOO_LARGE ? this.tooLarge(req, res, limit) : this.pass(req, res, read)),
-        (err) => this.broken(req, res, err),
-      );
-      return;
-    }
-    this.pass(req, res, undefined);
+  /**
+   * For adapters: how the body of a request to this method and target is to be read. `limit`
+   * is the most bytes it may have, the route's own or the app's; with `stream` the adapter
+   * hands the body over unread, as `AdapterRequest.stream`.
+   */
+  bodyFor(method: string, url: string): { limit: number; stream: boolean } {
+    if (!this.built) this.build();
+    const m = this.router.match(method, target(url).pathname);
+    if (m.kind !== "found") return { limit: this.options.bodyLimit!, stream: false };
+    return { limit: m.route.bodyLimit ?? this.options.bodyLimit!, stream: Boolean(m.route.streamsBody) };
   }
 
-  private pass(req: IncomingMessage, res: ServerResponse, body: Buffer | undefined) {
+  // Synchronous for a request without a body whose handler is: no promise, no extra turn.
+  private serve(req: IncomingMessage, res: ServerResponse) {
+    const hasBody = req.headers["content-length"] !== undefined || req.headers["transfer-encoding"] !== undefined;
+    if (!hasBody) return this.pass(req, res, undefined);
+    // the route says how much it takes, and whether it reads the body itself
+    const { limit, stream } = this.bodyFor(req.method ?? "GET", req.url ?? "/");
+    if (Number(req.headers["content-length"] ?? 0) > limit) return this.tooLarge(req, res, limit);
+    if (req.method === "GET" || req.method === "HEAD") return this.pass(req, res, undefined);
+    if (stream) return this.pass(req, res, undefined, requestStream(req));
+    readRequestBody(req, limit).then(
+      (read) => (read === TOO_LARGE ? this.tooLarge(req, res, limit) : this.pass(req, res, read)),
+      (err) => this.broken(req, res, err),
+    );
+  }
+
+  private pass(req: IncomingMessage, res: ServerResponse, body: Buffer | undefined, stream?: AsyncIterable<Buffer>) {
     let out: RawResponse | Promise<RawResponse>;
     try {
-      out = this.handle({ method: req.method ?? "GET", url: req.url ?? "/", headers: req.headers, body, req, res });
+      out = this.handle({ method: req.method ?? "GET", url: req.url ?? "/", headers: req.headers, body, stream, req, res });
     } catch (err) {
       return this.broken(req, res, err);
     }
@@ -751,17 +781,19 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
   /**
    * The app for any server: a request in plain values, the answer in plain values. This is
    * all `listen` and `fetch` use, and all an adapter for another server needs (see
-   * adapters/ in the repository). The adapter reads the body itself, up to
-   * `app.options.bodyLimit`, and answers 413 past it; it writes `body` or every chunk of
-   * `stream`, calls `abort.abort()` when the client goes away, and `done()` once the answer
-   * is out.
+   * adapters/ in the repository). The adapter reads the body itself, up to the limit
+   * `app.bodyFor(method, url)` names, and answers 413 past it, or hands it over unread as
+   * `stream` when that says so; it writes `body` or every chunk of `stream`, calls
+   * `abort.abort()` when the client goes away, and `done()` once the answer is out.
    */
   async exchange(request: AdapterRequest): Promise<AdapterResponse> {
     if (this.loading) await this.ready();
     const { body } = request;
-    if (body && body.byteLength > this.options.bodyLimit!) return tooLargeAnswer(request.url, this.options.bodyLimit!);
+    const { limit } = this.bodyFor(request.method, request.url);
+    if (body && body.byteLength > limit) return tooLargeAnswer(request.url, limit);
     const buf = body === undefined || body.byteLength === 0 ? undefined : Buffer.isBuffer(body) ? body : Buffer.from(body.buffer, body.byteOffset, body.byteLength);
-    return this.handle({ method: request.method, url: request.url, headers: request.headers, body: buf, remote: request.remote });
+    const stream = request.stream && asBuffers(request.stream);
+    return this.handle({ method: request.method, url: request.url, headers: request.headers, body: buf, stream, remote: request.remote });
   }
 
   /** For adapters: runs the onListen hooks, once the adapter's server listens. */
@@ -790,14 +822,19 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     const target = url.pathname + url.search;
     const headers: Record<string, string> = {};
     request.headers.forEach((value, name) => (headers[name] = value)); // names come lower-cased
-    const limit = this.options.bodyLimit!;
+    const { limit, stream: unread } = this.bodyFor(request.method, target);
     let body: Buffer | undefined;
+    let stream: AsyncIterable<Buffer> | undefined;
     if (request.body && request.method !== "GET" && request.method !== "HEAD") {
-      const read = Number(headers["content-length"] ?? 0) > limit ? TOO_LARGE : await readWebBody(request.body, limit);
-      if (read === TOO_LARGE) return toWebResponse(tooLargeAnswer(target, limit));
-      body = read;
+      if (Number(headers["content-length"] ?? 0) > limit) return toWebResponse(tooLargeAnswer(target, limit));
+      if (unread) stream = asBuffers(request.body as unknown as AsyncIterable<Uint8Array>);
+      else {
+        const read = await readWebBody(request.body, limit);
+        if (read === TOO_LARGE) return toWebResponse(tooLargeAnswer(target, limit));
+        body = read;
+      }
     }
-    const out = await this.handle({ method: request.method, url: target, headers, body, remote: info.remote ?? "unknown" });
+    const out = await this.handle({ method: request.method, url: target, headers, body, stream, remote: info.remote ?? "unknown" });
     return toWebResponse(out);
   }
 
@@ -1022,6 +1059,11 @@ function tooLargeAnswer(instance: string, limit: number): RawResponse {
     headers: { "content-type": "application/problem+json", connection: "close" },
     body: JSON.stringify({ ...p.toJSON(), instance }),
   };
+}
+
+/** Chunks of any kind of bytes as Buffers, without copying them. */
+async function* asBuffers(source: AsyncIterable<Uint8Array | string>): AsyncIterable<Buffer> {
+  for await (const c of source) yield typeof c === "string" ? Buffer.from(c) : Buffer.isBuffer(c) ? c : Buffer.from(c.buffer, c.byteOffset, c.byteLength);
 }
 
 /** Reads a web body up to the limit, and stops reading the moment it is passed. */
