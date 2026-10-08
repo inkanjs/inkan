@@ -106,7 +106,7 @@ npm install @vxnsin/inkan
 
 The package is scoped because npm keeps the plain name `inkan` free of look-alikes. The command it installs is `inkan` either way.
 
-Node 20 or newer. On Node 22.18 and newer, `.ts` files run as they are,
+Node 22 or newer. On Node 22.18 and newer, `.ts` files run as they are,
 with no build step and no loader.
 
 **New here? Start with the tutorial.** It runs in your terminal, offline:

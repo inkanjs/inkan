@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **Node 22 or newer.** The package said 20, which reached its end of life in April 2026
+  and was never in CI; CI tests 22, 24 and 26.
+
 ## 0.4.0
 
 ### License
