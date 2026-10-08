@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="840" height="470" viewBox="0 0 840 470" role="img" aria-label="inkan: a contract, a request that breaks it, and inkan check">
+<style>
+text{font-family:ui-monospace,"Cascadia Code","JetBrains Mono",Menlo,Consolas,monospace;font-variant-ligatures:none;font-size:16px;fill:#ece1cf;opacity:0}
+.title{font-size:13px;fill:#8a7d72}
+.k{fill:#d9a05b}.s{fill:#79c08a}.n{fill:#e2583e}.c{fill:#8a7d72}.p{fill:#8a7d72}.r{fill:#e2583e;font-weight:700}.g{fill:#79c08a;font-weight:700}.b{font-weight:700}
+@keyframes t0{0%,1.76%{opacity:0}1.82%,36.47%{opacity:1}37.65%,100%{opacity:0}}.t0{animation:t0 17s linear infinite}
+@keyframes l0{0%,2.94%{opacity:0}3.24%,36.47%{opacity:1}37.65%,100%{opacity:0}}.l0{animation:l0 17s linear infinite}
+@keyframes l1{0%,4.82%{opacity:0}5.12%,36.47%{opacity:1}37.65%,100%{opacity:0}}.l1{animation:l1 17s linear infinite}
+@keyframes l2{0%,6.71%{opacity:0}7.00%,36.47%{opacity:1}37.65%,100%{opacity:0}}.l2{animation:l2 17s linear infinite}
+@keyframes l3{0%,8.59%{opacity:0}8.88%,36.47%{opacity:1}37.65%,100%{opacity:0}}.l3{animation:l3 17s linear infinite}
+@keyframes l4{0%,10.47%{opacity:0}10.76%,36.47%{opacity:1}37.65%,100%{opacity:0}}.l4{animation:l4 17s linear infinite}
+@keyframes l5{0%,12.35%{opacity:0}12.65%,36.47%{opacity:1}37.65%,100%{opacity:0}}.l5{animation:l5 17s linear infinite}
+@keyframes l6{0%,14.24%{opacity:0}14.53%,36.47%{opacity:1}37.65%,100%{opacity:0}}.l6{animation:l6 17s linear infinite}
+@keyframes l7{0%,16.12%{opacity:0}16.41%,36.47%{opacity:1}37.65%,100%{opacity:0}}.l7{animation:l7 17s linear infinite}
+@keyframes l8{0%,18.00%{opacity:0}18.29%,36.47%{opacity:1}37.65%,100%{opacity:0}}.l8{animation:l8 17s linear infinite}
+@keyframes l9{0%,19.88%{opacity:0}20.18%,36.47%{opacity:1}37.65%,100%{opacity:0}}.l9{animation:l9 17s linear infinite}
+@keyframes t1{0%,37.65%{opacity:0}37.71%,67.06%{opacity:1}68.24%,100%{opacity:0}}.t1{animation:t1 17s linear infinite}
+@keyframes l10{0%,38.82%{opacity:0}39.12%,67.06%{opacity:1}68.24%,100%{opacity:0}}.l10{animation:l10 17s linear infinite}
+@keyframes l11{0%,41.06%{opacity:0}41.35%,67.06%{opacity:1}68.24%,100%{opacity:0}}.l11{animation:l11 17s linear infinite}
+@keyframes l12{0%,43.29%{opacity:0}43.59%,67.06%{opacity:1}68.24%,100%{opacity:0}}.l12{animation:l12 17s linear infinite}
+@keyframes l13{0%,45.53%{opacity:0}45.82%,67.06%{opacity:1}68.24%,100%{opacity:0}}.l13{animation:l13 17s linear infinite}
+@keyframes l14{0%,47.76%{opacity:0}48.06%,67.06%{opacity:1}68.24%,100%{opacity:0}}.l14{animation:l14 17s linear infinite}
+@keyframes l15{0%,50.00%{opacity:0}50.29%,67.06%{opacity:1}68.24%,100%{opacity:0}}.l15{animation:l15 17s linear infinite}
+@keyframes l16{0%,52.24%{opacity:0}52.53%,67.06%{opacity:1}68.24%,100%{opacity:0}}.l16{animation:l16 17s linear infinite}
+@keyframes l17{0%,54.47%{opacity:0}54.76%,67.06%{opacity:1}68.24%,100%{opacity:0}}.l17{animation:l17 17s linear infinite}
+@keyframes l18{0%,56.71%{opacity:0}57.00%,67.06%{opacity:1}68.24%,100%{opacity:0}}.l18{animation:l18 17s linear infinite}
+@keyframes t2{0%,68.24%{opacity:0}68.29%,97.65%{opacity:1}98.82%,100%{opacity:0}}.t2{animation:t2 17s linear infinite}
+@keyframes l19{0%,69.41%{opacity:0}69.71%,97.65%{opacity:1}98.82%,100%{opacity:0}}.l19{animation:l19 17s linear infinite}
+@keyframes l20{0%,72.06%{opacity:0}72.35%,97.65%{opacity:1}98.82%,100%{opacity:0}}.l20{animation:l20 17s linear infinite}
+@keyframes l21{0%,74.71%{opacity:0}75.00%,97.65%{opacity:1}98.82%,100%{opacity:0}}.l21{animation:l21 17s linear infinite}
+@keyframes l22{0%,77.35%{opacity:0}77.65%,97.65%{opacity:1}98.82%,100%{opacity:0}}.l22{animation:l22 17s linear infinite}
+@keyframes l23{0%,80.00%{opacity:0}80.29%,97.65%{opacity:1}98.82%,100%{opacity:0}}.l23{animation:l23 17s linear infinite}
+@keyframes l24{0%,82.65%{opacity:0}82.94%,97.65%{opacity:1}98.82%,100%{opacity:0}}.l24{animation:l24 17s linear infinite}
+@keyframes l25{0%,85.29%{opacity:0}85.59%,97.65%{opacity:1}98.82%,100%{opacity:0}}.l25{animation:l25 17s linear infinite}
+@keyframes l26{0%,87.94%{opacity:0}88.24%,97.65%{opacity:1}98.82%,100%{opacity:0}}.l26{animation:l26 17s linear infinite}
+@keyframes l27{0%,90.59%{opacity:0}90.88%,97.65%{opacity:1}98.82%,100%{opacity:0}}.l27{animation:l27 17s linear infinite}
+@keyframes l28{0%,93.24%{opacity:0}93.53%,97.65%{opacity:1}98.82%,100%{opacity:0}}.l28{animation:l28 17s linear infinite}
+</style>
+<rect width="840" height="470" rx="14" fill="#1a1614"/>
+<rect width="840" height="48" rx="14" fill="#312a26"/><rect y="34" width="840" height="14" fill="#312a26"/>
+<circle cx="26" cy="24" r="7" fill="#e5534b"/><circle cx="48" cy="24" r="7" fill="#e3b341"/><circle cx="70" cy="24" r="7" fill="#57c26a"/>
+<text class="title t0" x="420" y="31" text-anchor="middle">src/app.ts</text>
+<text class="line l0" x="34" y="88" xml:space="preserve"><tspan>app.</tspan><tspan class="k">post</tspan><tspan>(</tspan><tspan class="s">"/teas"</tspan><tspan>, {</tspan></text>
+<text class="line l1" x="34" y="118" xml:space="preserve"><tspan>  body: t.object({</tspan></text>
+<text class="line l2" x="34" y="148" xml:space="preserve"><tspan>    name:  t.string().min(</tspan><tspan class="n">1</tspan><tspan>),</tspan></text>
+<text class="line l3" x="34" y="178" xml:space="preserve"><tspan>    grams: t.int().min(</tspan><tspan class="n">1</tspan><tspan>),</tspan></text>
+<text class="line l4" x="34" y="208" xml:space="preserve"><tspan>  }),</tspan></text>
+<text class="line l5" x="34" y="238" xml:space="preserve"><tspan>  response: { </tspan><tspan class="n">201</tspan><tspan>: Tea },</tspan></text>
+<text class="line l6" x="34" y="268" xml:space="preserve"><tspan>  examples: [{ body: { name: </tspan><tspan class="s">"Bancha"</tspan><tspan>, grams: </tspan><tspan class="n">40</tspan><tspan> } }],</tspan></text>
+<text class="line l7" x="34" y="298" xml:space="preserve"><tspan>}, ({ body }) =&gt; store.add(body));</tspan></text>
+<text class="line l8" x="34" y="328" xml:space="preserve"><tspan></tspan></text>
+<text class="line l9" x="34" y="358" xml:space="preserve"><tspan class="c">// one contract: it checks, types, documents and tests</tspan></text>
+<text class="title t1" x="420" y="31" text-anchor="middle">a request that breaks it</text>
+<text class="line l10" x="34" y="88" xml:space="preserve"><tspan class="p">$ </tspan><tspan>curl -X POST localhost:3000/teas -d </tspan><tspan class="s">'{"name":"Matcha","grams":-5}'</tspan></text>
+<text class="line l11" x="34" y="118" xml:space="preserve"><tspan></tspan></text>
+<text class="line l12" x="34" y="148" xml:space="preserve"><tspan class="r">400 Bad Request</tspan><tspan class="c">  application/problem+json</tspan></text>
+<text class="line l13" x="34" y="178" xml:space="preserve"><tspan>{</tspan></text>
+<text class="line l14" x="34" y="208" xml:space="preserve"><tspan>  "type": </tspan><tspan class="s">"validation"</tspan><tspan>,</tspan></text>
+<text class="line l15" x="34" y="238" xml:space="preserve"><tspan>  "detail": </tspan><tspan class="s">"The body does not match the contract"</tspan><tspan>,</tspan></text>
+<text class="line l16" x="34" y="268" xml:space="preserve"><tspan>  "errors": [{ "in": </tspan><tspan class="s">"body"</tspan><tspan>, "path": </tspan><tspan class="s">"grams"</tspan><tspan>,</tspan></text>
+<text class="line l17" x="34" y="298" xml:space="preserve"><tspan>               "message": </tspan><tspan class="s">"must be 1 or more"</tspan><tspan> }]</tspan></text>
+<text class="line l18" x="34" y="328" xml:space="preserve"><tspan>}</tspan></text>
+<text class="title t2" x="420" y="31" text-anchor="middle">examples are tests</text>
+<text class="line l19" x="34" y="88" xml:space="preserve"><tspan class="p">$ </tspan><tspan>npx inkan check src/app.ts</tspan></text>
+<text class="line l20" x="34" y="118" xml:space="preserve"><tspan></tspan></text>
+<text class="line l21" x="34" y="148" xml:space="preserve"><tspan>  </tspan><tspan class="r">印</tspan><tspan class="b"> inkan check</tspan><tspan class="c">  ·  Tea Shop</tspan></text>
+<text class="line l22" x="34" y="178" xml:space="preserve"><tspan></tspan></text>
+<text class="line l23" x="34" y="208" xml:space="preserve"><tspan class="b">  GET    /teas</tspan></text>
+<text class="line l24" x="34" y="238" xml:space="preserve"><tspan>    </tspan><tspan class="g">✓</tspan><tspan> every tea                          200  </tspan><tspan class="c">4ms</tspan></text>
+<text class="line l25" x="34" y="268" xml:space="preserve"><tspan class="b">  POST   /teas</tspan></text>
+<text class="line l26" x="34" y="298" xml:space="preserve"><tspan>    </tspan><tspan class="g">✓</tspan><tspan> a new tea                          201  </tspan><tspan class="c">0.3ms</tspan></text>
+<text class="line l27" x="34" y="328" xml:space="preserve"><tspan></tspan></text>
+<text class="line l28" x="34" y="358" xml:space="preserve"><tspan>  2 examples · </tspan><tspan class="g">2 sealed</tspan></text>
+</svg>

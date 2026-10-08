@@ -8,6 +8,8 @@
 [![License](https://img.shields.io/badge/license-MIT-a87fe0?labelColor=2b2420)](LICENSE)
 [![supports warden](https://raw.githubusercontent.com/vxnsin/warden/main/assets/supports-warden.svg)](https://github.com/vxnsin/warden)
 
+<p align="center"><img src="https://raw.githubusercontent.com/inkanjs/inkan/main/assets/demo.svg" width="840" alt="A route with its contract, a request that breaks it and gets a 400 naming the field, and inkan check passing every example"></p>
+
 <!-- cozy:cards -->
 <div align="center">
 
