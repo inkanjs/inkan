@@ -37,7 +37,9 @@ function trim(s: Schema<any>, v: unknown): unknown {
     if (s["unknownKeys"] === "keep" || !plain(v)) return v;
     const out: Record<string, unknown> = {};
     for (const [key, field] of Object.entries(s.shape as Record<string, Schema<any>>)) {
-      if (Object.hasOwn(v, key) && v[key] !== undefined) out[key] = trim(field, v[key]);
+      // a declared field is read as any property is; nothing, a function or a symbol is left out
+      const x = v[key];
+      if (x !== undefined && typeof x !== "function" && typeof x !== "symbol") out[key] = trim(field, x);
     }
     return out;
   }
@@ -48,7 +50,7 @@ function trim(s: Schema<any>, v: unknown): unknown {
   if (s instanceof RecordSchema) {
     if (!plain(v)) return v;
     const out: Record<string, unknown> = {};
-    for (const [k, x] of Object.entries(v)) if (x !== undefined) out[k] = trim(s.value, x);
+    for (const [k, x] of Object.entries(v)) if (x !== undefined && typeof x !== "function" && typeof x !== "symbol") out[k] = trim(s.value, x);
     return out;
   }
   if (s instanceof DiscriminatedSchema) {
@@ -160,14 +162,13 @@ test("unicode and escaped keys, declared and in records", () => {
   assert.equal(write(t.record(t.int()), { ...v, gone: undefined }), JSON.stringify(v));
 });
 
-test("key order: native path keeps the value's order, exact path follows the shape", () => {
-  // Pinned as is: a value that fits goes to JSON.stringify, which writes its own key
-  // order (integer-like keys first); anything else is written in the shape's order.
+test("key order: an object is written in the order of its shape", () => {
+  // the shape's own key order, as Object.keys gives it (integer-like keys first)
   const S = t.object({ b: t.int(), a: t.int(), 2: t.int(), 1: t.int() });
-  assert.equal(write(S, { a: 1, b: 2, 1: 3, 2: 4 }), '{"1":3,"2":4,"a":1,"b":2}');
+  assert.equal(write(S, { a: 1, b: 2, 1: 3, 2: 4 }), '{"1":3,"2":4,"b":2,"a":1}');
   assert.equal(write(S, { a: 1, b: 2, 1: 3, 2: 4, x: 0 }), '{"1":3,"2":4,"b":2,"a":1}');
   const T = t.object({ b: t.int(), a: t.int() });
-  assert.equal(write(T, { a: 1, b: 2 }), '{"a":1,"b":2}');
+  assert.equal(write(T, { a: 1, b: 2 }), '{"b":2,"a":1}');
   assert.equal(write(T, { a: 1, b: 2, x: 0 }), '{"b":2,"a":1}');
   // records always keep the value's order
   assert.equal(write(t.record(t.int()), { z: 1, 3: 2, a: 3 }), '{"3":2,"z":1,"a":3}');
@@ -346,37 +347,39 @@ test("lazy, recursive schemas named with .named()", () => {
   same(t.lazy(() => t.array(t.int())), [1, undefined]);
 });
 
-// ---------- known differences ----------
-// Each of these asserts what JSON.stringify(trim(...)) gives; the writer does not, yet.
+// ---------- what the one-pass writer fixed ----------
+// Each of these was a difference from JSON.stringify(trim(...)) before the writer wrote in one pass.
 
-test("a getter on the object is read once", { skip: "known difference: fits() reads it, then JSON.stringify reads it again" }, () => {
+test("a getter on the object is read once", () => {
   let reads = 0;
   write(t.object({ a: t.int() }), { get a() { reads++; return 1; } });
   assert.equal(reads, 1);
 });
 
-test("a declared field from the prototype is not counted as present", { skip: "known difference: fits() counts inherited fields, so an extra own key leaks" }, () => {
+test("only declared fields are written, wherever on the object they live", () => {
+  // a declared field is read as any property is, so a getter on a class works;
+  // what the contract does not list never goes out, whatever the object holds
   class User {
     secret = "x";
     get name() { return "n"; }
   }
-  assert.equal(write(t.object({ name: t.string() }), new User()), reference(t.object({ name: t.string() }), new User()));
+  assert.equal(write(t.object({ name: t.string() }), new User()), '{"name":"n"}');
   const inherited = Object.assign(Object.create({ a: 1 }), { secret: "s" });
-  assert.equal(write(t.object({ a: t.int() }), inherited), "{}");
+  assert.equal(write(t.object({ a: t.int() }), inherited), '{"a":1}');
   const hidden = Object.defineProperty({ secret: 1 }, "a", { value: 2, enumerable: false });
-  assert.equal(write(t.object({ a: t.int() }), hidden), "{}");
+  assert.equal(write(t.object({ a: t.int() }), hidden), '{"a":2}');
 });
 
-test("a field named like an Object.prototype member is left out when missing", { skip: "known difference: the exact writer reads o.constructor and writes null" }, () => {
+test("a field named like an Object.prototype member is left out when missing", () => {
   assert.equal(write(t.object({ constructor: t.string().optional() }), {}), "{}");
   assert.equal(write(t.object({ toString: t.string().optional(), a: t.int() }), { a: 1 }), '{"a":1}');
 });
 
-test("an invalid date in t.date() is null on the exact path too", { skip: "known difference: the exact writer calls toISOString and throws RangeError" }, () => {
+test("an invalid date in t.date() is null in an object too", () => {
   assert.equal(write(t.object({ d: t.date() }), { d: new Date(NaN), x: 1 }), '{"d":null}');
 });
 
-test("functions and symbols in object fields and records are left out", { skip: "known difference: the exact writer writes them as null" }, () => {
+test("functions and symbols in object fields and records are left out", () => {
   assert.equal(write(t.object({ f: t.any() }), { f: () => 1, x: 1 }), "{}");
   assert.equal(write(t.object({ s: t.any(), a: t.int() }), { s: Symbol("s"), a: 1, x: 1 }), '{"a":1}');
   assert.equal(write(t.record(t.any()), { f: () => 1, x: undefined }), "{}");

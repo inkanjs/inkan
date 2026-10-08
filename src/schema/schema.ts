@@ -220,19 +220,14 @@ export abstract class Schema<T = unknown> {
   }
 
   /**
-   * @internal A function that writes a value as JSON with only what this schema lists,
-   * built once per schema and kept. It does not validate; it is what keeps keys the
-   * contract does not list on the server, in production too, and it is faster than
-   * JSON.stringify because it knows the shape in advance.
+   * @internal A function that writes a value as JSON with only what this schema lists, in
+   * one pass, built once per schema and kept. It does not validate; it is what keeps keys
+   * the contract does not list on the server, in production too. A declared field is read
+   * once, as any property is (a getter on a class works); one that is undefined, a function
+   * or a symbol is left out, as JSON.stringify leaves it out.
    */
   _serializer(): (v: unknown) => string {
-    if (!this._ser) {
-      const exact = this._exact();
-      // Most answers hold exactly what the contract lists. Checking that only counts keys,
-      // and then the native writer is the fastest there is; the exact writer is for the rest.
-      this._ser = (v) => (this._fits(v) ? (JSON.stringify(v) ?? "null") : exact(v));
-    }
-    return this._ser;
+    return (this._ser ??= this._exact());
   }
 
   private _exactSer?: (v: unknown) => string;
@@ -245,24 +240,8 @@ export abstract class Schema<T = unknown> {
     return this._exactSer;
   }
 
-  /** @internal Does the value hold nothing this schema does not list, so JSON.stringify writes it exactly? */
-  _fits(v: unknown): boolean {
-    return (v === null && Boolean(this.meta.nullable)) || this.fits(v);
-  }
 
-  /** When in doubt, no: the exact writer is always right. */
-  protected fits(_v: unknown): boolean {
-    return false;
-  }
 
-  /**
-   * @internal How a parent can ask _fits without calling it: 0 anything fits, 1 anything but
-   * a non-null object fits (every primitive schema, nullable or not), 2 only a call can say.
-   * Lets objects and arrays test their primitive fields inline, which is most of them.
-   */
-  _fitKind(): 0 | 1 | 2 {
-    return 2;
-  }
 
   /** How this kind of schema writes a value. The fallback lets the parser strip, then writes that. */
   protected serialize(): (v: unknown) => string {
@@ -274,6 +253,14 @@ export abstract class Schema<T = unknown> {
 }
 
 const json = (v: unknown) => JSON.stringify(v) ?? "null";
+
+// Text with nothing to escape, which is most of it, goes out between quotes; the rest as
+// JSON.stringify writes it (quotes, backslashes, control characters, lone surrogates).
+const PLAIN = /^[^"\\\u0000-\u001f\ud800-\udfff]*$/;
+const writeString = (s: string) => (PLAIN.test(s) ? `"${s}"` : JSON.stringify(s));
+
+/** What JSON.stringify leaves out of an object, and writes as null in a list: nothing, a function, a symbol. */
+const absent = (x: unknown) => x === undefined || typeof x === "function" || typeof x === "symbol";
 
 class EffectSchema<T, U> extends Schema<U> {
   private source: Schema<T>;
@@ -293,12 +280,6 @@ class EffectSchema<T, U> extends Schema<U> {
   protected override serialize() {
     // a refined value still has the source's shape; a transformed one has none we know
     return this.sameShape ? this.source._exact() : json;
-  }
-  protected override fits(v: unknown) {
-    return this.sameShape ? this.source._fits(v) : true;
-  }
-  override _fitKind() {
-    return this.sameShape ? this.source._fitKind() : 0;
   }
   override optional(): Schema<U | undefined> {
     const copy = this.clone({ optional: true });
@@ -407,15 +388,9 @@ export class StringSchema extends Schema<string> {
   }
 
   protected override serialize() {
-    return json;
+    return (v: unknown) => (typeof v === "string" ? writeString(v) : json(v));
   }
 
-  protected override fits(v: unknown) {
-    return typeof v !== "object" || v === null;
-  }
-  override _fitKind() {
-    return 1 as const;
-  }
 
   protected json() {
     const { min, max, pattern, format } = this.rules;
@@ -463,12 +438,6 @@ export class NumberSchema extends Schema<number> {
     return (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? String(v) : json(v));
   }
 
-  protected override fits(v: unknown) {
-    return typeof v !== "object" || v === null;
-  }
-  override _fitKind() {
-    return 1 as const;
-  }
 
   protected json() {
     const s: JsonSchema = { type: this.rules.int ? "integer" : "number" };
@@ -493,12 +462,6 @@ export class BooleanSchema extends Schema<boolean> {
   protected override serialize() {
     return (v: unknown) => (v === true ? "true" : v === false ? "false" : json(v));
   }
-  protected override fits(v: unknown) {
-    return typeof v !== "object" || v === null;
-  }
-  override _fitKind() {
-    return 1 as const;
-  }
   protected json() {
     return { type: "boolean" };
   }
@@ -521,10 +484,7 @@ export class DateSchema extends Schema<Date> {
     };
   }
   protected override serialize() {
-    return (v: unknown) => (v instanceof Date ? `"${v.toISOString()}"` : json(v));
-  }
-  protected override fits(v: unknown) {
-    return typeof v !== "object" || v === null || v instanceof Date;
+    return (v: unknown) => (v instanceof Date ? (Number.isFinite(v.getTime()) ? `"${v.toISOString()}"` : "null") : json(v));
   }
   protected json() { return { type: "string", format: "date-time" }; }
 }
@@ -553,12 +513,6 @@ export class EnumSchema<const V extends string | number | boolean> extends Schem
   protected override serialize() {
     return json;
   }
-  protected override fits(v: unknown) {
-    return typeof v !== "object" || v === null;
-  }
-  override _fitKind() {
-    return 1 as const;
-  }
   protected json() {
     return this.values.length === 1 ? { const: this.values[0] } : { enum: [...this.values] };
   }
@@ -570,12 +524,6 @@ export class AnySchema<T = unknown> extends Schema<T> {
   }
   protected override serialize() {
     return json;
-  }
-  protected override fits() {
-    return true; // anything goes, by definition
-  }
-  override _fitKind() {
-    return 0 as const;
   }
   protected json() {
     return {};
@@ -623,21 +571,14 @@ export class ArraySchema<S extends Schema<any>> extends Schema<Infer<S>[]> {
     return (v: unknown) => {
       if (!Array.isArray(v)) return json(v);
       let out = "[";
-      for (let i = 0; i < v.length; i++) out += (i ? "," : "") + (v[i] === undefined ? "null" : item(v[i]));
+      for (let i = 0; i < v.length; i++) {
+        const x = v[i];
+        out += (i ? "," : "") + (absent(x) ? "null" : item(x));
+      }
       return out + "]";
     };
   }
 
-  protected override fits(v: unknown) {
-    if (!Array.isArray(v)) return false;
-    const kind = this.item._fitKind();
-    for (let i = 0; i < v.length; i++) {
-      const x = v[i];
-      if (x === undefined) return false;
-      if (kind === 1 ? typeof x === "object" && x !== null : kind === 2 && !this.item._fits(x)) return false;
-    }
-    return true;
-  }
 
   protected json(ctx?: RefContext) {
     const s: JsonSchema = { type: "array", items: this.item._schema(ctx) };
@@ -657,9 +598,6 @@ export type InferShape<S extends Shape> = Simplify<
 export class ObjectSchema<S extends Shape> extends Schema<InferShape<S>> {
   shape: S;
   private unknownKeys: "strip" | "strict" | "keep" = "strip";
-  private keyList?: string[];
-  private schemaList?: Schema<any>[];
-  private kindList?: (0 | 1 | 2)[];
   constructor(shape: S) {
     super();
     this.shape = shape;
@@ -713,43 +651,22 @@ export class ObjectSchema<S extends Shape> extends Schema<InferShape<S>> {
   protected override serialize() {
     if (this.unknownKeys === "keep") return json; // passthrough: everything goes, by definition
     // the key and its colon, written once; per request only the values are written
-    const fields = Object.entries(this.shape).map(([key, schema]) => ({ key, head: `${JSON.stringify(key)}:`, write: schema._exact() }));
+    const keys = Object.keys(this.shape);
+    const heads = keys.map((key) => `${JSON.stringify(key)}:`);
+    const writers = keys.map((key) => this.shape[key]!._exact());
     return (v: unknown) => {
       if (typeof v !== "object" || v === null || Array.isArray(v)) return json(v);
       const o = v as Record<string, unknown>;
       let out = "{";
-      let first = true;
-      for (const f of fields) {
-        const x = o[f.key];
-        if (x === undefined) continue;
-        out += (first ? "" : ",") + f.head + f.write(x);
-        first = false;
+      for (let i = 0; i < keys.length; i++) {
+        const x = o[keys[i]!]; // read once: a getter runs once
+        if (absent(x)) continue;
+        out += (out.length > 1 ? "," : "") + heads[i] + writers[i]!(x);
       }
       return out + "}";
     };
   }
 
-  protected override fits(v: unknown) {
-    if (this.unknownKeys === "keep") return true;
-    if (typeof v !== "object" || v === null || Array.isArray(v)) return false;
-    const o = v as Record<string, unknown>;
-    if (typeof o.toJSON === "function") return false; // JSON.stringify would write what toJSON makes
-    const keys = (this.keyList ??= Object.keys(this.shape));
-    const schemas = (this.schemaList ??= Object.values(this.shape));
-    const kinds = (this.kindList ??= schemas.map((s) => s._fitKind()));
-    const count = Object.keys(o).length; // fast for objects of one shape: V8 caches their keys
-    if (count > keys.length) return false;
-    let present = 0;
-    for (let i = 0; i < keys.length; i++) {
-      const x = o[keys[i]];
-      if (x === undefined) continue;
-      const kind = kinds[i];
-      // a primitive field is tested here, without a call: most fields are
-      if (kind === 1 ? typeof x === "object" && x !== null : kind === 2 && !schemas[i]._fits(x)) return false;
-      present++;
-    }
-    return count === present;
-  }
 
   protected json(ctx?: RefContext) {
     const properties: Record<string, JsonSchema> = {};
@@ -795,17 +712,12 @@ export class RecordSchema<S extends Schema<any>> extends Schema<Record<string, I
       let out = "{";
       let first = true;
       for (const [k, x] of Object.entries(v)) {
-        if (x === undefined) continue;
-        out += (first ? "" : ",") + JSON.stringify(k) + ":" + write(x);
+        if (absent(x)) continue;
+        out += (first ? "" : ",") + writeString(k) + ":" + write(x);
         first = false;
       }
       return out + "}";
     };
-  }
-  protected override fits(v: unknown) {
-    if (typeof v !== "object" || v === null || Array.isArray(v) || typeof (v as { toJSON?: unknown }).toJSON === "function") return false;
-    for (const x of Object.values(v)) if (x === undefined || !this.value._fits(x)) return false;
-    return true;
   }
   protected json(ctx?: RefContext) {
     return { type: "object", additionalProperties: this.value._schema(ctx) };
@@ -849,9 +761,6 @@ export class LazySchema<T> extends Schema<T> {
     // resolved on first use, so a recursive shape does not build itself forever
     let write: ((v: unknown) => string) | undefined;
     return (v: unknown) => (write ??= this.resolve()._exact())(v);
-  }
-  protected override fits(v: unknown) {
-    return this.resolve()._fits(v);
   }
   protected json(ctx?: RefContext) {
     const target = this.resolve();
@@ -899,10 +808,6 @@ export class DiscriminatedSchema<K extends string, S extends Record<string, Obje
       const write = typeof tag === "string" ? writers.get(tag) : undefined;
       return write ? write(v) : json(v);
     };
-  }
-  protected override fits(v: unknown) {
-    const tag = typeof v === "object" && v !== null ? (v as Record<string, unknown>)[this.key] : undefined;
-    return typeof tag === "string" && Object.hasOwn(this.options, tag) && this.options[tag]!._fits(v);
   }
   protected json(ctx?: RefContext) {
     const mapping: Record<string, string> = {};

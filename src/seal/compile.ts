@@ -26,7 +26,7 @@ import {
 } from "../schema/schema.ts";
 
 /** The version of the code a seal is written in. A seal of another version is not used. */
-export const SEAL_FORMAT = 1;
+export const SEAL_FORMAT = 2;
 
 export type SealedEntry = {
   parse: (value: unknown, coerce: boolean) => { ok: true; value: unknown } | { ok: false; issues: Issue[] };
@@ -40,7 +40,10 @@ export class Unsealable extends Error {}
 /** What every entry in a seal file can lean on. Fixed per SEAL_FORMAT, so not part of a hash. */
 export const PRELUDE = `const F = Symbol("fail");
 const typeOf = (v) => (v === null ? "null" : Array.isArray(v) ? "array" : typeof v);
-const json = (v) => JSON.stringify(v) ?? "null";`;
+const json = (v) => JSON.stringify(v) ?? "null";
+const PLAIN = /^[^"\\\\\\u0000-\\u001f\\ud800-\\udfff]*$/;
+const str = (s) => (PLAIN.test(s) ? \`"\${s}"\` : JSON.stringify(s));
+const absent = (x) => x === undefined || typeof x === "function" || typeof x === "symbol";`;
 
 /** A schema as an expression that evaluates to its entry, and the hash that finds it again. */
 export function compile(schema: Schema<any>): { source: string; hash: string } {
@@ -223,48 +226,9 @@ return ${r} === F || issues.length ? { ok: false, issues } : { ok: true, value: 
 
   // ---------- writing ----------
 
-  /** What Schema._serializer() does: the native writer when the value holds nothing extra, the exact one otherwise. */
+  /** What Schema._serializer() does: one pass, only what the schema lists. */
   writer(schema: Schema<any>): string {
-    const fits = this.fits(schema);
-    const exact = this.exact(schema);
-    return `(v) => (${fits}(v) ? (JSON.stringify(v) ?? "null") : ${exact}(v))`;
-  }
-
-  /** The name of a function that answers what Schema._fits answers. */
-  private fits(schema: Schema<any>): string {
-    const inner = this.fitsInner(schema);
-    if (!schema.meta.nullable) return inner;
-    return this.hoist("fits", (n) => `const ${n} = (v) => v === null || ${inner}(v);`);
-  }
-
-  private fitsInner(schema: Schema<any>): string {
-    if (schema instanceof AnySchema) return this.hoist("fits", (n) => `const ${n} = () => true;`);
-    if (schema instanceof StringSchema || schema instanceof NumberSchema || schema instanceof BooleanSchema || schema instanceof EnumSchema) {
-      return this.hoist("fits", (n) => `const ${n} = (v) => typeof v !== "object" || v === null;`);
-    }
-    if (schema instanceof ArraySchema) {
-      const item = this.fits(schema.item);
-      return this.hoist("fits", (n) => `const ${n} = (v) => {
-if (!Array.isArray(v)) return false;
-for (let i = 0; i < v.length; i++) if (v[i] === undefined || !${item}(v[i])) return false;
-return true;
-};`);
-    }
-    if (schema instanceof ObjectSchema) {
-      if (unknownKeysOf(schema) === "keep") return this.hoist("fits", (n) => `const ${n} = () => true;`);
-      const fields = Object.entries(schema.shape as Record<string, Schema<any>>).map(([key, field]) => ({ key, fits: this.fits(field) }));
-      const checks = fields.map((f) => `x = v[${lit(f.key)}]; if (x !== undefined) { if (!${f.fits}(x)) return false; present++; }`);
-      return this.hoist("fits", (n) => `const ${n} = (v) => {
-if (typeof v !== "object" || v === null || Array.isArray(v)) return false;
-if (typeof v.toJSON === "function") return false;
-const count = Object.keys(v).length;
-if (count > ${fields.length}) return false;
-let present = 0, x;
-${checks.join("\n")}
-return count === present;
-};`);
-    }
-    throw new Unsealable(`a ${schema.constructor.name}`);
+    return this.exact(schema);
   }
 
   /** The name of a function that writes what Schema._exact writes. */
@@ -275,7 +239,8 @@ return count === present;
   }
 
   private exactInner(schema: Schema<any>): string {
-    if (schema instanceof StringSchema || schema instanceof EnumSchema || schema instanceof AnySchema) return "json";
+    if (schema instanceof StringSchema) return this.hoist("write", (n) => `const ${n} = (v) => (typeof v === "string" ? str(v) : json(v));`);
+    if (schema instanceof EnumSchema || schema instanceof AnySchema) return "json";
     if (schema instanceof NumberSchema) return this.hoist("write", (n) => `const ${n} = (v) => (typeof v === "number" && Number.isFinite(v) ? String(v) : json(v));`);
     if (schema instanceof BooleanSchema) return this.hoist("write", (n) => `const ${n} = (v) => (v === true ? "true" : v === false ? "false" : json(v));`);
     if (schema instanceof ArraySchema) {
@@ -283,7 +248,7 @@ return count === present;
       return this.hoist("write", (n) => `const ${n} = (v) => {
 if (!Array.isArray(v)) return json(v);
 let out = "[";
-for (let i = 0; i < v.length; i++) out += (i ? "," : "") + (v[i] === undefined ? "null" : ${item}(v[i]));
+for (let i = 0; i < v.length; i++) { const x = v[i]; out += (i ? "," : "") + (absent(x) ? "null" : ${item}(x)); }
 return out + "]";
 };`);
     }
@@ -291,11 +256,11 @@ return out + "]";
       if (unknownKeysOf(schema) === "keep") return "json";
       const fields = Object.entries(schema.shape as Record<string, Schema<any>>).map(([key, field]) => ({ key, write: this.exact(field) }));
       const parts = fields.map(
-        (f) => `x = v[${lit(f.key)}]; if (x !== undefined) { out += (first ? "" : ",") + ${lit(lit(f.key) + ":")} + ${f.write}(x); first = false; }`,
+        (f) => `x = v[${lit(f.key)}]; if (!absent(x)) out += (out.length > 1 ? "," : "") + ${lit(lit(f.key) + ":")} + ${f.write}(x);`,
       );
       return this.hoist("write", (n) => `const ${n} = (v) => {
 if (typeof v !== "object" || v === null || Array.isArray(v)) return json(v);
-let out = "{", first = true, x;
+let out = "{", x;
 ${parts.join("\n")}
 return out + "}";
 };`);
