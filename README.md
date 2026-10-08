@@ -574,9 +574,9 @@ path it took before there were hooks: they cost nothing until you use them.
 
 ## Sealed: contracts as plain code
 
-inkan checks and writes every route through the same few functions. That keeps it
-small, but the engine cannot tune them for any one route. `inkan seal` stamps every
-contract into code of its own, ahead of time, into a file you can read and commit:
+inkan checks every route through functions it makes once per schema. `inkan seal`
+goes one step further and stamps every contract's check into code of its own, ahead of
+time, into a file you can read and commit:
 
 ```sh
 npx inkan seal src/app.ts        # writes src/inkan.seal.js
@@ -587,10 +587,10 @@ import seal from "./inkan.seal.js";
 const app = inkan({ seal });
 ```
 
-Big bodies and big answers get the most out of it: checking a body of 50 objects
-and writing an answer of 100 both take about half the time. A sealed contract does
-exactly what the schema does, the same values and the same messages, and keeps
-back every key the contract does not list.
+Big bodies get the most out of it: a body of 50 objects is checked faster than by
+any server in the bench. A sealed contract checks exactly as the schema does, the same
+values and the same messages. Writing the answer stays the schema's own, so sealed or
+not, an answer goes out the same way and keeps back every key the contract does not list.
 
 No `eval`, no `new Function`: the code is in the file, and the file is what runs.
 At start inkan writes the code for every contract again and compares hashes, so a
