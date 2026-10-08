@@ -101,7 +101,7 @@ export type Context<P = Record<string, string>, Q = RawQuery, B = unknown, H = R
   method: string;
   path: string;
   url: URL;
-  /** The request id: taken from the request id header when it looks safe, otherwise a fresh UUID. */
+  /** The request id: taken from the request id header when it looks safe, otherwise a fresh one, unique per process and worker. */
   id: string;
   /**
    * The client's address, as the socket or the platform says it. Behind a proxy that is the
@@ -146,6 +146,12 @@ export type RouteRecord = {
   bodyLimit?: number;
   /** @internal Whether its body goes to the handler as a stream, unread. */
   streamsBody?: boolean;
+  /** @internal Whether it checks any input or credentials; worked out once, like the rest below. */
+  checksInput?: boolean;
+  /** @internal Whether its contract lists answers, and the status a plain value answers with. */
+  plan?: { hasContract: boolean; defaultStatus: number };
+  /** @internal `ctx.route` for it: one object, shared by its requests. */
+  info?: Readonly<{ method: string; path: string }>;
 };
 
 /** What the type of an app remembers about one route, for the typed client. */

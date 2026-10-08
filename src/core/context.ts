@@ -5,6 +5,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { Reply, type Context, type RouteRecord } from "./route.ts";
 import type { Hooks } from "./scope.ts";
 import type { RawQuery } from "./route.ts";
+import { NO_PARAMS } from "./router.ts";
 
 export type RawRequest = {
   method: string;
@@ -35,8 +36,10 @@ export type Exchange = {
   raw: RawRequest;
   url: Target;
   ctx: Context<any, any, any, any, any>;
-  out: { status: number; headers: Record<string, string> };
-  notes: string[];
+  /** The answer, filled in as the request goes: status and headers first, the body last. */
+  out: RawResponse;
+  /** Only kept when something reads them: the log, the inspector, an onResponse hook. */
+  notes: string[] | undefined;
   headers: Record<string, string>;
   started: number;
   timed: boolean;
@@ -62,39 +65,60 @@ export class Target {
 
 /**
  * The context of one request. A class, so every context has the same shape and the
- * `url` getter lives on the prototype. `status` and `header` stay own functions:
- * handlers take them apart (`({ status }) => …`), so they must not need `this`.
+ * getters live on the prototype. Nothing is made before it is asked for: the query is cut
+ * apart, `state` created and `status` and `header` bound only on first use. `status` and
+ * `header` are bound functions all the same, since handlers take them apart
+ * (`({ status }) => …`) and they must not need `this`.
  */
 export class RequestContext {
   method: string;
   path: string;
   id: string;
-  params: unknown = {};
-  query: unknown;
+  params: unknown = NO_PARAMS;
   headers: unknown;
   body: unknown = undefined;
-  state: Record<string, unknown> = {};
   route?: { method: string; path: string } = undefined;
   req?: IncomingMessage;
   res?: ServerResponse;
-  status: (code: number) => void;
-  header: (name: string, value: string) => void;
   private target: Target;
   private host?: string;
   private remote?: string;
+  private out: { status: number; headers: Record<string, string> };
+  private _query: unknown = undefined;
+  private _state: Record<string, unknown> | undefined = undefined;
+  private _status: ((code: number) => void) | undefined = undefined;
+  private _header: ((name: string, value: string) => void) | undefined = undefined;
   constructor(raw: RawRequest, target: Target, id: string, headers: Record<string, string>, out: { status: number; headers: Record<string, string> }) {
     this.remote = raw.remote;
     this.method = raw.method;
     this.path = target.pathname;
     this.id = id;
-    this.query = target.search ? parseQuery(target.search) : {};
     this.headers = headers;
     this.req = raw.req;
     this.res = raw.res;
     this.target = target;
     this.host = headers.host; // kept here: a header schema may later strip it from ctx.headers
-    this.status = (code) => void (out.status = code);
-    this.header = (name, value) => void (out.headers[name.toLowerCase()] = value);
+    this.out = out;
+  }
+  // Plain getters on the prototype: no proxy, nothing tracked. The setters are there because
+  // the contract puts the checked values back.
+  get query(): unknown {
+    return (this._query ??= this.target.search ? parseQuery(this.target.search) : {});
+  }
+  set query(value: unknown) {
+    this._query = value;
+  }
+  get state(): Record<string, unknown> {
+    return (this._state ??= {});
+  }
+  set state(value: Record<string, unknown>) {
+    this._state = value;
+  }
+  get status(): (code: number) => void {
+    return (this._status ??= (code) => void (this.out.status = code));
+  }
+  get header(): (name: string, value: string) => void {
+    return (this._header ??= (name, value) => void (this.out.headers[name.toLowerCase()] = value));
   }
   /** The client's address: the platform's word for it, or the socket's. */
   get ip(): string | undefined {

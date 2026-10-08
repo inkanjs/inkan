@@ -54,7 +54,7 @@ export const NO_HOOKS: Hooks = Object.freeze({
 });
 
 /** Names a context has by itself; `decorate` will not cover them. */
-const RESERVED = new Set(["method", "path", "id", "ip", "remote", "params", "query", "headers", "body", "state", "route", "req", "res", "status", "header", "target", "host"]);
+const RESERVED = new Set(["method", "path", "id", "ip", "remote", "params", "query", "headers", "body", "state", "route", "req", "res", "status", "header", "target", "host", "out", "_query", "_state", "_status", "_header"]);
 
 /**
  * What a scope holds. Its context class extends the one of the scope around it, so a

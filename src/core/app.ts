@@ -1,5 +1,4 @@
 import cluster from "node:cluster";
-import { randomUUID } from "node:crypto";
 import { availableParallelism } from "node:os";
 import { brotliDecompressSync, gunzipSync } from "node:zlib";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
@@ -18,6 +17,7 @@ import { applySeal, type SealState } from "../seal/seal.ts";
 import { Reply, type Context, type Example, type Middleware, type RawQuery, type RouteRecord, type Responses, type RouteDefs } from "./route.ts";
 import { target, queryObject, type Exchange, type RawRequest, type RawResponse, type Target } from "./context.ts";
 import { NO_HOOKS, runHooks, Scope, type Hooks, type Root } from "./scope.ts";
+import { nextId } from "./request-id.ts";
 import { readRequestBody, requestStream, TOO_LARGE, validateInput } from "./input.ts";
 import { Buffer } from "node:buffer"; // explicit, for runtimes without a global Buffer
 
@@ -254,17 +254,27 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
   private build() {
     for (const r of this._records) {
       r.hooks = r.box!.flatten();
-      const { body, bodyLimit } = r.spec;
+      const { body, bodyLimit, params, query, headers } = r.spec;
       r.streamsBody = body instanceof StreamSchema;
       // a stream has no limit unless it says so: it never sits in memory
       r.bodyLimit = bodyLimit ?? (body instanceof RawBodySchema ? body.rules.max : undefined) ?? (r.streamsBody ? Infinity : this.options.bodyLimit);
+      r.checksInput = Boolean(params || query || headers || body || r.security?.length);
+      r.plan = planOf(r);
+      r.info = Object.freeze({ method: r.method, path: r.path });
     }
+    const { requestId, docs } = this.options;
+    this.idHeader = requestId ? requestId.toLowerCase() : undefined;
+    this.docsSlash = docs ? docs + "/" : undefined;
     this.rootHooks = this._box.flatten();
     this.timeAll = this._records.some((r) => r.hooks!.onResponse.length) || this.rootHooks.onResponse.length > 0;
     this.built = true;
   }
   /** Whether any route has an onResponse hook, which needs the time a request took. */
   private timeAll = false;
+  /** The request id header in lower case, or undefined for none. */
+  private idHeader?: string;
+  /** The docs path with a slash at the end, which answers too. */
+  private docsSlash?: string;
 
   routes(): RouteRecord[] {
     return [...this._records];
@@ -334,33 +344,36 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
    * in the same turn, without a promise, a closure per step or an extra trip through the
    * microtask queue.
    */
-  handle(raw: RawRequest): RawResponse | Promise<RawResponse> {
+  handle(raw: RawRequest, url: Target = target(raw.url), matched?: Match<RouteRecord>): RawResponse | Promise<RawResponse> {
     if (!this.built) this.build();
     if (this.options.seal && !this.sealState) this.sealed();
-    const timed = Boolean(this.options.log || this.options.inspector);
+    const timed = Boolean(this.options.log || this.options.inspector); // read each time: check() turns the log off for a while
     const started = timed || this.timeAll ? performance.now() : 0;
-    const url = target(raw.url);
     const own = this.builtin(raw, url);
     if (own) return own;
 
     // Node already lower-cases header names; inject does the same. Nothing to copy.
     const headers = raw.headers as Record<string, string>;
-    const out = { status: 0, headers: {} as Record<string, string> };
-    const notes: string[] = [];
-    if (headers["x-inkan-replay"]) notes.push(`replay of #${headers["x-inkan-replay"].slice(0, 12)}`);
-    const idHeader = this.options.requestId ? this.options.requestId.toLowerCase() : undefined;
+    const out: RawResponse = { status: 0, headers: {}, body: undefined }; // becomes the answer
+    const { idHeader } = this;
     const incoming = idHeader ? headers[idHeader] : undefined;
-    const id = incoming && SAFE_ID.test(incoming) ? incoming : randomUUID();
+    const id = incoming && SAFE_ID.test(incoming) ? incoming : nextId();
     if (idHeader) out.headers[idHeader] = id;
 
-    // the route decides the context: its scope's decorations live on that context's class
-    const m = this.router.match(raw.method, url.pathname);
+    // a request with a body was routed already, to learn its limit
+    const m = matched ?? this.router.match(raw.method, url.pathname);
     const route = m.kind === "found" ? m.route : undefined;
-    const ctx = new (route ? route.box! : this._box).Ctx(raw, url, id, headers, out) as Context<any, any, any, any, any>;
     const hooks = route ? route.hooks! : this.rootHooks;
+    const plain = !this.global.length && hooks === NO_HOOKS;
+    // notes are only read by the log, the inspector and onResponse
+    const notes: string[] | undefined = timed || hooks.onResponse.length ? [] : undefined;
+    if (notes && headers["x-inkan-replay"]) notes.push(`replay of #${headers["x-inkan-replay"].slice(0, 12)}`);
+    // the route decides the context: its scope's decorations live on that context's class.
+    // A request no route takes never reads one on the plain path, so it gets none there.
+    const ctx = (route || !plain ? new (route ? route.box! : this._box).Ctx(raw, url, id, headers, out) : undefined) as Context<any, any, any, any, any>;
     const x: Exchange = { raw, url, ctx, out, notes, headers, started, timed, id: idHeader ? id : undefined, route: undefined, hooks };
 
-    if (this.global.length || hooks !== NO_HOOKS) return this.full(x, m);
+    if (!plain) return this.full(x, m);
     let res: RawResponse;
     try {
       if (!route) {
@@ -368,7 +381,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
         res = p ? this.fail(p, x) : this.respond(undefined, x);
       } else {
         const r = (x.route = route);
-        ctx.route = { method: r.method, path: r.path };
+        ctx.route = r.info;
         const reading = validateInput(ctx, r, (m as { params: Record<string, string> }).params, raw); // a promise only when a body has to be parsed
         if (reading || r.use.length) return this.later(x, r, reading);
         const result = r.handler(ctx);
@@ -436,7 +449,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     const r = m.kind === "found" ? m.route : undefined;
     if (r) {
       x.route = r;
-      ctx.route = { method: r.method, path: r.path };
+      ctx.route = r.info;
     }
     let res: RawResponse;
     try {
@@ -509,7 +522,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
       route: x.route?.path,
       status: res.status,
       ms: Math.round((performance.now() - x.started) * 10) / 10,
-      notes: x.notes,
+      notes: x.notes ?? [],
       worker: WORKER,
     };
     const report = (err: unknown) => (this.options.onError ? this.options.onError(err, x.ctx) : console.error(err));
@@ -546,11 +559,11 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
         route: route?.path,
         status: res.status,
         ms,
-        notes,
+        notes: notes ?? [],
         worker: WORKER,
       });
     }
-    if (this.options.inspector) this.remember(raw, url, res, route, ms, notes, x.headers, x.id);
+    if (this.options.inspector) this.remember(raw, url, res, route, ms, notes ?? [], x.headers, x.id);
     return res;
   }
 
@@ -567,7 +580,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
 
   private respond(result: unknown, x: Exchange): RawResponse {
     const { out, route, notes } = x;
-    const plan = route ? planOf(route) : undefined;
+    const plan = route?.plan;
     let status = out.status;
     let body = result;
     const headers = out.headers; // this request's own object: filled in place, never copied
@@ -579,7 +592,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     // No body means 204. Otherwise the first 2xx the contract lists, or 200.
     if (!status) status = body === undefined ? 204 : (plan?.defaultStatus ?? 200);
     const promised = route?.spec.responseHeaders?.[status];
-    if (promised && this.options.validateResponses) this.checkHeaders(route!, status, promised, headers, notes);
+    if (promised && this.options.validateResponses) this.checkHeaders(route!, status, promised, headers, x);
 
     if (body instanceof EventStream) {
       const schema = route ? contractFor(route, status) : undefined;
@@ -605,11 +618,11 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     let schema: Schema<any> | undefined;
     if (route && plan?.hasContract && status !== 204) {
       schema = contractFor(route, status);
-      if (!schema) notes.push(`status ${status} is not in the contract`);
+      if (!schema) notes?.push(`status ${status} is not in the contract`);
       else if (this.options.validateResponses) {
         const r = schema.safeParse(body);
         if (!r.ok) {
-          notes.push("response broke the contract");
+          notes?.push("response broke the contract");
           const lines = r.issues.map((i) => `${i.path || "(body)"} ${i.message}`).join("\n  ");
           console.error(`inkan: ${route.method} ${route.path} answered ${status} with a body that breaks its contract:\n  ${lines}`);
           throw problem(500, "response-contract", "The handler answered with a body that does not match its contract", {
@@ -621,22 +634,22 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     }
     // Only what the contract lists leaves the server, in development and in production alike.
     // The writer is built once per schema and knows the shape, so this is also the fast path.
-    if (schema && typeof body === "object" && body !== null && !Buffer.isBuffer(body) && !(body instanceof Uint8Array)) {
+    if (schema && typeof body === "object" && body !== null && !(body instanceof Uint8Array)) {
       headers["content-type"] ??= "application/json; charset=utf-8";
-      return encode(status, schema._serializer()(body), headers);
+      return encode(out, status, schema._serializer()(body));
     }
-    return encode(status, body, headers);
+    return encode(out, status, body);
   }
 
   /** The headers a status promises: there, unless optional, and of the shape promised. A broken promise is a 500 in development. */
-  private checkHeaders(route: RouteRecord, status: number, promised: Record<string, Schema<any>>, headers: Record<string, string>, notes: string[]) {
+  private checkHeaders(route: RouteRecord, status: number, promised: Record<string, Schema<any>>, headers: Record<string, string>, x: Exchange) {
     const errors: { in: string; path: string; message: string }[] = [];
     for (const [name, schema] of Object.entries(promised)) {
       const r = schema.safeParse(headers[name.toLowerCase()], { coerce: true }); // a header is text, like a query
       if (!r.ok) for (const i of r.issues) errors.push({ in: "response headers", path: name, message: i.message });
     }
     if (!errors.length) return;
-    notes.push("response broke the contract");
+    x.notes?.push("response broke the contract");
     const lines = errors.map((e) => `${e.path} ${e.message}`).join("\n  ");
     console.error(`inkan: ${route.method} ${route.path} answered ${status} without the headers it promises:\n  ${lines}`);
     throw problem(500, "response-contract", "The handler answered without the headers its contract promises", { errors });
@@ -657,37 +670,33 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
 
   /** A problem written as an RFC 9457 document. */
   private answer(p: HttpProblem, x: Exchange): RawResponse {
-    if (p.type === "validation") x.notes.push("input broke the contract");
+    if (p.type === "validation") x.notes?.push("input broke the contract");
     const body = p.toJSON();
     body.instance = x.url.pathname;
     if (x.id) body.requestId = x.id; // so a user's bug report points at the right log line
-    return {
-      status: p.status,
-      headers: withProblemHeaders(x.out.headers, p.headers),
-      body: JSON.stringify(body),
-    };
+    const res = x.out;
+    res.status = p.status;
+    withProblemHeaders(res.headers, p.headers);
+    res.body = JSON.stringify(body);
+    return res;
   }
 
   private builtin(raw: RawRequest, url: Target): RawResponse | undefined {
     if (raw.method !== "GET" && raw.method !== "HEAD") return;
     const { docs, openapi, inspector } = this.options;
     const p = url.pathname;
-    if (openapi && p === openapi) return encode(200, this.openapi(), {});
-    if (docs && (p === docs || p === docs + "/")) {
+    if (openapi && p === openapi) return encode(fresh(), 200, this.openapi());
+    if (docs && (p === docs || p === this.docsSlash)) {
       const page = docsPage({ title: this.options.title ?? "API", specUrl: openapi || "", inspector: inspector || "" });
-      return encode(200, page, {
-        "content-type": "text/html; charset=utf-8",
-      });
+      return encode(fresh({ "content-type": "text/html; charset=utf-8" }), 200, page);
     }
     if (inspector && (p === inspector || p.startsWith(inspector + "/"))) {
       if (!isLoopback(raw.remote ?? raw.req?.socket.remoteAddress)) return; // a plain 404 for everybody else
       if (p === inspector + "/log.json") {
         const since = Number(url.searchParams.get("since") ?? 0);
-        return encode(200, this.log.filter((e) => e.id > since), { "cache-control": "no-store" });
+        return encode(fresh({ "cache-control": "no-store" }), 200, this.log.filter((e) => e.id > since));
       }
-      return encode(200, inspectorPage({ title: this.options.title ?? "API", base: inspector, docs: docs || "" }), {
-        "content-type": "text/html; charset=utf-8",
-      });
+      return encode(fresh({ "content-type": "text/html; charset=utf-8" }), 200, inspectorPage({ title: this.options.title ?? "API", base: inspector, docs: docs || "" }));
     }
   }
 
@@ -736,31 +745,39 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
    * hands the body over unread, as `AdapterRequest.stream`.
    */
   bodyFor(method: string, url: string): { limit: number; stream: boolean } {
-    if (!this.built) this.build();
-    const m = this.router.match(method, target(url).pathname);
+    const m = this.matchFor(method, target(url));
     if (m.kind !== "found") return { limit: this.options.bodyLimit!, stream: false };
     return { limit: m.route.bodyLimit ?? this.options.bodyLimit!, stream: Boolean(m.route.streamsBody) };
+  }
+
+  private matchFor(method: string, url: Target): Match<RouteRecord> {
+    if (!this.built) this.build();
+    return this.router.match(method, url.pathname);
   }
 
   // Synchronous for a request without a body whose handler is: no promise, no extra turn.
   private serve(req: IncomingMessage, res: ServerResponse) {
     const hasBody = req.headers["content-length"] !== undefined || req.headers["transfer-encoding"] !== undefined;
     if (!hasBody) return this.pass(req, res, undefined);
-    // the route says how much it takes, and whether it reads the body itself
-    const { limit, stream } = this.bodyFor(req.method ?? "GET", req.url ?? "/");
+    // the route says how much it takes, and whether it reads the body itself; routed once, here
+    const method = req.method ?? "GET";
+    const url = target(req.url ?? "/");
+    const m = this.matchFor(method, url);
+    const route = m.kind === "found" ? m.route : undefined;
+    const limit = route?.bodyLimit ?? this.options.bodyLimit!;
     if (Number(req.headers["content-length"] ?? 0) > limit) return this.tooLarge(req, res, limit);
-    if (req.method === "GET" || req.method === "HEAD") return this.pass(req, res, undefined);
-    if (stream) return this.pass(req, res, undefined, requestStream(req));
+    if (method === "GET" || method === "HEAD") return this.pass(req, res, undefined, undefined, url, m);
+    if (route?.streamsBody) return this.pass(req, res, undefined, requestStream(req), url, m);
     readRequestBody(req, limit).then(
-      (read) => (read === TOO_LARGE ? this.tooLarge(req, res, limit) : this.pass(req, res, read)),
+      (read) => (read === TOO_LARGE ? this.tooLarge(req, res, limit) : this.pass(req, res, read, undefined, url, m)),
       (err) => this.broken(req, res, err),
     );
   }
 
-  private pass(req: IncomingMessage, res: ServerResponse, body: Buffer | undefined, stream?: AsyncIterable<Buffer>) {
+  private pass(req: IncomingMessage, res: ServerResponse, body: Buffer | undefined, stream?: AsyncIterable<Buffer>, url?: Target, m?: Match<RouteRecord>) {
     let out: RawResponse | Promise<RawResponse>;
     try {
-      out = this.handle({ method: req.method ?? "GET", url: req.url ?? "/", headers: req.headers, body, stream, req, res });
+      out = this.handle({ method: req.method ?? "GET", url: req.url ?? "/", headers: req.headers, body, stream, req, res }, url, m);
     } catch (err) {
       return this.broken(req, res, err);
     }
@@ -985,19 +1002,15 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
 
 export const inkan = (options?: AppOptions): App<{}, {}> => new App(options);
 
-type Plan = { hasContract: boolean; defaultStatus: number };
-const plans = new WeakMap<RouteRecord, Plan>();
-/** What a route's contract says about every answer, worked out on its first request instead of on each. */
-function planOf(route: RouteRecord): Plan {
-  let plan = plans.get(route);
-  if (!plan) {
-    const statuses = Object.keys(route.spec.response ?? {}).map(Number);
-    const ok = statuses.filter((s) => s >= 200 && s < 300 && s !== 204).sort((a, b) => a - b);
-    plan = { hasContract: statuses.length > 0, defaultStatus: ok[0] ?? 200 };
-    plans.set(route, plan);
-  }
-  return plan;
+/** What a route's contract says about every answer, worked out when the app is built instead of on each request. */
+function planOf(route: RouteRecord): NonNullable<RouteRecord["plan"]> {
+  const statuses = Object.keys(route.spec.response ?? {}).map(Number);
+  const ok = statuses.filter((s) => s >= 200 && s < 300 && s !== 204).sort((a, b) => a - b);
+  return { hasContract: statuses.length > 0, defaultStatus: ok[0] ?? 200 };
 }
+
+/** The problem schema every route with input answers a 400 with. */
+const INPUT_PROBLEM = t.problem();
 
 /**
  * The schema a status answers with. A route that takes input also promises
@@ -1007,7 +1020,7 @@ export function contractFor(route: RouteRecord, status: number): Schema<any> | u
   const { spec } = route;
   const declared = spec.response?.[status];
   if (declared) return declared;
-  if (status === 400 && (spec.params || spec.query || spec.headers || spec.body)) return t.problem();
+  if (status === 400 && (spec.params || spec.query || spec.headers || spec.body)) return INPUT_PROBLEM;
 }
 
 // ---------- helpers ----------
@@ -1034,22 +1047,25 @@ function withProblemHeaders(set: Record<string, string>, extra: Record<string, s
 
 const lower = (h: Record<string, string>) => Object.fromEntries(Object.entries(h).map(([k, v]) => [k.toLowerCase(), v]));
 
-/** Turns a body into bytes and a content type. Fills `headers` in place: every caller owns it. */
-function encode(status: number, body: unknown, headers: Record<string, string>): RawResponse {
-  const h = headers;
-  if (body === undefined || body === null || status === 204 || status === 304) {
-    return { status, headers: h, body: undefined };
-  }
-  if (typeof body === "string") {
+/** An answer still to be written, with these headers. */
+const fresh = (headers: Record<string, string> = {}): RawResponse => ({ status: 0, headers, body: undefined });
+
+/** Turns a body into bytes and a content type, written into `res`: every caller owns it. */
+function encode(res: RawResponse, status: number, body: unknown): RawResponse {
+  const h = res.headers;
+  res.status = status;
+  if (body === undefined || body === null || status === 204 || status === 304) res.body = undefined;
+  else if (typeof body === "string") {
     h["content-type"] ??= "text/plain; charset=utf-8";
-    return { status, headers: h, body };
-  }
-  if (Buffer.isBuffer(body) || body instanceof Uint8Array) {
+    res.body = body;
+  } else if (body instanceof Uint8Array) {
     h["content-type"] ??= "application/octet-stream";
-    return { status, headers: h, body: Buffer.from(body) };
+    res.body = Buffer.from(body);
+  } else {
+    h["content-type"] ??= "application/json; charset=utf-8";
+    res.body = JSON.stringify(body);
   }
-  h["content-type"] ??= "application/json; charset=utf-8";
-  return { status, headers: h, body: JSON.stringify(body) };
+  return res;
 }
 
 function tooLargeAnswer(instance: string, limit: number): RawResponse {

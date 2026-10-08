@@ -1,14 +1,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { inkan, problem, type RequestLog } from "../src/index.ts";
+import { idSource } from "../src/core/request-id.ts";
 
 const quiet = { log: false, gracefulShutdown: false } as const;
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+/** A fresh id: the process's prefix, the worker in a cluster, and a counter. */
+const ID = /^[0-9a-z]{7}(w[0-9a-z]+)?-[0-9a-z]+$/;
 
 test("every answer carries a request id, fresh or passed on", async () => {
   const app = inkan(quiet).get("/x", ({ id }) => ({ id }));
   const fresh = await app.inject({ url: "/x" });
-  assert.match(fresh.headers["x-request-id"], UUID);
+  assert.match(fresh.headers["x-request-id"], ID);
   assert.equal(fresh.body.id, fresh.headers["x-request-id"], "the handler sees the same id");
 
   const passed = await app.inject({ url: "/x", headers: { "x-request-id": "edge-42.a:b" } });
@@ -19,7 +21,7 @@ test("an id that could smuggle into logs is replaced", async () => {
   const app = inkan(quiet).get("/x", () => "ok");
   for (const bad of ["two words", "line\nbreak", "x".repeat(200), "<script>"]) {
     const res = await app.inject({ url: "/x", headers: { "x-request-id": bad } });
-    assert.match(res.headers["x-request-id"], UUID, JSON.stringify(bad));
+    assert.match(res.headers["x-request-id"], ID, JSON.stringify(bad));
   }
 });
 
@@ -86,7 +88,7 @@ test("a logger takes every entry instead of the console", async () => {
   assert.equal(printed, 0);
   assert.equal(seen.length, 1);
   assert.equal(seen[0].status, 204);
-  assert.match(seen[0].id!, UUID);
+  assert.match(seen[0].id!, ID);
 });
 
 test("the inspector keeps the request id", async () => {
@@ -94,4 +96,22 @@ test("the inspector keeps the request id", async () => {
   await app.inject({ url: "/x", headers: { "x-request-id": "find-me" } });
   const [entry] = (await app.inject({ url: "/_inkan/log.json" })).body;
   assert.equal(entry.requestId, "find-me");
+});
+
+test("fresh ids do not repeat", async () => {
+  const app = inkan(quiet).get("/x", ({ id }) => ({ id }));
+  const ids = new Set<string>();
+  for (let i = 0; i < 50; i++) ids.add((await app.inject({ url: "/x" })).body.id);
+  assert.equal(ids.size, 50);
+});
+
+test("two workers never hand out the same id, even with the same random prefix", () => {
+  const a = idSource(1, "0000000");
+  const b = idSource(2, "0000000");
+  const seen = new Set<string>();
+  for (let i = 0; i < 20_000; i++) {
+    seen.add(a());
+    seen.add(b());
+  }
+  assert.equal(seen.size, 40_000);
 });

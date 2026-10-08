@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
 
-type Line = { msg?: string; port?: number; worker?: number; path?: string; status?: number; pid?: number };
+type Line = { msg?: string; port?: number; worker?: number; path?: string; status?: number; pid?: number; id?: string };
 
 /** Starts the cluster fixture and hands back its JSON log lines as they come. */
 function start() {
@@ -37,6 +37,13 @@ test("workers share one port, say which of them answered, and one that dies is r
     const base = `http://127.0.0.1:${a.port}`;
     for (let i = 0; i < 4; i++) assert.equal((await fetch(`${base}/who`)).status, 200);
     await until(() => lines.some((l) => l.path === "/who" && typeof l.worker === "number"), "the log says which worker answered");
+
+    // every request id is new across the whole cluster, and names the worker that made it
+    await Promise.all(Array.from({ length: 40 }, () => fetch(`${base}/who`).then((r) => r.arrayBuffer())));
+    const answered = () => lines.filter((l) => l.path === "/who");
+    await until(() => answered().length === 44, "every request is logged");
+    assert.equal(new Set(answered().map((l) => l.id)).size, 44, "no id twice");
+    for (const l of answered()) assert.match(l.id!, new RegExp(`w${l.worker!.toString(36)}-`), "the id names its worker");
 
     await fetch(`${base}/crash`).catch(() => undefined); // the worker exits mid-answer
     await until(() => listening().length === 3, "a new worker takes its place");

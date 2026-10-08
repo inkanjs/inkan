@@ -10,6 +10,9 @@ import { Buffer } from "node:buffer"; // explicit, for runtimes without a global
 
 export type Body = { kind: "none" | "json" | "form" | "multipart" | "text" | "binary"; value: unknown };
 
+/** The body of every request that has none. */
+const NO_BODY: Body = Object.freeze({ kind: "none", value: undefined });
+
 /** Whether the request carries the credentials a scheme asks for. Whether they are good is not inkan's to say. */
 function presented(s: Security, ctx: Context<any, any, any, any, any>): boolean {
   const headers = ctx.headers as Record<string, string | undefined>;
@@ -62,7 +65,7 @@ export async function readMultipart(raw: RawRequest, contentType: string): Promi
 
 /** A promise only for multipart, which the platform parses asynchronously; everything else is read at once. */
 export function readBody(raw: RawRequest, contentType: string): Body | Promise<Body> {
-  if (!raw.body?.length) return { kind: "none", value: undefined };
+  if (!raw.body?.length) return NO_BODY;
   const ct = contentType.split(";")[0].trim().toLowerCase();
   const text = () => raw.body!.toString("utf8");
   if (ct === "multipart/form-data") return readMultipart(raw, contentType);
@@ -85,6 +88,11 @@ export function validateInput(
   params: Record<string, string>,
   raw: RawRequest,
 ): void | Promise<void> {
+  // a route that checks nothing and got no body: its params as they are, and nothing else to do
+  if (!route.checksInput && !raw.body?.length) {
+    ctx.params = params;
+    return;
+  }
   const { spec } = route;
   // who is asking comes first: without the credentials the route asks for, nothing else matters
   if (route.security?.length && !route.security.some((s) => presented(s, ctx))) throw missingCredentials(route.security);
@@ -99,9 +107,10 @@ export function validateInput(
 
   // read before a header schema strips the headers it does not list
   const contentType = (ctx.headers as Record<string, string>)["content-type"] ?? "";
-  ctx.params = take("params", spec.params, params, true);
-  ctx.query = take("query", spec.query, ctx.query, true);
-  ctx.headers = take("headers", spec.headers, ctx.headers, true);
+  // only what the contract names: a query nobody checks stays uncut until someone reads it
+  ctx.params = spec.params ? take("params", spec.params, params, true) : params;
+  if (spec.query) ctx.query = take("query", spec.query, ctx.query, true);
+  if (spec.headers) ctx.headers = take("headers", spec.headers, ctx.headers, true);
 
   // a body taken as it comes: not parsed, only its media type checked, and a stream left unread
   if (spec.body instanceof RawBodySchema) {

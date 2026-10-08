@@ -640,10 +640,12 @@ inkan({
 });
 ```
 
-Every request has an id: the one in `x-request-id` when it looks safe, a fresh UUID
+Every request has an id: the one in `x-request-id` when it looks safe, a fresh one
 otherwise. It is `ctx.id` in the handler, goes back out as a header, sits in every log
 line and in every problem document as `requestId`, so a bug report points at the right
-line in the logs. `ctx.ip` is the client's address, from the socket or the platform.
+line in the logs. A fresh id is a random prefix made when the process starts, the worker
+in a cluster, and a counter: `0k3f9a2w3-1c8`. Unique per process and per worker, and cheap,
+but not a UUID and not unguessable; nothing should rest on keeping it secret. `ctx.ip` is the client's address, from the socket or the platform.
 
 ### The frontend next to it
 
