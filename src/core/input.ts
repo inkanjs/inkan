@@ -3,12 +3,15 @@
 
 import type { IncomingMessage } from "node:http";
 import { HttpProblem, problem } from "./problem.ts";
-import { RawBodySchema, StreamSchema, type Issue, type Schema, type UploadedFile } from "../schema/schema.ts";
+import { INVALID, RawBodySchema, StreamSchema, type Issue, type Schema, type UploadedFile } from "../schema/schema.ts";
 import type { Context, RouteRecord, Security } from "./route.ts";
 import { queryObject, type RawRequest } from "./context.ts";
 import { Buffer } from "node:buffer"; // explicit, for runtimes without a global Buffer
 
 export type Body = { kind: "none" | "json" | "form" | "multipart" | "text" | "binary"; value: unknown };
+
+/** The body of every request that has none. */
+const NO_BODY: Body = Object.freeze({ kind: "none", value: undefined });
 
 /** Whether the request carries the credentials a scheme asks for. Whether they are good is not inkan's to say. */
 function presented(s: Security, ctx: Context<any, any, any, any, any>): boolean {
@@ -62,8 +65,8 @@ export async function readMultipart(raw: RawRequest, contentType: string): Promi
 
 /** A promise only for multipart, which the platform parses asynchronously; everything else is read at once. */
 export function readBody(raw: RawRequest, contentType: string): Body | Promise<Body> {
-  if (!raw.body?.length) return { kind: "none", value: undefined };
-  const ct = contentType.split(";")[0].trim().toLowerCase();
+  if (!raw.body?.length) return NO_BODY;
+  const ct = contentType === "application/json" ? contentType : contentType.split(";")[0].trim().toLowerCase();
   const text = () => raw.body!.toString("utf8");
   if (ct === "multipart/form-data") return readMultipart(raw, contentType);
   if (ct === "application/json" || ct.endsWith("+json")) {
@@ -78,6 +81,32 @@ export function readBody(raw: RawRequest, contentType: string): Body | Promise<B
   return { kind: "binary", value: raw.body };
 }
 
+type InputError = { in: string; path: string; message: string };
+
+/** One part of the input against its schema: the checked value, or the value as it came with what is wrong added to `errors`. */
+function part(where: string, schema: Schema<any>, value: unknown, coerce: boolean, found: Issue[], errors: InputError[]): unknown {
+  const v = schema._into(value, coerce, found);
+  if (v !== INVALID) return v;
+  for (const i of found) errors.push({ in: where, path: i.path, message: i.message });
+  found.length = 0;
+  return value;
+}
+
+/** One 400 for everything that broke the contract, naming where. */
+function invalid(errors: InputError[]): HttpProblem {
+  const where = [...new Set(errors.map((e) => e.in))].join(" and ");
+  return new HttpProblem(400, "validation", `The ${where} does not match the contract`, { errors });
+}
+
+/** The body, read, against its schema; form fields arrive as text, like a query, and are turned into what the schema asks for. */
+function checkBody(ctx: Context<any, any, any, any, any>, schema: Schema<any> | undefined, body: Body, found: Issue[], errors: InputError[]) {
+  if (schema && (body.kind === "binary" || body.kind === "text")) {
+    throw problem(415, "unsupported-media-type", "Send the body as application/json, application/x-www-form-urlencoded or multipart/form-data");
+  }
+  ctx.body = schema ? part("body", schema, body.value, body.kind === "form" || body.kind === "multipart", found, errors) : body.value;
+  if (errors.length) throw invalid(errors);
+}
+
 /** Checks params, query, headers and body together. Returns a promise only when a body had to be read asynchronously. */
 export function validateInput(
   ctx: Context<any, any, any, any, any>,
@@ -85,23 +114,23 @@ export function validateInput(
   params: Record<string, string>,
   raw: RawRequest,
 ): void | Promise<void> {
+  // a route that checks nothing and got no body: its params as they are, and nothing else to do
+  if (!route.checksInput && !raw.body?.length) {
+    ctx.params = params;
+    return;
+  }
   const { spec } = route;
   // who is asking comes first: without the credentials the route asks for, nothing else matters
   if (route.security?.length && !route.security.some((s) => presented(s, ctx))) throw missingCredentials(route.security);
-  const errors: { in: string; path: string; message: string }[] = [];
-  const take = (where: string, schema: Schema<any> | undefined, value: unknown, coerce: boolean) => {
-    if (!schema) return value;
-    const r = schema.safeParse(value, { coerce });
-    if (r.ok) return r.value;
-    errors.push(...r.issues.map((i: Issue) => ({ in: where, path: i.path, message: i.message })));
-    return value;
-  };
+  const found: Issue[] = []; // what one part breaks, before it goes into errors
+  const errors: InputError[] = [];
 
   // read before a header schema strips the headers it does not list
   const contentType = (ctx.headers as Record<string, string>)["content-type"] ?? "";
-  ctx.params = take("params", spec.params, params, true);
-  ctx.query = take("query", spec.query, ctx.query, true);
-  ctx.headers = take("headers", spec.headers, ctx.headers, true);
+  // only what the contract names: a query nobody checks stays uncut until someone reads it
+  ctx.params = spec.params ? part("params", spec.params, params, true, found, errors) : params;
+  if (spec.query) ctx.query = part("query", spec.query, ctx.query, true, found, errors);
+  if (spec.headers) ctx.headers = part("headers", spec.headers, ctx.headers, true, found, errors);
 
   // a body taken as it comes: not parsed, only its media type checked, and a stream left unread
   if (spec.body instanceof RawBodySchema) {
@@ -118,27 +147,14 @@ export function validateInput(
           : spec.body.meta.optional
             ? undefined
             : Buffer.alloc(0);
-    ctx.body = take("body", spec.body, value, false);
-    if (errors.length) {
-      const where = [...new Set(errors.map((e) => e.in))].join(" and ");
-      throw new HttpProblem(400, "validation", `The ${where} does not match the contract`, { errors });
-    }
+    ctx.body = part("body", spec.body, value, false, found, errors);
+    if (errors.length) throw invalid(errors);
     return;
   }
 
-  const finish = (body: Body) => {
-    if (spec.body && (body.kind === "binary" || body.kind === "text")) {
-      throw problem(415, "unsupported-media-type", "Send the body as application/json, application/x-www-form-urlencoded or multipart/form-data");
-    }
-    // form fields arrive as text, like a query, so they are turned into what the schema asks for
-    ctx.body = take("body", spec.body, body.value, body.kind === "form" || body.kind === "multipart");
-    if (errors.length) {
-      const where = [...new Set(errors.map((e) => e.in))].join(" and ");
-      throw new HttpProblem(400, "validation", `The ${where} does not match the contract`, { errors });
-    }
-  };
   const body = readBody(raw, contentType);
-  return body instanceof Promise ? body.then(finish) : finish(body);
+  if (body instanceof Promise) return body.then((b) => checkBody(ctx, spec.body, b, found, errors));
+  checkBody(ctx, spec.body, body, found, errors);
 }
 
 export const TOO_LARGE = Symbol("too large");
@@ -201,23 +217,26 @@ async function* limited(source: AsyncIterable<Buffer>, limit: number): AsyncIter
   }
 }
 
-/** Reads a request body with plain events, which is cheaper than an async iterator per chunk. */
-export function readRequestBody(req: IncomingMessage, limit: number): Promise<Buffer | undefined | typeof TOO_LARGE> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    let size = 0;
-    const onData = (chunk: Buffer) => {
-      size += chunk.length;
-      if (size > limit) {
-        req.off("data", onData);
-        req.pause(); // stop reading; the 413 closes the connection
-        resolve(TOO_LARGE);
-        return;
-      }
-      chunks.push(chunk);
-    };
-    req.on("data", onData);
-    req.once("end", () => resolve(chunks.length === 0 ? undefined : chunks.length === 1 ? chunks[0] : Buffer.concat(chunks, size)));
-    req.once("error", reject);
-  });
+/** Reads a request body with plain events, and calls back once: no promise, no extra turn. */
+export function readRequestBody(req: IncomingMessage, limit: number, done: (err: unknown, read?: Buffer | typeof TOO_LARGE) => void): void {
+  let chunks: Buffer[] | undefined;
+  let first: Buffer | undefined;
+  let size = 0;
+  let over = false;
+  const onData = (chunk: Buffer) => {
+    size += chunk.length;
+    if (size > limit) {
+      over = true;
+      req.off("data", onData);
+      req.pause(); // stop reading; the 413 closes the connection
+      done(undefined, TOO_LARGE);
+      return;
+    }
+    // most bodies come in one chunk: no list for those
+    if (!first) first = chunk;
+    else (chunks ??= [first]).push(chunk);
+  };
+  req.on("data", onData);
+  req.once("end", () => over || done(undefined, chunks ? Buffer.concat(chunks, size) : first));
+  req.once("error", (err) => over || done(err));
 }

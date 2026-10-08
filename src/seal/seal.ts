@@ -96,7 +96,7 @@ export function applySeal(seal: Seal, routes: RouteRecord[]): SealState {
       state.stale.push(label);
       continue;
     }
-    schema._seal(seal, entry.parse, entry.write);
+    schema._seal(seal, entry.parse);
     state.sealed++;
   }
   return state;

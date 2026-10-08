@@ -1,5 +1,75 @@
 # Changelog
 
+## 0.6.0
+
+### New
+
+- **More than JSON, from the context.** `ctx.text(body)`, `ctx.html(markup)`,
+  `ctx.redirect(to, status)` (301, 302, 303, 307 or 308) and `ctx.notFound(detail)`, the
+  same 404 problem an unknown route gets, through `onProblem` like any other. Each can be
+  taken apart like `status` (`({ html }) => …`) and costs nothing until used.
+- **The `html` tag**, which escapes every value put into it, joins lists and writes nothing
+  for `null`, `undefined` and `false`. A handler can return `` html`…` `` as it is.
+  `raw(markup)` lets markup you made yourself through.
+- **Layouts.** `app.layout((content, props, ctx) => …)` and `ctx.render(content, props)`:
+  pages in the look of their scope; a plugin can have its own, and the closest wins.
+- **Cookies.** `ctx.cookies` reads them, `ctx.setCookie(name, value, options)` sets one,
+  HttpOnly and SameSite=Lax unless told otherwise, and `ctx.clearCookie(name)` lets one
+  expire. Every cookie goes out as a Set-Cookie of its own, over node:http, `fetch` and
+  `inject` (`res.cookies`).
+
+- **Rows as they come.** A handler can return a generator of rows for a list in its
+  contract, such as one over a database cursor: the rows go out as they are read, as a JSON
+  array or as NDJSON for `accept: application/x-ndjson`, each written to the contract and
+  checked in development.
+- **`ctx.csv(rows, options)`** writes rows as CSV the same way, with a separator, a BOM,
+  a file name, and formulas defused unless told otherwise.
+- **`ctx.signal`** aborts when the client goes away or the route's time is up; `timeout`
+  on a route or the app answers 504 past it.
+- **`cache` on a route** keeps the handler's answers per input and caller for a while, and
+  asks once for many requests that come in at the same time.
+
+### Faster
+
+- **Less work per request.** A request id from a counter instead of a random UUID, route
+  data worked out once when the app is built, a request with a body routed once, no context
+  for a request no route takes, and the answer written into one object.
+- **Schemas check through stamps**: one function per schema, made once from its rules, in
+  place of a walk over the schema tree on every request. They check exactly as before.
+- **Answers trimmed to the contract in one step.** A plain object that holds just what the
+  contract lists goes to the native writer as it is; anything else is copied with only the
+  declared fields first. The copy is faster than the writer it replaces.
+- **Middleware without async frames of its own**, and bodies read without a promise.
+- The numbers, phase by phase, are in [`bench/reports/0.6.0.md`](bench/reports/0.6.0.md).
+
+### Fixed
+
+- An answer can no longer carry a key its contract does not list through an object whose
+  declared field came from its prototype or was not enumerable; such objects are copied
+  with only the declared fields first.
+- A declared field named like an `Object.prototype` member (`constructor`, `toString`) is
+  left out when missing, instead of being written as `null`.
+- An invalid `Date` in a `t.date()` field is written as `null` instead of throwing.
+- Functions and symbols in object fields and records are left out, as `JSON.stringify`
+  leaves them out, instead of being written as `null`.
+- An event name like `constructor` is a contract error for `t.events()`, not a crash.
+
+### Changed
+
+- **The request id is no longer a UUID.** A fresh id is a random prefix made once per
+  process, the cluster worker, and a counter: `0k3f9a2w3-1c8`. It is unique per process
+  and worker, but not unguessable; an id a client sends is still used when it looks safe.
+- **Seals are format 2.** `inkan seal` now stamps the checks only, and writing stays the
+  schema's own, so a sealed contract can never write differently. A seal made by 0.5 is
+  not used (with a warning) until `inkan seal` runs again.
+- An answer that had to be trimmed is written in the order of its contract's fields; one
+  that already fits keeps its own order, as before.
+
+### For adapters
+
+- `AdapterResponse.cookies` holds the Set-Cookie headers, one per cookie; an adapter writes
+  each as a header of its own.
+
 ## 0.5.0
 
 ### New

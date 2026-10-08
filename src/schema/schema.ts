@@ -22,6 +22,13 @@ export type RefContext = { components: Map<string, JsonSchema>; refPrefix?: stri
 
 const FAIL: unique symbol = Symbol("fail");
 type Fail = typeof FAIL;
+/** A schema's trim: the value with only what the schema lists, ready for JSON.stringify. */
+type Trim = (v: unknown) => unknown;
+/** Whether a value may be written as it is. */
+type Fit = (v: unknown) => boolean;
+
+/** @internal What `_into` hands back for a value that breaks its schema. */
+export const INVALID = FAIL;
 
 type Meta = {
   description?: string;
@@ -34,23 +41,52 @@ type Meta = {
   deprecated?: boolean;
 };
 
+/**
+ * A schema's check, as a plain function: the value (coerced, defaulted, stripped), or FAIL
+ * with what is wrong pushed onto `issues`. Built once per schema, the first time it is used.
+ */
+export type Check<T> = (value: unknown, path: string, coerce: boolean, issues: Issue[]) => T | Fail;
+
+const required = (path: string, issues: Issue[]): Fail => {
+  issues.push({ path, message: "is required" });
+  return FAIL;
+};
+
 export abstract class Schema<T = unknown> {
   declare readonly _type: T;
   meta: Meta = {};
 
-  protected abstract check(value: unknown, path: string, coerce: boolean, issues: Issue[]): T | Fail;
+  /**
+   * The check of this kind of schema, made once from its rules: its stamp. Every rule is
+   * read here, not per value, so the function it returns only does what this schema asks.
+   */
+  protected abstract stamp(): Check<T>;
   protected abstract json(ctx?: RefContext): JsonSchema;
+
+  private _check?: Check<T>;
 
   /** @internal */
   _run(value: unknown, path: string, coerce: boolean, issues: Issue[]): T | Fail {
-    if (value === undefined) {
-      if (this.meta.hasDefault) return structuredClone(this.meta.default) as T;
-      if (this.meta.optional) return undefined as T;
-      issues.push({ path, message: "is required" });
-      return FAIL;
+    return (this._check ??= this.runner())(value, path, coerce, issues);
+  }
+
+  /** The stamp, with what every schema does first: a missing value, a default, null. */
+  protected runner(): Check<T> {
+    const check = this.stamp();
+    const { hasDefault, optional, nullable } = this.meta;
+    const fallback = this.meta.default;
+    if (!hasDefault && !optional && !nullable) {
+      return (v, path, coerce, issues) => (v === undefined ? required(path, issues) : check(v, path, coerce, issues));
     }
-    if (value === null && this.meta.nullable) return null as T;
-    return this.check(value, path, coerce, issues);
+    return (v, path, coerce, issues) => {
+      if (v === undefined) {
+        if (hasDefault) return structuredClone(fallback) as T;
+        if (optional) return undefined as T;
+        return required(path, issues);
+      }
+      if (v === null && nullable) return null as T;
+      return check(v, path, coerce, issues);
+    };
   }
 
   /** @internal */
@@ -91,8 +127,12 @@ export abstract class Schema<T = unknown> {
     Object.assign(copy, this);
     copy.meta = { ...this.meta, ...patch };
     copy._ser = undefined; // a copy with other rules writes its own way
-    copy._exactSer = undefined;
-    copy._sealedParse = undefined; // and checks its own way: a seal belongs to one contract
+    copy._trimmed = false;
+    copy._trimFn = undefined;
+    copy._fitted = false;
+    copy._fitFn = undefined;
+    copy._check = undefined; // and checks its own way, from its own rules
+    copy._sealedParse = undefined; // a seal belongs to one contract
     copy._sealedBy = undefined;
     return copy;
   }
@@ -142,6 +182,22 @@ export abstract class Schema<T = unknown> {
     return r.value;
   }
 
+  /**
+   * @internal safeParse without its result object, for the request path: the value, or
+   * INVALID with every issue pushed onto `issues` (which must come in empty). A seal is used
+   * when there is one, as in safeParse.
+   */
+  _into(value: unknown, coerce: boolean, issues: Issue[]): T | typeof INVALID {
+    if (this._sealedParse) {
+      const r = this._sealedParse(value, coerce) as SafeResult<T>;
+      if (r.ok) return r.value;
+      issues.push(...r.issues);
+      return FAIL;
+    }
+    const out = this._run(value, "", coerce, issues);
+    return out === FAIL || issues.length ? FAIL : out;
+  }
+
   safeParse(value: unknown, opts: { coerce?: boolean } = {}): SafeResult<T> {
     if (this._sealedParse) return this._sealedParse(value, opts.coerce ?? false) as SafeResult<T>;
     const issues: Issue[] = [];
@@ -162,70 +218,115 @@ export abstract class Schema<T = unknown> {
   _sealedBy?: object;
 
   /**
-   * @internal Hands checking and writing to code stamped from this very contract by
+   * @internal Hands checking to code stamped from this very contract by
    * `inkan seal`. Only called once the stamped code is known to match (see seal/apply.ts).
    */
-  _seal(by: object, parse: (v: unknown, coerce: boolean) => SafeResult<unknown>, write: (v: unknown) => string) {
+  _seal(by: object, parse: (v: unknown, coerce: boolean) => SafeResult<unknown>) {
     this._sealedBy = by;
-    this._sealedParse = parse;
-    this._ser = write;
+    this._sealedParse = parse; // writing stays this schema's own, so sealed or not it writes the same
   }
 
   /**
-   * @internal A function that writes a value as JSON with only what this schema lists,
-   * built once per schema and kept. It does not validate; it is what keeps keys the
-   * contract does not list on the server, in production too, and it is faster than
-   * JSON.stringify because it knows the shape in advance.
+   * @internal A function that writes a value as JSON with only what this schema lists, in
+   * one pass, built once per schema and kept. It does not validate; it is what keeps keys
+   * the contract does not list on the server, in production too. A declared field is read
+   * once, as any property is (a getter on a class works); one that is undefined, a function
+   * or a symbol is left out, as JSON.stringify leaves it out.
    */
   _serializer(): (v: unknown) => string {
     if (!this._ser) {
-      const exact = this._exact();
-      // Most answers hold exactly what the contract lists. Checking that only counts keys,
-      // and then the native writer is the fastest there is; the exact writer is for the rest.
-      this._ser = (v) => (this._fits(v) ? (JSON.stringify(v) ?? "null") : exact(v));
+      const trim = this._trimmer();
+      const fit = this._fitter();
+      // Most answers hold exactly what the contract lists, as plain objects: those go to the
+      // native writer as they are, which is the fastest there is. Anything else is trimmed to
+      // the contract first, so what it does not list can never go out.
+      this._ser = !trim || !fit ? json : (v) => (fit(v) ? json(v) : (JSON.stringify(trim(v)) ?? "null"));
     }
     return this._ser;
   }
 
-  private _exactSer?: (v: unknown) => string;
-  /** @internal The writer that writes only what this schema lists, without asking first. Children use it too. */
-  _exact(): (v: unknown) => string {
-    if (!this._exactSer) {
-      const inner = this.serialize();
-      this._exactSer = this.meta.nullable ? (v) => (v === null ? "null" : inner(v)) : inner;
-    }
-    return this._exactSer;
-  }
-
-  /** @internal Does the value hold nothing this schema does not list, so JSON.stringify writes it exactly? */
-  _fits(v: unknown): boolean {
-    return (v === null && Boolean(this.meta.nullable)) || this.fits(v);
-  }
-
-  /** When in doubt, no: the exact writer is always right. */
-  protected fits(_v: unknown): boolean {
-    return false;
-  }
-
+  private _fitFn?: Fit;
+  private _fitted = false;
   /**
-   * @internal How a parent can ask _fits without calling it: 0 anything fits, 1 anything but
-   * a non-null object fits (every primitive schema, nullable or not), 2 only a call can say.
-   * Lets objects and arrays test their primitive fields inline, which is most of them.
+   * @internal Whether a value can go to JSON.stringify as it is, because a trim would not
+   * change what is written; undefined when that is so for any value. Built once.
    */
-  _fitKind(): 0 | 1 | 2 {
-    return 2;
+  _fitter(): Fit | undefined {
+    if (!this._fitted) {
+      this._fitted = true;
+      this._fitFn = this.fitter();
+    }
+    return this._fitFn;
   }
 
-  /** How this kind of schema writes a value. The fallback lets the parser strip, then writes that. */
-  protected serialize(): (v: unknown) => string {
+  /** When in doubt, no: the trim is always right. */
+  protected fitter(): Fit | undefined {
+    return () => false;
+  }
+
+  private _trimFn?: Trim;
+  private _trimmed = false;
+  /**
+   * @internal A function that copies a value with only what this schema lists, or undefined
+   * when the value is written as it is (a primitive, a list of them). Built once.
+   */
+  _trimmer(): Trim | undefined {
+    if (!this._trimmed) {
+      this._trimmed = true;
+      this._trimFn = this.trimmer();
+    }
+    return this._trimFn;
+  }
+
+  /** How this kind of schema trims a value. The fallback lets the parser strip it, and writes the value as it is when it does not parse. */
+  protected trimmer(): Trim | undefined {
     return (v) => {
       const r = this.safeParse(v);
-      return JSON.stringify(r.ok ? r.value : v) ?? "null";
+      return r.ok ? r.value : v;
     };
   }
+
+
+
+
+
 }
 
 const json = (v: unknown) => JSON.stringify(v) ?? "null";
+
+/** What JSON.stringify leaves out of an object, and writes as null in a list: nothing, a function, a symbol. */
+const absent = (x: unknown) => x === undefined || typeof x === "function" || typeof x === "symbol";
+
+/** An object JSON.stringify writes by its own keys only: no class, no prototype that lends it fields. */
+const plainObject = (o: object) => {
+  const p = Object.getPrototypeOf(o);
+  return p === Object.prototype || p === null;
+};
+
+/**
+ * Whether every key of `own` is one of `keys`. Rows mostly come in the order the contract
+ * lists them, so that is tried first, a walk with one comparison per key; the set answers
+ * for any other order.
+ */
+const allDeclared = (own: string[], keys: string[], declared: Set<string>) => {
+  let j = 0;
+  for (let i = 0; i < own.length; i++) {
+    const k = own[i]!;
+    while (j < keys.length && keys[j] !== k) j++;
+    if (j === keys.length) {
+      for (let m = i; m < own.length; m++) if (!declared.has(own[m]!)) return false;
+      return true;
+    }
+    j++;
+  }
+  return true;
+};
+
+/** Sets a key on a copy; a key named __proto__ becomes a key, not the prototype. */
+const put = (o: Record<string, unknown>, k: string, v: unknown) => {
+  if (k === "__proto__") Object.defineProperty(o, k, { value: v, enumerable: true, writable: true, configurable: true });
+  else o[k] = v;
+};
 
 class EffectSchema<T, U> extends Schema<U> {
   private source: Schema<T>;
@@ -242,16 +343,6 @@ class EffectSchema<T, U> extends Schema<U> {
     this.sameShape = sameShape;
     this.meta = { ...source.meta };
   }
-  protected override serialize() {
-    // a refined value still has the source's shape; a transformed one has none we know
-    return this.sameShape ? this.source._exact() : json;
-  }
-  protected override fits(v: unknown) {
-    return this.sameShape ? this.source._fits(v) : true;
-  }
-  override _fitKind() {
-    return this.sameShape ? this.source._fitKind() : 0;
-  }
   override optional(): Schema<U | undefined> {
     const copy = this.clone({ optional: true });
     copy.outerOptional = true;
@@ -267,19 +358,36 @@ class EffectSchema<T, U> extends Schema<U> {
     copy.outerDefault = true;
     return copy as never;
   }
-  override _run(value: unknown, path: string, coerce: boolean, issues: Issue[]): U | Fail {
-    if (value === undefined) {
-      if (this.outerDefault) return structuredClone(this.meta.default) as U;
-      if (this.outerOptional) return undefined as U;
-    }
-    if (value === null && this.outerNullable) return null as U;
-    return this.check(value, path, coerce, issues);
+  // Its own optional, nullable and default are the ones set on it; the source's are the
+  // source's business, checked when the source runs.
+  protected override runner(): Check<U> {
+    const check = this.stamp();
+    const { outerDefault, outerOptional, outerNullable } = this;
+    const fallback = this.meta.default;
+    return (value, path, coerce, issues) => {
+      if (value === undefined) {
+        if (outerDefault) return structuredClone(fallback) as U;
+        if (outerOptional) return undefined as U;
+      }
+      if (value === null && outerNullable) return null as U;
+      return check(value, path, coerce, issues);
+    };
   }
-  protected check(value: unknown, path: string, coerce: boolean, issues: Issue[]) {
-    const count = issues.length;
-    const parsed = this.source._run(value, path, coerce, issues);
-    if (parsed === FAIL || issues.length !== count) return FAIL;
-    return this.effect(parsed, path, issues);
+  protected stamp(): Check<U> {
+    const { source, effect } = this;
+    return (value, path, coerce, issues) => {
+      const count = issues.length;
+      const parsed = source._run(value, path, coerce, issues);
+      if (parsed === FAIL || issues.length !== count) return FAIL;
+      return effect(parsed, path, issues);
+    };
+  }
+  protected override trimmer(): Trim | undefined {
+    // a refined value still has the source's shape; a transformed one has none we know
+    return this.sameShape ? this.source._trimmer() : undefined;
+  }
+  protected override fitter(): Fit | undefined {
+    return this.sameShape ? this.source._fitter() : undefined;
   }
   protected json(ctx?: RefContext) {
     // The wrapper owns the name; avoid a self-reference to that same component.
@@ -329,31 +437,33 @@ export class StringSchema extends Schema<string> {
   /** Trims whitespace before the other rules run. */
   trim() { const c = this.clone(); c.rules = { ...this.rules, trim: true }; return c; }
 
-  protected check(v: unknown, path: string, _coerce: boolean, issues: Issue[]) {
-    if (typeof v !== "string") {
-      issues.push({ path, message: `expected a string, got ${typeOf(v)}` });
-      return FAIL;
-    }
-    const s = this.rules.trim ? v.trim() : v;
-    const { min, max, pattern, format } = this.rules;
-    if (min !== undefined && s.length < min) issues.push({ path, message: `must be at least ${min} characters` });
-    if (max !== undefined && s.length > max) issues.push({ path, message: `must be at most ${max} characters` });
-    if (pattern && !pattern.test(s)) issues.push({ path, message: `must match ${pattern}` });
-    if (format && !FORMATS[format].test(s)) issues.push({ path, message: `must be a valid ${format}` });
-    return s;
+  protected stamp(): Check<string> {
+    const { min, max, pattern, format, trim } = this.rules;
+    const shape = format ? FORMATS[format] : undefined;
+    const plain = min === undefined && max === undefined && !pattern && !shape;
+    return (v, path, _coerce, issues) => {
+      if (typeof v !== "string") {
+        issues.push({ path, message: `expected a string, got ${typeOf(v)}` });
+        return FAIL;
+      }
+      const s = trim ? v.trim() : v;
+      if (plain) return s;
+      if (min !== undefined && s.length < min) issues.push({ path, message: `must be at least ${min} characters` });
+      if (max !== undefined && s.length > max) issues.push({ path, message: `must be at most ${max} characters` });
+      if (pattern && !pattern.test(s)) issues.push({ path, message: `must match ${pattern}` });
+      if (shape && !shape.test(s)) issues.push({ path, message: `must be a valid ${format}` });
+      return s;
+    };
   }
 
-  protected override serialize() {
-    return json;
-  }
 
-  protected override fits(v: unknown) {
-    return typeof v !== "object" || v === null;
-  }
-  override _fitKind() {
-    return 1 as const;
-  }
 
+  protected override trimmer(): Trim | undefined {
+    return undefined; // JSON.stringify writes it as it is
+  }
+  protected override fitter(): Fit | undefined {
+    return undefined; // written as it is, so anything fits
+  }
   protected json() {
     const { min, max, pattern, format } = this.rules;
     const s: JsonSchema = { type: "string" };
@@ -376,35 +486,34 @@ export class NumberSchema extends Schema<number> {
   max(n: number) { const c = this.clone(); c.rules = { ...this.rules, max: n }; return c; }
   positive() { return this.min(this.rules.int ? 1 : Number.MIN_VALUE); }
 
-  protected check(v: unknown, path: string, coerce: boolean, issues: Issue[]) {
-    let n = v;
-    if (coerce && typeof v === "string" && v.trim() !== "") n = Number(v);
-    const kind = this.rules.int ? "an integer" : "a number";
-    if (typeof n !== "number" || Number.isNaN(n) || !Number.isFinite(n)) {
-      issues.push({ path, message: `expected ${kind}, got ${typeof v === "string" ? JSON.stringify(v) : typeOf(v)}` });
-      return FAIL;
-    }
-    if (this.rules.int && !Number.isInteger(n)) {
-      issues.push({ path, message: `expected an integer, got ${n}` });
-      return FAIL;
-    }
-    const { min, max } = this.rules;
-    if (min !== undefined && n < min) issues.push({ path, message: `must be ${min} or more` });
-    if (max !== undefined && n > max) issues.push({ path, message: `must be ${max} or less` });
-    return n;
+  protected stamp(): Check<number> {
+    const { int, min, max } = this.rules;
+    const kind = int ? "an integer" : "a number";
+    return (v, path, coerce, issues) => {
+      let n = v;
+      if (coerce && typeof v === "string" && v.trim() !== "") n = Number(v);
+      if (typeof n !== "number" || !Number.isFinite(n)) {
+        issues.push({ path, message: `expected ${kind}, got ${typeof v === "string" ? JSON.stringify(v) : typeOf(v)}` });
+        return FAIL;
+      }
+      if (int && !Number.isInteger(n)) {
+        issues.push({ path, message: `expected an integer, got ${n}` });
+        return FAIL;
+      }
+      if (min !== undefined && n < min) issues.push({ path, message: `must be ${min} or more` });
+      if (max !== undefined && n > max) issues.push({ path, message: `must be ${max} or less` });
+      return n;
+    };
   }
 
-  protected override serialize() {
-    return (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? String(v) : json(v));
-  }
 
-  protected override fits(v: unknown) {
-    return typeof v !== "object" || v === null;
-  }
-  override _fitKind() {
-    return 1 as const;
-  }
 
+  protected override trimmer(): Trim | undefined {
+    return undefined; // JSON.stringify writes it as it is
+  }
+  protected override fitter(): Fit | undefined {
+    return undefined; // written as it is, so anything fits
+  }
   protected json() {
     const s: JsonSchema = { type: this.rules.int ? "integer" : "number" };
     if (this.rules.min !== undefined) s.minimum = this.rules.min;
@@ -414,23 +523,22 @@ export class NumberSchema extends Schema<number> {
 }
 
 export class BooleanSchema extends Schema<boolean> {
-  protected check(v: unknown, path: string, coerce: boolean, issues: Issue[]) {
-    if (typeof v === "boolean") return v;
-    if (coerce && typeof v === "string") {
-      if (v === "true" || v === "1" || v === "") return true;
-      if (v === "false" || v === "0") return false;
-    }
-    issues.push({ path, message: `expected a boolean, got ${typeOf(v)}` });
-    return FAIL;
+  protected stamp(): Check<boolean> {
+    return (v, path, coerce, issues) => {
+      if (typeof v === "boolean") return v;
+      if (coerce && typeof v === "string") {
+        if (v === "true" || v === "1" || v === "") return true;
+        if (v === "false" || v === "0") return false;
+      }
+      issues.push({ path, message: `expected a boolean, got ${typeOf(v)}` });
+      return FAIL;
+    };
   }
-  protected override serialize() {
-    return (v: unknown) => (v === true ? "true" : v === false ? "false" : json(v));
+  protected override trimmer(): Trim | undefined {
+    return undefined; // JSON.stringify writes it as it is
   }
-  protected override fits(v: unknown) {
-    return typeof v !== "object" || v === null;
-  }
-  override _fitKind() {
-    return 1 as const;
+  protected override fitter(): Fit | undefined {
+    return undefined; // written as it is, so anything fits
   }
   protected json() {
     return { type: "boolean" };
@@ -438,23 +546,26 @@ export class BooleanSchema extends Schema<boolean> {
 }
 
 export class DateSchema extends Schema<Date> {
-  protected check(value: unknown, path: string, _coerce: boolean, issues: Issue[]) {
-    if (value instanceof Date && Number.isFinite(value.getTime())) return new Date(value.getTime());
-    if (typeof value === "string" && FORMATS["date-time"].test(value)) {
-      const date = new Date(value);
-      const [year, month, day] = value.slice(0, 10).split("-").map(Number);
-      const calendar = new Date(0);
-      calendar.setUTCFullYear(year!, month! - 1, day!);
-      if (Number.isFinite(date.getTime()) && calendar.getUTCMonth() === month! - 1 && calendar.getUTCDate() === day) return date;
-    }
-    issues.push({ path, message: "expected a valid ISO date-time or Date" });
-    return FAIL;
+  protected stamp(): Check<Date> {
+    const iso = FORMATS["date-time"];
+    return (value, path, _coerce, issues) => {
+      if (value instanceof Date && Number.isFinite(value.getTime())) return new Date(value.getTime());
+      if (typeof value === "string" && iso.test(value)) {
+        const date = new Date(value);
+        const [year, month, day] = value.slice(0, 10).split("-").map(Number);
+        const calendar = new Date(0);
+        calendar.setUTCFullYear(year!, month! - 1, day!);
+        if (Number.isFinite(date.getTime()) && calendar.getUTCMonth() === month! - 1 && calendar.getUTCDate() === day) return date;
+      }
+      issues.push({ path, message: "expected a valid ISO date-time or Date" });
+      return FAIL;
+    };
   }
-  protected override serialize() {
-    return (v: unknown) => (v instanceof Date ? `"${v.toISOString()}"` : json(v));
+  protected override trimmer(): Trim | undefined {
+    return undefined; // JSON.stringify writes it as it is
   }
-  protected override fits(v: unknown) {
-    return typeof v !== "object" || v === null || v instanceof Date;
+  protected override fitter(): Fit | undefined {
+    return undefined; // written as it is, so anything fits
   }
   protected json() { return { type: "string", format: "date-time" }; }
 }
@@ -465,22 +576,26 @@ export class EnumSchema<const V extends string | number | boolean> extends Schem
     super();
     this.values = values;
   }
-  protected check(v: unknown, path: string, coerce: boolean, issues: Issue[]) {
-    const hit = this.values.find((x) => x === v || (coerce && typeof v === "string" && String(x) === v));
-    if (hit === undefined) {
-      issues.push({ path, message: `must be one of ${this.values.map((x) => JSON.stringify(x)).join(", ")}` });
+  protected stamp(): Check<V> {
+    // a set for the values as they are, and the first value for each spelling, for text that is coerced
+    const values = new Set<unknown>(this.values);
+    const spelled = new Map<string, V>();
+    for (const x of this.values) if (!spelled.has(String(x))) spelled.set(String(x), x);
+    const message = `must be one of ${this.values.map((x) => JSON.stringify(x)).join(", ")}`;
+    return (v, path, coerce, issues) => {
+      if (coerce && typeof v === "string") {
+        const hit = spelled.get(v);
+        if (hit !== undefined) return hit;
+      } else if (values.has(v)) return v as V;
+      issues.push({ path, message });
       return FAIL;
-    }
-    return hit;
+    };
   }
-  protected override serialize() {
-    return json;
+  protected override trimmer(): Trim | undefined {
+    return undefined; // JSON.stringify writes it as it is
   }
-  protected override fits(v: unknown) {
-    return typeof v !== "object" || v === null;
-  }
-  override _fitKind() {
-    return 1 as const;
+  protected override fitter(): Fit | undefined {
+    return undefined; // written as it is, so anything fits
   }
   protected json() {
     return this.values.length === 1 ? { const: this.values[0] } : { enum: [...this.values] };
@@ -488,17 +603,14 @@ export class EnumSchema<const V extends string | number | boolean> extends Schem
 }
 
 export class AnySchema<T = unknown> extends Schema<T> {
-  protected check(v: unknown) {
-    return v as T;
+  protected stamp(): Check<T> {
+    return (v) => v as T;
   }
-  protected override serialize() {
-    return json;
+  protected override trimmer(): Trim | undefined {
+    return undefined; // JSON.stringify writes it as it is
   }
-  protected override fits() {
-    return true; // anything goes, by definition
-  }
-  override _fitKind() {
-    return 0 as const;
+  protected override fitter(): Fit | undefined {
+    return undefined; // written as it is, so anything fits
   }
   protected json() {
     return {};
@@ -517,48 +629,57 @@ export class ArraySchema<S extends Schema<any>> extends Schema<Infer<S>[]> {
   min(n: number) { const c = this.clone(); c.rules = { ...this.rules, min: n }; return c; }
   max(n: number) { const c = this.clone(); c.rules = { ...this.rules, max: n }; return c; }
 
-  protected check(v: unknown, path: string, coerce: boolean, issues: Issue[]) {
-    // ?tag=a reads as "a", ?tag=a&tag=b as ["a","b"]: both are a list here.
-    const list = coerce && !Array.isArray(v) ? [v] : v;
-    if (!Array.isArray(list)) {
-      issues.push({ path, message: `expected an array, got ${typeOf(v)}` });
-      return FAIL;
-    }
+  protected stamp(): Check<Infer<S>[]> {
+    const { item } = this;
     const { min, max } = this.rules;
-    if (min !== undefined && list.length < min) issues.push({ path, message: `must have at least ${min} items` });
-    if (max !== undefined && list.length > max) issues.push({ path, message: `must have at most ${max} items` });
-    const out: Infer<S>[] = [];
-    for (let i = 0; i < list.length; i++) {
-      if (!(i in list)) continue; // a hole, skipped as forEach skips it
-      const start = issues.length;
-      const r = this.item._run(list[i], "", coerce, issues);
-      if (issues.length > start) under(issues, start, `${path}[${i}]`);
-      if (r !== FAIL) out.push(r);
-    }
-    return out;
-  }
-
-  protected override serialize() {
-    const item = this.item._exact();
-    return (v: unknown) => {
-      if (!Array.isArray(v)) return json(v);
-      let out = "[";
-      for (let i = 0; i < v.length; i++) out += (i ? "," : "") + (v[i] === undefined ? "null" : item(v[i]));
-      return out + "]";
+    return (v, path, coerce, issues) => {
+      // ?tag=a reads as "a", ?tag=a&tag=b as ["a","b"]: both are a list here.
+      const list = coerce && !Array.isArray(v) ? [v] : v;
+      if (!Array.isArray(list)) {
+        issues.push({ path, message: `expected an array, got ${typeOf(v)}` });
+        return FAIL;
+      }
+      if (min !== undefined && list.length < min) issues.push({ path, message: `must have at least ${min} items` });
+      if (max !== undefined && list.length > max) issues.push({ path, message: `must have at most ${max} items` });
+      const out: Infer<S>[] = [];
+      for (let i = 0; i < list.length; i++) {
+        if (!(i in list)) continue; // a hole, skipped as forEach skips it
+        const start = issues.length;
+        const r = item._run(list[i], "", coerce, issues);
+        if (issues.length > start) under(issues, start, `${path}[${i}]`);
+        if (r !== FAIL) out.push(r);
+      }
+      return out;
     };
   }
 
-  protected override fits(v: unknown) {
-    if (!Array.isArray(v)) return false;
-    const kind = this.item._fitKind();
-    for (let i = 0; i < v.length; i++) {
-      const x = v[i];
-      if (x === undefined) return false;
-      if (kind === 1 ? typeof x === "object" && x !== null : kind === 2 && !this.item._fits(x)) return false;
-    }
-    return true;
-  }
 
+
+  protected override trimmer(): Trim | undefined {
+    const item = this.item._trimmer();
+    if (!item) return undefined; // a list of values JSON writes as they are needs no copy
+    return (v) => {
+      if (!Array.isArray(v)) return v;
+      const out = new Array(v.length);
+      for (let i = 0; i < v.length; i++) {
+        const x = v[i];
+        out[i] = absent(x) ? null : item(x);
+      }
+      return out;
+    };
+  }
+  protected override fitter(): Fit | undefined {
+    const item = this.item._fitter();
+    if (!item) return undefined;
+    return (v) => {
+      if (!Array.isArray(v)) return true; // written as it is either way
+      for (let i = 0; i < v.length; i++) {
+        const x = v[i];
+        if (x !== undefined && !item(x)) return false;
+      }
+      return true;
+    };
+  }
   protected json(ctx?: RefContext) {
     const s: JsonSchema = { type: "array", items: this.item._schema(ctx) };
     if (this.rules.min !== undefined) s.minItems = this.rules.min;
@@ -577,11 +698,6 @@ export type InferShape<S extends Shape> = Simplify<
 export class ObjectSchema<S extends Shape> extends Schema<InferShape<S>> {
   shape: S;
   private unknownKeys: "strip" | "strict" | "keep" = "strip";
-  /** The shape as a list, made once: validation walks it on every request. */
-  private fields?: [string, Schema<any>][];
-  private keyList?: string[];
-  private schemaList?: Schema<any>[];
-  private kindList?: (0 | 1 | 2)[];
   constructor(shape: S) {
     super();
     this.shape = shape;
@@ -605,68 +721,102 @@ export class ObjectSchema<S extends Shape> extends Schema<InferShape<S>> {
     return new ObjectSchema(Object.fromEntries(Object.entries(this.shape).map(([k, s]) => [k, s.optional()]))) as never;
   }
 
-  protected check(v: unknown, path: string, coerce: boolean, issues: Issue[]) {
-    if (typeof v !== "object" || v === null || Array.isArray(v)) {
-      issues.push({ path, message: `expected an object, got ${typeOf(v)}` });
-      return FAIL;
-    }
-    const input = v as Record<string, unknown>;
-    const out: Record<string, unknown> = this.unknownKeys === "keep" ? { ...input } : {};
-    for (const [key, schema] of (this.fields ??= Object.entries(this.shape))) {
-      const start = issues.length;
-      const r = schema._run(input[key], "", coerce, issues);
-      if (issues.length > start) under(issues, start, path ? `${path}.${key}` : key);
-      if (r !== FAIL && r !== undefined) out[key] = r;
-    }
-    if (this.unknownKeys === "strict") {
-      for (const key of Object.keys(input)) {
-        if (!(key in this.shape)) issues.push({ path: path ? `${path}.${key}` : key, message: "is not allowed" });
+  protected stamp(): Check<InferShape<S>> {
+    const { shape, unknownKeys } = this;
+    const keys = Object.keys(shape);
+    const schemas = keys.map((k) => shape[k]!);
+    return (v, path, coerce, issues) => {
+      if (typeof v !== "object" || v === null || Array.isArray(v)) {
+        issues.push({ path, message: `expected an object, got ${typeOf(v)}` });
+        return FAIL;
       }
-    }
-    return out as InferShape<S>;
-  }
-
-  protected override serialize() {
-    if (this.unknownKeys === "keep") return json; // passthrough: everything goes, by definition
-    // the key and its colon, written once; per request only the values are written
-    const fields = Object.entries(this.shape).map(([key, schema]) => ({ key, head: `${JSON.stringify(key)}:`, write: schema._exact() }));
-    return (v: unknown) => {
-      if (typeof v !== "object" || v === null || Array.isArray(v)) return json(v);
-      const o = v as Record<string, unknown>;
-      let out = "{";
-      let first = true;
-      for (const f of fields) {
-        const x = o[f.key];
-        if (x === undefined) continue;
-        out += (first ? "" : ",") + f.head + f.write(x);
-        first = false;
+      const input = v as Record<string, unknown>;
+      const out: Record<string, unknown> = unknownKeys === "keep" ? { ...input } : {};
+      for (let i = 0; i < keys.length; i++) {
+        const key = keys[i]!;
+        const start = issues.length;
+        const r = schemas[i]!._run(input[key], "", coerce, issues);
+        if (issues.length > start) under(issues, start, path ? `${path}.${key}` : key);
+        if (r !== FAIL && r !== undefined) out[key] = r;
       }
-      return out + "}";
+      if (unknownKeys === "strict") {
+        for (const key of Object.keys(input)) {
+          if (!(key in shape)) issues.push({ path: path ? `${path}.${key}` : key, message: "is not allowed" });
+        }
+      }
+      return out as InferShape<S>;
     };
   }
 
-  protected override fits(v: unknown) {
-    if (this.unknownKeys === "keep") return true;
-    if (typeof v !== "object" || v === null || Array.isArray(v)) return false;
-    const o = v as Record<string, unknown>;
-    if (typeof o.toJSON === "function") return false; // JSON.stringify would write what toJSON makes
-    const keys = (this.keyList ??= Object.keys(this.shape));
-    const schemas = (this.schemaList ??= Object.values(this.shape));
-    const kinds = (this.kindList ??= schemas.map((s) => s._fitKind()));
-    const count = Object.keys(o).length; // fast for objects of one shape: V8 caches their keys
-    if (count > keys.length) return false;
-    let present = 0;
-    for (let i = 0; i < keys.length; i++) {
-      const x = o[keys[i]];
-      if (x === undefined) continue;
-      const kind = kinds[i];
-      // a primitive field is tested here, without a call: most fields are
-      if (kind === 1 ? typeof x === "object" && x !== null : kind === 2 && !schemas[i]._fits(x)) return false;
-      present++;
-    }
-    return count === present;
-  }
 
+
+  protected override trimmer(): Trim | undefined {
+    if (this.unknownKeys === "keep") return undefined; // passthrough: everything goes, by definition
+    const keys = Object.keys(this.shape);
+    const trims = keys.map((k) => this.shape[k]!._trimmer());
+    if (keys.includes("__proto__")) {
+      // the rare shape with a key named __proto__ takes the careful way
+      return (v) => {
+        if (typeof v !== "object" || v === null || Array.isArray(v)) return v;
+        const o = v as Record<string, unknown>;
+        const out: Record<string, unknown> = {};
+        for (let i = 0; i < keys.length; i++) {
+          const x = o[keys[i]!];
+          if (!absent(x)) put(out, keys[i]!, trims[i] ? trims[i]!(x) : x);
+        }
+        return out;
+      };
+    }
+    // every copy starts from this, so it has its final shape at once and only values are set;
+    // a key left undefined is left out by JSON.stringify, which is what it should be
+    const template: Record<string, unknown> = Object.fromEntries(keys.map((k) => [k, undefined]));
+    return (v) => {
+      if (typeof v !== "object" || v === null || Array.isArray(v)) return v;
+      const o = v as Record<string, unknown>;
+      const out = { ...template };
+      for (let i = 0; i < keys.length; i++) {
+        const key = keys[i]!;
+        const x = o[key]; // read once: a getter runs once
+        // left out as JSON.stringify leaves it out: nothing there, a function, a symbol
+        if (x === undefined) continue;
+        const kind = typeof x;
+        if (kind === "function" || kind === "symbol") continue;
+        const t = trims[i];
+        out[key] = t === undefined ? x : t(x);
+      }
+      return out;
+    };
+  }
+  protected override fitter(): Fit | undefined {
+    if (this.unknownKeys === "keep") return undefined;
+    const keys = Object.keys(this.shape);
+    const declared = new Set(keys);
+    const fits = keys.map((k) => this.shape[k]!._fitter());
+    return (v) => {
+      if (typeof v !== "object" || v === null || Array.isArray(v)) return true; // written as it is either way
+      const o = v as Record<string, unknown>;
+      // a class or a borrowed prototype can lend a field the object does not own, and
+      // toJSON writes what it likes: both are trimmed instead
+      if (!plainObject(o) || typeof o.toJSON === "function") return false;
+      // every key JSON.stringify would write has to be one the contract lists...
+      const own = Object.keys(o); // fast for objects of one shape: V8 caches their keys
+      if (own.length > keys.length) return false;
+      if (!allDeclared(own, keys, declared)) return false;
+      const count = own.length;
+      // ...and every declared value has to be one of them, written as its schema writes it
+      let present = 0;
+      for (let i = 0; i < keys.length; i++) {
+        const x = o[keys[i]!];
+        if (x === undefined) continue;
+        const kind = typeof x;
+        if (kind === "function" || kind === "symbol") return false;
+        const fit = fits[i];
+        if (fit !== undefined && !fit(x)) return false;
+        present++;
+      }
+      return count === present;
+    };
+  }
   protected json(ctx?: RefContext) {
     const properties: Record<string, JsonSchema> = {};
     const required: string[] = [];
@@ -687,38 +837,40 @@ export class RecordSchema<S extends Schema<any>> extends Schema<Record<string, I
     super();
     this.value = value;
   }
-  protected check(v: unknown, path: string, coerce: boolean, issues: Issue[]) {
-    if (typeof v !== "object" || v === null || Array.isArray(v)) {
-      issues.push({ path, message: `expected an object, got ${typeOf(v)}` });
-      return FAIL;
-    }
-    const out: Record<string, Infer<S>> = {};
-    for (const [k, x] of Object.entries(v)) {
-      const start = issues.length;
-      const r = this.value._run(x, "", coerce, issues);
-      if (issues.length > start) under(issues, start, path ? `${path}.${k}` : k);
-      if (r !== FAIL) out[k] = r;
-    }
-    return out;
-  }
-  protected override serialize() {
-    const write = this.value._exact();
-    return (v: unknown) => {
-      if (typeof v !== "object" || v === null || Array.isArray(v)) return json(v);
-      let out = "{";
-      let first = true;
-      for (const [k, x] of Object.entries(v)) {
-        if (x === undefined) continue;
-        out += (first ? "" : ",") + JSON.stringify(k) + ":" + write(x);
-        first = false;
+  protected stamp(): Check<Record<string, Infer<S>>> {
+    const { value } = this;
+    return (v, path, coerce, issues) => {
+      if (typeof v !== "object" || v === null || Array.isArray(v)) {
+        issues.push({ path, message: `expected an object, got ${typeOf(v)}` });
+        return FAIL;
       }
-      return out + "}";
+      const out: Record<string, Infer<S>> = {};
+      for (const [k, x] of Object.entries(v)) {
+        const start = issues.length;
+        const r = value._run(x, "", coerce, issues);
+        if (issues.length > start) under(issues, start, path ? `${path}.${k}` : k);
+        if (r !== FAIL) out[k] = r;
+      }
+      return out;
     };
   }
-  protected override fits(v: unknown) {
-    if (typeof v !== "object" || v === null || Array.isArray(v) || typeof (v as { toJSON?: unknown }).toJSON === "function") return false;
-    for (const x of Object.values(v)) if (x === undefined || !this.value._fits(x)) return false;
-    return true;
+  protected override trimmer(): Trim | undefined {
+    const value = this.value._trimmer();
+    return (v) => {
+      if (typeof v !== "object" || v === null || Array.isArray(v)) return v;
+      const out: Record<string, unknown> = {};
+      for (const [k, x] of Object.entries(v)) if (!absent(x)) put(out, k, value ? value(x) : x);
+      return out;
+    };
+  }
+  protected override fitter(): Fit | undefined {
+    const value = this.value._fitter();
+    return (v) => {
+      if (typeof v !== "object" || v === null || Array.isArray(v)) return true;
+      if (!plainObject(v) || typeof (v as { toJSON?: unknown }).toJSON === "function") return false;
+      for (const x of Object.values(v)) if (absent(x) || (value !== undefined && !value(x))) return false;
+      return true;
+    };
   }
   protected json(ctx?: RefContext) {
     return { type: "object", additionalProperties: this.value._schema(ctx) };
@@ -731,14 +883,17 @@ export class UnionSchema<S extends Schema<any>[]> extends Schema<Infer<S[number]
     super();
     this.options = options;
   }
-  protected check(v: unknown, path: string, coerce: boolean, issues: Issue[]) {
-    for (const option of this.options) {
-      const local: Issue[] = [];
-      const r = option._run(v, path, coerce, local);
-      if (r !== FAIL && local.length === 0) return r;
-    }
-    issues.push({ path, message: "matches none of the allowed shapes" });
-    return FAIL;
+  protected stamp(): Check<Infer<S[number]>> {
+    const { options } = this;
+    return (v, path, coerce, issues) => {
+      for (const option of options) {
+        const local: Issue[] = [];
+        const r = option._run(v, path, coerce, local);
+        if (r !== FAIL && local.length === 0) return r;
+      }
+      issues.push({ path, message: "matches none of the allowed shapes" });
+      return FAIL;
+    };
   }
   protected json(ctx?: RefContext) {
     return { anyOf: this.options.map((o) => o._schema(ctx)) };
@@ -750,16 +905,25 @@ export class UnionSchema<S extends Schema<any>[]> extends Schema<Infer<S[number]
 export class LazySchema<T> extends Schema<T> {
   private resolve: () => Schema<T>;
   constructor(resolve: () => Schema<T>) { super(); this.resolve = resolve; }
-  protected check(value: unknown, path: string, coerce: boolean, issues: Issue[]) {
-    return this.resolve()._run(value, path, coerce, issues);
+  protected stamp(): Check<T> {
+    // resolved on first use, so a shape that contains itself can be defined before it exists
+    let target: Schema<T> | undefined;
+    return (value, path, coerce, issues) => (target ??= this.resolve())._run(value, path, coerce, issues);
   }
-  protected override serialize() {
-    // resolved on first use, so a recursive shape does not build itself forever
-    let write: ((v: unknown) => string) | undefined;
-    return (v: unknown) => (write ??= this.resolve()._exact())(v);
+  protected override trimmer(): Trim | undefined {
+    // resolved on first use, so a shape that contains itself does not build itself forever
+    let target: Trim | undefined | null = null;
+    return (v) => {
+      if (target === null) target = this.resolve()._trimmer();
+      return target ? target(v) : v;
+    };
   }
-  protected override fits(v: unknown) {
-    return this.resolve()._fits(v);
+  protected override fitter(): Fit | undefined {
+    let target: Fit | undefined | null = null;
+    return (v) => {
+      if (target === null) target = this.resolve()._fitter();
+      return target ? target(v) : true;
+    };
   }
   protected json(ctx?: RefContext) {
     const target = this.resolve();
@@ -783,30 +947,41 @@ export class DiscriminatedSchema<K extends string, S extends Record<string, Obje
       }
     }
   }
-  protected check(value: unknown, path: string, coerce: boolean, issues: Issue[]) {
-    if (typeof value !== "object" || value === null || Array.isArray(value)) {
-      issues.push({ path, message: "expected an object" });
-      return FAIL;
-    }
-    const tag = (value as Record<string, unknown>)[this.key];
-    if (typeof tag !== "string" || !Object.hasOwn(this.options, tag)) {
-      issues.push({ path: path ? `${path}.${this.key}` : this.key, message: `must be one of ${Object.keys(this.options).map(x => JSON.stringify(x)).join(", ")}` });
-      return FAIL;
-    }
-    return this.options[tag]!._run(value, path, coerce, issues) as this["_type"] | Fail;
-  }
-  protected override serialize() {
-    // the tag says which option it is, so that option's writer is used
-    const writers = new Map(Object.entries(this.options).map(([tag, option]) => [tag, option._exact()]));
-    return (v: unknown) => {
-      const tag = typeof v === "object" && v !== null ? (v as Record<string, unknown>)[this.key] : undefined;
-      const write = typeof tag === "string" ? writers.get(tag) : undefined;
-      return write ? write(v) : json(v);
+  protected stamp(): Check<this["_type"]> {
+    const { key, options } = this;
+    const message = `must be one of ${Object.keys(options).map((x) => JSON.stringify(x)).join(", ")}`;
+    return (value, path, coerce, issues) => {
+      if (typeof value !== "object" || value === null || Array.isArray(value)) {
+        issues.push({ path, message: "expected an object" });
+        return FAIL;
+      }
+      const tag = (value as Record<string, unknown>)[key];
+      if (typeof tag !== "string" || !Object.hasOwn(options, tag)) {
+        issues.push({ path: path ? `${path}.${key}` : key, message });
+        return FAIL;
+      }
+      return options[tag]!._run(value, path, coerce, issues) as this["_type"] | Fail;
     };
   }
-  protected override fits(v: unknown) {
-    const tag = typeof v === "object" && v !== null ? (v as Record<string, unknown>)[this.key] : undefined;
-    return typeof tag === "string" && Object.hasOwn(this.options, tag) && this.options[tag]!._fits(v);
+  protected override trimmer(): Trim | undefined {
+    // the tag says which option it is, so that option's trim is used
+    const { key } = this;
+    const trims = new Map(Object.entries(this.options).map(([tag, option]) => [tag, option._trimmer()]));
+    return (v) => {
+      const tag = typeof v === "object" && v !== null ? (v as Record<string, unknown>)[key] : undefined;
+      const t = typeof tag === "string" ? trims.get(tag) : undefined;
+      return t ? t(v) : v;
+    };
+  }
+  protected override fitter(): Fit | undefined {
+    const { key } = this;
+    const fits = new Map(Object.entries(this.options).map(([tag, option]) => [tag, option._fitter()]));
+    return (v) => {
+      const tag = typeof v === "object" && v !== null ? (v as Record<string, unknown>)[key] : undefined;
+      if (typeof tag !== "string" || !fits.has(tag)) return true; // an unknown tag is written as it is either way
+      const fit = fits.get(tag);
+      return fit ? fit(v) : true;
+    };
   }
   protected json(ctx?: RefContext) {
     const mapping: Record<string, string> = {};
@@ -835,17 +1010,19 @@ export class FileSchema extends Schema<UploadedFile> {
   /** Media types that may come in: `"image/png"`, or `"image/*"` for a whole family. */
   accept(...types: string[]) { const c = this.clone(); c.rules = { ...this.rules, accept: types }; return c; }
 
-  protected check(v: unknown, path: string, _coerce: boolean, issues: Issue[]) {
-    if (!isUploaded(v)) {
-      issues.push({ path, message: "expected a file, sent as multipart/form-data" });
-      return FAIL;
-    }
+  protected stamp(): Check<UploadedFile> {
     const { max, accept } = this.rules;
-    if (max !== undefined && v.size > max) issues.push({ path, message: `is ${v.size} bytes, at most ${max} are allowed` });
-    if (accept && !accept.some((a) => (a.endsWith("/*") ? v.type.startsWith(a.slice(0, -1)) : v.type === a))) {
-      issues.push({ path, message: `has to be ${accept.join(" or ")}, got ${v.type || "no type"}` });
-    }
-    return v;
+    return (v, path, _coerce, issues) => {
+      if (!isUploaded(v)) {
+        issues.push({ path, message: "expected a file, sent as multipart/form-data" });
+        return FAIL;
+      }
+      if (max !== undefined && v.size > max) issues.push({ path, message: `is ${v.size} bytes, at most ${max} are allowed` });
+      if (accept && !accept.some((a) => (a.endsWith("/*") ? v.type.startsWith(a.slice(0, -1)) : v.type === a))) {
+        issues.push({ path, message: `has to be ${accept.join(" or ")}, got ${v.type || "no type"}` });
+      }
+      return v;
+    };
   }
 
   protected json() {
@@ -891,16 +1068,19 @@ export abstract class RawBodySchema<T> extends Schema<T> {
 
 /** The whole body as bytes, read before the handler runs. */
 export class BinarySchema extends RawBodySchema<Buffer> {
-  protected check(v: unknown, path: string, _coerce: boolean, issues: Issue[]) {
-    if (!Buffer.isBuffer(v)) {
-      issues.push({ path, message: `expected the body as bytes, got ${typeOf(v)}` });
-      return FAIL;
-    }
-    if (v.length === 0 && !this.meta.optional) {
-      issues.push({ path, message: "is empty" });
-      return FAIL;
-    }
-    return v;
+  protected stamp(): Check<Buffer> {
+    const optional = this.meta.optional;
+    return (v, path, _coerce, issues) => {
+      if (!Buffer.isBuffer(v)) {
+        issues.push({ path, message: `expected the body as bytes, got ${typeOf(v)}` });
+        return FAIL;
+      }
+      if (v.length === 0 && !optional) {
+        issues.push({ path, message: "is empty" });
+        return FAIL;
+      }
+      return v;
+    };
   }
 }
 
@@ -910,12 +1090,14 @@ export class BinarySchema extends RawBodySchema<Buffer> {
  * throws a 413 problem. Without `max` there is no limit.
  */
 export class StreamSchema extends RawBodySchema<AsyncIterable<Buffer>> {
-  protected check(v: unknown, path: string, _coerce: boolean, issues: Issue[]) {
-    if (typeof v !== "object" || v === null || typeof (v as AsyncIterable<Buffer>)[Symbol.asyncIterator] !== "function") {
-      issues.push({ path, message: `expected the body as a stream, got ${typeOf(v)}` });
-      return FAIL;
-    }
-    return v as AsyncIterable<Buffer>;
+  protected stamp(): Check<AsyncIterable<Buffer>> {
+    return (v, path, _coerce, issues) => {
+      if (typeof v !== "object" || v === null || typeof (v as AsyncIterable<Buffer>)[Symbol.asyncIterator] !== "function") {
+        issues.push({ path, message: `expected the body as a stream, got ${typeOf(v)}` });
+        return FAIL;
+      }
+      return v as AsyncIterable<Buffer>;
+    };
   }
 }
 
@@ -931,17 +1113,20 @@ export class EventsSchema<E extends Record<string, Schema<any>>> extends Schema<
     super();
     this.events = events;
   }
-  protected check(v: unknown, path: string, coerce: boolean, issues: Issue[]) {
-    const e = v as { event?: unknown; data?: unknown; id?: unknown };
-    const name = typeof e?.event === "string" ? e.event : "message";
-    const schema = this.events[name];
-    if (!schema) {
-      issues.push({ path, message: `the event ${JSON.stringify(name)} is not in the contract` });
-      return FAIL;
-    }
-    const data = schema._run(e?.data, path ? `${path}.data` : "data", coerce, issues);
-    if (data === FAIL) return FAIL;
-    return { ...e, event: name, data } as ServerEvent<E>;
+  protected stamp(): Check<ServerEvent<E>> {
+    const { events } = this;
+    return (v, path, coerce, issues) => {
+      const e = v as { event?: unknown; data?: unknown; id?: unknown };
+      const name = typeof e?.event === "string" ? e.event : "message";
+      const schema = Object.hasOwn(events, name) ? events[name] : undefined;
+      if (!schema) {
+        issues.push({ path, message: `the event ${JSON.stringify(name)} is not in the contract` });
+        return FAIL;
+      }
+      const data = schema._run(e?.data, path ? `${path}.data` : "data", coerce, issues);
+      if (data === FAIL) return FAIL;
+      return { ...e, event: name, data } as ServerEvent<E>;
+    };
   }
   protected json(ctx?: RefContext) {
     return {

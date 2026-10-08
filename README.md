@@ -172,6 +172,48 @@ A handler returns a value, or `reply(status, body, headers)` for anything
 else. `ctx.reply` is typed to the statuses in the contract, so `reply(418)`
 on a route that never promised a teapot does not compile.
 
+### More than JSON
+
+The context answers in other ways too. Every one of these can be taken apart like the
+rest, `({ html, params }) => …`, and costs nothing on a request that does not use it.
+
+```ts
+import { html } from "@vxnsin/inkan";
+
+app
+  .get("/hello", ({ text }) => text("hello"))
+  .get("/tea/:name", ({ params }) => html`<h1>${params.name}</h1>`) // every value escaped
+  .get("/old", ({ redirect }) => redirect("/new", 301))
+  .get("/teas/:id", spec, ({ params, notFound }) => findTea(params.id) ?? notFound(`No tea ${params.id}`))
+  .post("/login", ({ setCookie }) => {
+    setCookie("sid", session.id, { maxAge: 60 * 60 * 24 }); // HttpOnly and SameSite=Lax by default
+    return { ok: true };
+  })
+  .get("/me", ({ cookies }) => sessions.get(cookies.sid));
+```
+
+| on the context | answers with |
+| --- | --- |
+| `text(body, status?)` | text/plain |
+| `html(markup, status?)` | text/html; or return `` html`…` `` as it is |
+| `redirect(to, status?)` | 302, or 301, 303, 307, 308, with the location |
+| `notFound(detail?)` | the same 404 problem an unknown route gets, through `onProblem` |
+| `render(content, props?)` | HTML in the layout of the route's scope |
+| `cookies`, `setCookie(name, value, options?)`, `clearCookie(name)` | the request's cookies; one Set-Cookie per cookie set |
+
+The `html` tag escapes every `${…}` put into it, so a name a user typed cannot become a
+script on the page. Lists are joined, and `null`, `undefined` and `false` write nothing, so
+`${items.map((i) => html`<li>${i}</li>`)}` and `${admin && html`…`}` work. `raw(markup)`
+lets markup through unescaped, for markup you made yourself.
+
+A layout is how the pages of a scope look around what `render` hands in. A plugin can have
+its own, and inside one the closest wins:
+
+```ts
+app.layout((content, { title }) => html`<!doctype html><title>${title}</title><main>${content}</main>`);
+app.get("/", ({ render }) => render(html`<p>Tea, checked.</p>`, { title: "Home" }));
+```
+
 ## Schemas
 
 ```ts
@@ -532,9 +574,9 @@ path it took before there were hooks: they cost nothing until you use them.
 
 ## Sealed: contracts as plain code
 
-inkan checks and writes every route through the same few functions. That keeps it
-small, but the engine cannot tune them for any one route. `inkan seal` stamps every
-contract into code of its own, ahead of time, into a file you can read and commit:
+inkan checks every route through functions it makes once per schema. `inkan seal`
+goes one step further and stamps every contract's check into code of its own, ahead of
+time, into a file you can read and commit:
 
 ```sh
 npx inkan seal src/app.ts        # writes src/inkan.seal.js
@@ -545,10 +587,10 @@ import seal from "./inkan.seal.js";
 const app = inkan({ seal });
 ```
 
-Big bodies and big answers get the most out of it: checking a body of 50 objects
-and writing an answer of 100 both take about half the time. A sealed contract does
-exactly what the schema does, the same values and the same messages, and keeps
-back every key the contract does not list.
+Big bodies get the most out of it: a body of 50 objects is checked faster than by
+any server in the bench. A sealed contract checks exactly as the schema does, the same
+values and the same messages. Writing the answer stays the schema's own, so sealed or
+not, an answer goes out the same way and keeps back every key the contract does not list.
 
 No `eval`, no `new Function`: the code is in the file, and the file is what runs.
 At start inkan writes the code for every contract again and compares hashes, so a
@@ -569,32 +611,68 @@ after a warm-up, the median of 3 rounds:
 
 | | score | hello, 100 connections | params + query | body of 50 | answer of 100 | 400 routes | 404 | 400 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| **inkan on uWebSockets.js** | **133.5** | **143 %** | **143 %** | **101 %** | 99 % | **145 %** | **163 %** | **121 %** |
 | node:http, by hand | 100 | 100 % | 100 % | 100 % | 100 % | 100 % | 100 % | 100 % |
-| Fastify | 88.1 | 95 % | 93 % | 91 % | 79 % | 95 % | 100 % | 59 % |
-| **inkan** | **85.4** | 89 % | 87 % | 79 % | 85 % | 91 % | 106 % | 69 % |
-| Hono | 85.0 | 93 % | 79 % | 90 % | **103 %** | 76 % | 86 % | 81 % |
-| Express | 40.6 | 41 % | 44 % | 56 % | 68 % | 19 % | 20 % | 43 % |
+| **inkan** | **89.1** | **97 %** | 91 % | 81 % | 77 % | 91 % | **95 %** | 72 % |
+| Fastify | 88.6 | 93 % | **93 %** | 90 % | 73 % | **94 %** | 91 % | 63 % |
+| inkan, sealed | 86.6 | 88 % | 87 % | **99 %** | 75 % | 88 % | 90 % | 71 % |
+| Hono | 84.9 | 96 % | 78 % | 88 % | **96 %** | 75 % | 80 % | **82 %** |
+| Express | 42.4 | 45 % | 47 % | 61 % | 66 % | 19 % | 19 % | 45 % |
 
 The score is the geometric mean over all twelve scenarios against bare `node:http`,
 so no single one can carry or sink a server. inkan does a little more per request
 than the others: it gives every request an id and keeps back every key an answer's
 contract does not list. Read the numbers as a range, not a rank: a run on another
-day moves each server by a few points, and inkan and Hono swap places within that.
-With `inkan seal`, a body of 50 objects is checked in about half the time.
+day moves each server by a few points, and inkan and Fastify are level within that.
+With `inkan seal`, a body of 50 objects is checked faster than by any of them. How
+0.6.0 got here, phase by phase, is in [`bench/reports/0.6.0.md`](bench/reports/0.6.0.md).
 
 Run it yourself: `cd bench && npm install && node run.mjs`, or the `bench` workflow
 on GitHub, which also measures what one request costs the server in CPU time.
 
 ## Running it
 
-`app.listen()` takes the port from its argument, then `$PORT`, then 3000. So it
-runs under [warden](https://github.com/vxnsin/warden), a container or a PaaS
-without changes:
+`app.listen()` takes the port from its argument, then `$PORT`, then 3000, so nothing about
+where it runs is written into the app. On a server, plainly:
 
 ```sh
-warden run -- node src/app.ts
+PORT=3000 NODE_ENV=production node src/app.ts
 ```
+
+To keep it running and have it start with the machine, a systemd unit:
+
+```ini
+# /etc/systemd/system/api.service
+[Unit]
+Description=api
+After=network.target
+
+[Service]
+WorkingDirectory=/srv/api
+ExecStart=/usr/bin/node src/app.ts
+Environment=PORT=3000 NODE_ENV=production
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+```
+
+`systemctl enable --now api` starts it, and `systemctl stop api` lets the open requests
+finish. With pm2 it is `pm2 start node --name api -- src/app.ts`, then `pm2 save`. In a
+container:
+
+```dockerfile
+FROM node:24-slim
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --omit=dev
+COPY . .
+ENV NODE_ENV=production PORT=3000
+EXPOSE 3000
+CMD ["node", "src/app.ts"]
+```
+
+A PaaS or [warden](https://github.com/vxnsin/warden) (`warden run -- node src/app.ts`) works
+the same way: they set `$PORT` and stop it with SIGTERM, and that is all inkan needs.
 
 On SIGINT or SIGTERM it lets open requests finish (up to ten seconds) before it
 exits. `app.listener` is a plain `(req, res)` function for your own
@@ -640,10 +718,12 @@ inkan({
 });
 ```
 
-Every request has an id: the one in `x-request-id` when it looks safe, a fresh UUID
+Every request has an id: the one in `x-request-id` when it looks safe, a fresh one
 otherwise. It is `ctx.id` in the handler, goes back out as a header, sits in every log
 line and in every problem document as `requestId`, so a bug report points at the right
-line in the logs. `ctx.ip` is the client's address, from the socket or the platform.
+line in the logs. A fresh id is a random prefix made when the process starts, the worker
+in a cluster, and a counter: `0k3f9a2w3-1c8`. Unique per process and per worker, and cheap,
+but not a UUID and not unguessable; nothing should rest on keeping it secret. `ctx.ip` is the client's address, from the socket or the platform.
 
 ### The frontend next to it
 

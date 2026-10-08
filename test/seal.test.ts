@@ -73,17 +73,11 @@ test("a sealed contract checks exactly as its schema does, with and without coer
   }
 });
 
-test("a sealed contract writes exactly what its schema writes", async () => {
+test("a seal stamps the check only: writing stays the schema's own, sealed or not", async () => {
   const app = inkan();
   schemas.forEach((s, i) => app.get(`/s${i}`, { response: { 200: s } }, () => undefined));
   const seal = await sealOf(app);
-  for (const schema of schemas) {
-    const entry = seal.entries[compile(schema).hash]!;
-    for (const input of inputs) {
-      if (input === undefined) continue;
-      assert.equal(entry.write(input), schema._serializer()(input), JSON.stringify(input));
-    }
-  }
+  for (const schema of schemas) assert.deepEqual(Object.keys(seal.entries[compile(schema).hash]!), ["parse"]);
 });
 
 test("an app runs on its seal, and a contract that changed since runs unsealed", async () => {

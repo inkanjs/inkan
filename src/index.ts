@@ -11,6 +11,10 @@ export type { Infer, Issue, JsonSchema, SafeResult, ServerEvent, UploadedFile } 
 export { sse, fileExample, EventStream } from "./core/stream.ts";
 export type { SseEvent } from "./core/stream.ts";
 export { problem, HttpProblem } from "./core/problem.ts";
+export { html, raw, SafeHtml } from "./core/helpers.ts";
+export type { CookieOptions, CsvOptions, RedirectStatus } from "./core/helpers.ts";
+export type { CacheRule } from "./core/cache.ts";
+export type { Layout } from "./core/context.ts";
 export type { ProblemBody } from "./core/problem.ts";
 export { buildOpenAPI } from "./openapi/openapi.ts";
 export { diffOpenAPI, formatDiff } from "./openapi/diff.ts";

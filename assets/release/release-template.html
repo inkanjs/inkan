@@ -47,18 +47,18 @@
 </head>
 <body>
   <div class="left">
-    <div class="badge">v0.5.0</div>
-    <h1 style="font-size:50px">inkan takes <em>files</em>,<br>serves your <em>frontend</em><br>and <em>packs</em> it.</h1>
+    <div class="badge">v0.6.0</div>
+    <h1 style="font-size:50px">inkan got <em>faster</em><br>and speaks <em>more</em><br>than <em>JSON</em>.</h1>
     <ul>
-      <li><span><b>t.binary()</b>: a file as the body itself</span></li>
-      <li><span><b>t.stream()</b>: uploads larger than memory</span></li>
-      <li><span>a <b>body limit</b> per route</span></li>
-      <li><span><b>serveStatic</b>: your build, SPA and all</span></li>
-      <li><span><b>compress()</b>: brotli or gzip, streams too</span></li>
-      <li><span><b>ctx.ip</b>, and rate limits that use it</span></li>
-      <li><span><b>@inkanjs</b> 0.2.0: next, vite, query, uws</span></li>
+      <li><span><b>5.5 % faster</b>, level with Fastify</span></li>
+      <li><span><b>html``</b>, safe by default, and layouts</span></li>
+      <li><span><b>text</b>, <b>redirect</b>, <b>notFound</b>, <b>cookies</b></span></li>
+      <li><span><b>rows</b> streamed under the contract</span></li>
+      <li><span><b>ctx.csv</b> for a million rows</span></li>
+      <li><span><b>signal</b>, <b>timeout</b> and a route <b>cache</b></span></li>
+      <li><span>five writer bugs fixed, two of them <b>leaks</b></span></li>
     </ul>
-    <div class="install">npm install @vxnsin/inkan @inkanjs/vite</div>
+    <div class="install">npm install @vxnsin/inkan</div>
   </div>
 
   <div class="term">
@@ -68,15 +68,15 @@
     </div>
 <pre>  <span class="r">印</span> <span class="b">inkan</span>  <span class="d">listening on</span> http://localhost:3000
 
-  <span class="d">app.post("/backups",</span>
-  <span class="d">  { body: </span><span class="b">t.stream().max(2 * 1024 ** 3)</span><span class="d"> },</span>
-  <span class="d">  ({ body }) => pipeline(body, toDisk()))</span>
+  <span class="d">app.get("/teas",</span>
+  <span class="d">  { response: { 200: </span><span class="b">t.array(Tea)</span><span class="d"> }, </span><span class="b">timeout: 60_000</span><span class="d"> },</span>
+  <span class="d">  ({ signal }) => db.rows(SQL, { </span><span class="b">signal</span><span class="d"> }))</span>
 
-  <span class="b">POST</span>   /backups              <span class="g">201</span>  <span class="d">1.4 GB, never in memory</span>
-  <span class="b">POST</span>   /backups              <span class="r">413</span>  <span class="d">past its limit</span>
-  <span class="b">GET</span>    /assets/index-B2k9.js <span class="g">200</span>  <span class="d">br · cached a year</span>
-  <span class="b">GET</span>    /wiki/holidays        <span class="g">200</span>  <span class="d">index.html, spa</span>
-  <span class="b">GET</span>    /api/tea              <span class="r">404</span>  <span class="d">a problem, not a page</span></pre>
+  <span class="b">GET</span>    /teas                 <span class="g">200</span>  <span class="d">1.2M rows, as they come</span>
+  <span class="b">GET</span>    /teas   ndjson        <span class="g">200</span>  <span class="d">one line per row</span>
+  <span class="b">GET</span>    /teas.csv             <span class="g">200</span>  <span class="d">formulas defused</span>
+  <span class="b">GET</span>    /stock/7              <span class="g">200</span>  <span class="d">cached, asked once</span>
+  <span class="b">GET</span>    /report               <span class="r">504</span>  <span class="d">query stopped</span></pre>
   </div>
 </body>
 </html>

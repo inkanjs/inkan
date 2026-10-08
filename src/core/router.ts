@@ -23,6 +23,8 @@ export function splitPath(path: string): string[] {
 }
 
 const NONE = { kind: "none" } as const;
+/** The params of a path without any; shared by every such match, so it must not change. */
+export const NO_PARAMS: Record<string, string> = Object.freeze({}) as Record<string, string>;
 
 export class Router<R> {
   private root: Node<R> = node();
@@ -65,7 +67,7 @@ export class Router<R> {
   match(method: string, path: string): Match<R> {
     const encoded = path.includes("%");
     let routes = encoded ? undefined : this.exact.get(path);
-    const params: Record<string, string> = {};
+    let params = NO_PARAMS;
     if (!routes) {
       const names: string[] = [];
       const values: string[] = [];
@@ -75,7 +77,10 @@ export class Router<R> {
         return NONE; // a broken %-escape
       }
       if (!routes) return NONE;
-      for (let i = 0; i < names.length; i++) params[names[i]] = values[i];
+      if (names.length) {
+        params = {};
+        for (let i = 0; i < names.length; i++) params[names[i]] = values[i];
+      }
     }
     const route = routes.get(method) ?? (method === "HEAD" ? routes.get("GET") : undefined);
     if (route) return { kind: "found", route, params };
