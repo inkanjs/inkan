@@ -22,6 +22,11 @@ export type RefContext = { components: Map<string, JsonSchema>; refPrefix?: stri
 
 const FAIL: unique symbol = Symbol("fail");
 type Fail = typeof FAIL;
+/** A schema's trim: the value with only what the schema lists, ready for JSON.stringify. */
+type Trim = (v: unknown) => unknown;
+/** Whether a value may be written as it is. */
+type Fit = (v: unknown) => boolean;
+
 /** @internal What `_into` hands back for a value that breaks its schema. */
 export const INVALID = FAIL;
 
@@ -122,7 +127,10 @@ export abstract class Schema<T = unknown> {
     Object.assign(copy, this);
     copy.meta = { ...this.meta, ...patch };
     copy._ser = undefined; // a copy with other rules writes its own way
-    copy._exactSer = undefined;
+    copy._trimmed = false;
+    copy._trimFn = undefined;
+    copy._fitted = false;
+    copy._fitFn = undefined;
     copy._check = undefined; // and checks its own way, from its own rules
     copy._sealedParse = undefined; // a seal belongs to one contract
     copy._sealedBy = undefined;
@@ -210,13 +218,12 @@ export abstract class Schema<T = unknown> {
   _sealedBy?: object;
 
   /**
-   * @internal Hands checking and writing to code stamped from this very contract by
+   * @internal Hands checking to code stamped from this very contract by
    * `inkan seal`. Only called once the stamped code is known to match (see seal/apply.ts).
    */
-  _seal(by: object, parse: (v: unknown, coerce: boolean) => SafeResult<unknown>, write: (v: unknown) => string) {
+  _seal(by: object, parse: (v: unknown, coerce: boolean) => SafeResult<unknown>) {
     this._sealedBy = by;
-    this._sealedParse = parse;
-    this._ser = write;
+    this._sealedParse = parse; // writing stays this schema's own, so sealed or not it writes the same
   }
 
   /**
@@ -227,40 +234,99 @@ export abstract class Schema<T = unknown> {
    * or a symbol is left out, as JSON.stringify leaves it out.
    */
   _serializer(): (v: unknown) => string {
-    return (this._ser ??= this._exact());
-  }
-
-  private _exactSer?: (v: unknown) => string;
-  /** @internal The writer that writes only what this schema lists, without asking first. Children use it too. */
-  _exact(): (v: unknown) => string {
-    if (!this._exactSer) {
-      const inner = this.serialize();
-      this._exactSer = this.meta.nullable ? (v) => (v === null ? "null" : inner(v)) : inner;
+    if (!this._ser) {
+      const trim = this._trimmer();
+      const fit = this._fitter();
+      // Most answers hold exactly what the contract lists, as plain objects: those go to the
+      // native writer as they are, which is the fastest there is. Anything else is trimmed to
+      // the contract first, so what it does not list can never go out.
+      this._ser = !trim || !fit ? json : (v) => (fit(v) ? json(v) : (JSON.stringify(trim(v)) ?? "null"));
     }
-    return this._exactSer;
+    return this._ser;
   }
 
+  private _fitFn?: Fit;
+  private _fitted = false;
+  /**
+   * @internal Whether a value can go to JSON.stringify as it is, because a trim would not
+   * change what is written; undefined when that is so for any value. Built once.
+   */
+  _fitter(): Fit | undefined {
+    if (!this._fitted) {
+      this._fitted = true;
+      this._fitFn = this.fitter();
+    }
+    return this._fitFn;
+  }
 
+  /** When in doubt, no: the trim is always right. */
+  protected fitter(): Fit | undefined {
+    return () => false;
+  }
 
+  private _trimFn?: Trim;
+  private _trimmed = false;
+  /**
+   * @internal A function that copies a value with only what this schema lists, or undefined
+   * when the value is written as it is (a primitive, a list of them). Built once.
+   */
+  _trimmer(): Trim | undefined {
+    if (!this._trimmed) {
+      this._trimmed = true;
+      this._trimFn = this.trimmer();
+    }
+    return this._trimFn;
+  }
 
-  /** How this kind of schema writes a value. The fallback lets the parser strip, then writes that. */
-  protected serialize(): (v: unknown) => string {
+  /** How this kind of schema trims a value. The fallback lets the parser strip it, and writes the value as it is when it does not parse. */
+  protected trimmer(): Trim | undefined {
     return (v) => {
       const r = this.safeParse(v);
-      return JSON.stringify(r.ok ? r.value : v) ?? "null";
+      return r.ok ? r.value : v;
     };
   }
+
+
+
+
+
 }
 
 const json = (v: unknown) => JSON.stringify(v) ?? "null";
 
-// Text with nothing to escape, which is most of it, goes out between quotes; the rest as
-// JSON.stringify writes it (quotes, backslashes, control characters, lone surrogates).
-const PLAIN = /^[^"\\\u0000-\u001f\ud800-\udfff]*$/;
-const writeString = (s: string) => (PLAIN.test(s) ? `"${s}"` : JSON.stringify(s));
-
 /** What JSON.stringify leaves out of an object, and writes as null in a list: nothing, a function, a symbol. */
 const absent = (x: unknown) => x === undefined || typeof x === "function" || typeof x === "symbol";
+
+/** An object JSON.stringify writes by its own keys only: no class, no prototype that lends it fields. */
+const plainObject = (o: object) => {
+  const p = Object.getPrototypeOf(o);
+  return p === Object.prototype || p === null;
+};
+
+/**
+ * Whether every key of `own` is one of `keys`. Rows mostly come in the order the contract
+ * lists them, so that is tried first, a walk with one comparison per key; the set answers
+ * for any other order.
+ */
+const allDeclared = (own: string[], keys: string[], declared: Set<string>) => {
+  let j = 0;
+  for (let i = 0; i < own.length; i++) {
+    const k = own[i]!;
+    while (j < keys.length && keys[j] !== k) j++;
+    if (j === keys.length) {
+      for (let m = i; m < own.length; m++) if (!declared.has(own[m]!)) return false;
+      return true;
+    }
+    j++;
+  }
+  return true;
+};
+
+/** Sets a key on a copy; a key named __proto__ becomes a key, not the prototype. */
+const put = (o: Record<string, unknown>, k: string, v: unknown) => {
+  if (k === "__proto__") Object.defineProperty(o, k, { value: v, enumerable: true, writable: true, configurable: true });
+  else o[k] = v;
+};
 
 class EffectSchema<T, U> extends Schema<U> {
   private source: Schema<T>;
@@ -276,10 +342,6 @@ class EffectSchema<T, U> extends Schema<U> {
     this.effect = effect;
     this.sameShape = sameShape;
     this.meta = { ...source.meta };
-  }
-  protected override serialize() {
-    // a refined value still has the source's shape; a transformed one has none we know
-    return this.sameShape ? this.source._exact() : json;
   }
   override optional(): Schema<U | undefined> {
     const copy = this.clone({ optional: true });
@@ -319,6 +381,13 @@ class EffectSchema<T, U> extends Schema<U> {
       if (parsed === FAIL || issues.length !== count) return FAIL;
       return effect(parsed, path, issues);
     };
+  }
+  protected override trimmer(): Trim | undefined {
+    // a refined value still has the source's shape; a transformed one has none we know
+    return this.sameShape ? this.source._trimmer() : undefined;
+  }
+  protected override fitter(): Fit | undefined {
+    return this.sameShape ? this.source._fitter() : undefined;
   }
   protected json(ctx?: RefContext) {
     // The wrapper owns the name; avoid a self-reference to that same component.
@@ -387,11 +456,14 @@ export class StringSchema extends Schema<string> {
     };
   }
 
-  protected override serialize() {
-    return (v: unknown) => (typeof v === "string" ? writeString(v) : json(v));
+
+
+  protected override trimmer(): Trim | undefined {
+    return undefined; // JSON.stringify writes it as it is
   }
-
-
+  protected override fitter(): Fit | undefined {
+    return undefined; // written as it is, so anything fits
+  }
   protected json() {
     const { min, max, pattern, format } = this.rules;
     const s: JsonSchema = { type: "string" };
@@ -434,11 +506,14 @@ export class NumberSchema extends Schema<number> {
     };
   }
 
-  protected override serialize() {
-    return (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? String(v) : json(v));
+
+
+  protected override trimmer(): Trim | undefined {
+    return undefined; // JSON.stringify writes it as it is
   }
-
-
+  protected override fitter(): Fit | undefined {
+    return undefined; // written as it is, so anything fits
+  }
   protected json() {
     const s: JsonSchema = { type: this.rules.int ? "integer" : "number" };
     if (this.rules.min !== undefined) s.minimum = this.rules.min;
@@ -459,8 +534,11 @@ export class BooleanSchema extends Schema<boolean> {
       return FAIL;
     };
   }
-  protected override serialize() {
-    return (v: unknown) => (v === true ? "true" : v === false ? "false" : json(v));
+  protected override trimmer(): Trim | undefined {
+    return undefined; // JSON.stringify writes it as it is
+  }
+  protected override fitter(): Fit | undefined {
+    return undefined; // written as it is, so anything fits
   }
   protected json() {
     return { type: "boolean" };
@@ -483,8 +561,11 @@ export class DateSchema extends Schema<Date> {
       return FAIL;
     };
   }
-  protected override serialize() {
-    return (v: unknown) => (v instanceof Date ? (Number.isFinite(v.getTime()) ? `"${v.toISOString()}"` : "null") : json(v));
+  protected override trimmer(): Trim | undefined {
+    return undefined; // JSON.stringify writes it as it is
+  }
+  protected override fitter(): Fit | undefined {
+    return undefined; // written as it is, so anything fits
   }
   protected json() { return { type: "string", format: "date-time" }; }
 }
@@ -510,8 +591,11 @@ export class EnumSchema<const V extends string | number | boolean> extends Schem
       return FAIL;
     };
   }
-  protected override serialize() {
-    return json;
+  protected override trimmer(): Trim | undefined {
+    return undefined; // JSON.stringify writes it as it is
+  }
+  protected override fitter(): Fit | undefined {
+    return undefined; // written as it is, so anything fits
   }
   protected json() {
     return this.values.length === 1 ? { const: this.values[0] } : { enum: [...this.values] };
@@ -522,8 +606,11 @@ export class AnySchema<T = unknown> extends Schema<T> {
   protected stamp(): Check<T> {
     return (v) => v as T;
   }
-  protected override serialize() {
-    return json;
+  protected override trimmer(): Trim | undefined {
+    return undefined; // JSON.stringify writes it as it is
+  }
+  protected override fitter(): Fit | undefined {
+    return undefined; // written as it is, so anything fits
   }
   protected json() {
     return {};
@@ -566,20 +653,33 @@ export class ArraySchema<S extends Schema<any>> extends Schema<Infer<S>[]> {
     };
   }
 
-  protected override serialize() {
-    const item = this.item._exact();
-    return (v: unknown) => {
-      if (!Array.isArray(v)) return json(v);
-      let out = "[";
+
+
+  protected override trimmer(): Trim | undefined {
+    const item = this.item._trimmer();
+    if (!item) return undefined; // a list of values JSON writes as they are needs no copy
+    return (v) => {
+      if (!Array.isArray(v)) return v;
+      const out = new Array(v.length);
       for (let i = 0; i < v.length; i++) {
         const x = v[i];
-        out += (i ? "," : "") + (absent(x) ? "null" : item(x));
+        out[i] = absent(x) ? null : item(x);
       }
-      return out + "]";
+      return out;
     };
   }
-
-
+  protected override fitter(): Fit | undefined {
+    const item = this.item._fitter();
+    if (!item) return undefined;
+    return (v) => {
+      if (!Array.isArray(v)) return true; // written as it is either way
+      for (let i = 0; i < v.length; i++) {
+        const x = v[i];
+        if (x !== undefined && !item(x)) return false;
+      }
+      return true;
+    };
+  }
   protected json(ctx?: RefContext) {
     const s: JsonSchema = { type: "array", items: this.item._schema(ctx) };
     if (this.rules.min !== undefined) s.minItems = this.rules.min;
@@ -648,26 +748,75 @@ export class ObjectSchema<S extends Shape> extends Schema<InferShape<S>> {
     };
   }
 
-  protected override serialize() {
-    if (this.unknownKeys === "keep") return json; // passthrough: everything goes, by definition
-    // the key and its colon, written once; per request only the values are written
+
+
+  protected override trimmer(): Trim | undefined {
+    if (this.unknownKeys === "keep") return undefined; // passthrough: everything goes, by definition
     const keys = Object.keys(this.shape);
-    const heads = keys.map((key) => `${JSON.stringify(key)}:`);
-    const writers = keys.map((key) => this.shape[key]!._exact());
-    return (v: unknown) => {
-      if (typeof v !== "object" || v === null || Array.isArray(v)) return json(v);
+    const trims = keys.map((k) => this.shape[k]!._trimmer());
+    if (keys.includes("__proto__")) {
+      // the rare shape with a key named __proto__ takes the careful way
+      return (v) => {
+        if (typeof v !== "object" || v === null || Array.isArray(v)) return v;
+        const o = v as Record<string, unknown>;
+        const out: Record<string, unknown> = {};
+        for (let i = 0; i < keys.length; i++) {
+          const x = o[keys[i]!];
+          if (!absent(x)) put(out, keys[i]!, trims[i] ? trims[i]!(x) : x);
+        }
+        return out;
+      };
+    }
+    // every copy starts from this, so it has its final shape at once and only values are set;
+    // a key left undefined is left out by JSON.stringify, which is what it should be
+    const template: Record<string, unknown> = Object.fromEntries(keys.map((k) => [k, undefined]));
+    return (v) => {
+      if (typeof v !== "object" || v === null || Array.isArray(v)) return v;
       const o = v as Record<string, unknown>;
-      let out = "{";
+      const out = { ...template };
       for (let i = 0; i < keys.length; i++) {
-        const x = o[keys[i]!]; // read once: a getter runs once
-        if (absent(x)) continue;
-        out += (out.length > 1 ? "," : "") + heads[i] + writers[i]!(x);
+        const key = keys[i]!;
+        const x = o[key]; // read once: a getter runs once
+        // left out as JSON.stringify leaves it out: nothing there, a function, a symbol
+        if (x === undefined) continue;
+        const kind = typeof x;
+        if (kind === "function" || kind === "symbol") continue;
+        const t = trims[i];
+        out[key] = t === undefined ? x : t(x);
       }
-      return out + "}";
+      return out;
     };
   }
-
-
+  protected override fitter(): Fit | undefined {
+    if (this.unknownKeys === "keep") return undefined;
+    const keys = Object.keys(this.shape);
+    const declared = new Set(keys);
+    const fits = keys.map((k) => this.shape[k]!._fitter());
+    return (v) => {
+      if (typeof v !== "object" || v === null || Array.isArray(v)) return true; // written as it is either way
+      const o = v as Record<string, unknown>;
+      // a class or a borrowed prototype can lend a field the object does not own, and
+      // toJSON writes what it likes: both are trimmed instead
+      if (!plainObject(o) || typeof o.toJSON === "function") return false;
+      // every key JSON.stringify would write has to be one the contract lists...
+      const own = Object.keys(o); // fast for objects of one shape: V8 caches their keys
+      if (own.length > keys.length) return false;
+      if (!allDeclared(own, keys, declared)) return false;
+      const count = own.length;
+      // ...and every declared value has to be one of them, written as its schema writes it
+      let present = 0;
+      for (let i = 0; i < keys.length; i++) {
+        const x = o[keys[i]!];
+        if (x === undefined) continue;
+        const kind = typeof x;
+        if (kind === "function" || kind === "symbol") return false;
+        const fit = fits[i];
+        if (fit !== undefined && !fit(x)) return false;
+        present++;
+      }
+      return count === present;
+    };
+  }
   protected json(ctx?: RefContext) {
     const properties: Record<string, JsonSchema> = {};
     const required: string[] = [];
@@ -705,18 +854,22 @@ export class RecordSchema<S extends Schema<any>> extends Schema<Record<string, I
       return out;
     };
   }
-  protected override serialize() {
-    const write = this.value._exact();
-    return (v: unknown) => {
-      if (typeof v !== "object" || v === null || Array.isArray(v)) return json(v);
-      let out = "{";
-      let first = true;
-      for (const [k, x] of Object.entries(v)) {
-        if (absent(x)) continue;
-        out += (first ? "" : ",") + writeString(k) + ":" + write(x);
-        first = false;
-      }
-      return out + "}";
+  protected override trimmer(): Trim | undefined {
+    const value = this.value._trimmer();
+    return (v) => {
+      if (typeof v !== "object" || v === null || Array.isArray(v)) return v;
+      const out: Record<string, unknown> = {};
+      for (const [k, x] of Object.entries(v)) if (!absent(x)) put(out, k, value ? value(x) : x);
+      return out;
+    };
+  }
+  protected override fitter(): Fit | undefined {
+    const value = this.value._fitter();
+    return (v) => {
+      if (typeof v !== "object" || v === null || Array.isArray(v)) return true;
+      if (!plainObject(v) || typeof (v as { toJSON?: unknown }).toJSON === "function") return false;
+      for (const x of Object.values(v)) if (absent(x) || (value !== undefined && !value(x))) return false;
+      return true;
     };
   }
   protected json(ctx?: RefContext) {
@@ -757,10 +910,20 @@ export class LazySchema<T> extends Schema<T> {
     let target: Schema<T> | undefined;
     return (value, path, coerce, issues) => (target ??= this.resolve())._run(value, path, coerce, issues);
   }
-  protected override serialize() {
-    // resolved on first use, so a recursive shape does not build itself forever
-    let write: ((v: unknown) => string) | undefined;
-    return (v: unknown) => (write ??= this.resolve()._exact())(v);
+  protected override trimmer(): Trim | undefined {
+    // resolved on first use, so a shape that contains itself does not build itself forever
+    let target: Trim | undefined | null = null;
+    return (v) => {
+      if (target === null) target = this.resolve()._trimmer();
+      return target ? target(v) : v;
+    };
+  }
+  protected override fitter(): Fit | undefined {
+    let target: Fit | undefined | null = null;
+    return (v) => {
+      if (target === null) target = this.resolve()._fitter();
+      return target ? target(v) : true;
+    };
   }
   protected json(ctx?: RefContext) {
     const target = this.resolve();
@@ -800,13 +963,24 @@ export class DiscriminatedSchema<K extends string, S extends Record<string, Obje
       return options[tag]!._run(value, path, coerce, issues) as this["_type"] | Fail;
     };
   }
-  protected override serialize() {
-    // the tag says which option it is, so that option's writer is used
-    const writers = new Map(Object.entries(this.options).map(([tag, option]) => [tag, option._exact()]));
-    return (v: unknown) => {
-      const tag = typeof v === "object" && v !== null ? (v as Record<string, unknown>)[this.key] : undefined;
-      const write = typeof tag === "string" ? writers.get(tag) : undefined;
-      return write ? write(v) : json(v);
+  protected override trimmer(): Trim | undefined {
+    // the tag says which option it is, so that option's trim is used
+    const { key } = this;
+    const trims = new Map(Object.entries(this.options).map(([tag, option]) => [tag, option._trimmer()]));
+    return (v) => {
+      const tag = typeof v === "object" && v !== null ? (v as Record<string, unknown>)[key] : undefined;
+      const t = typeof tag === "string" ? trims.get(tag) : undefined;
+      return t ? t(v) : v;
+    };
+  }
+  protected override fitter(): Fit | undefined {
+    const { key } = this;
+    const fits = new Map(Object.entries(this.options).map(([tag, option]) => [tag, option._fitter()]));
+    return (v) => {
+      const tag = typeof v === "object" && v !== null ? (v as Record<string, unknown>)[key] : undefined;
+      if (typeof tag !== "string" || !fits.has(tag)) return true; // an unknown tag is written as it is either way
+      const fit = fits.get(tag);
+      return fit ? fit(v) : true;
     };
   }
   protected json(ctx?: RefContext) {
