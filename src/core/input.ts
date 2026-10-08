@@ -217,23 +217,26 @@ async function* limited(source: AsyncIterable<Buffer>, limit: number): AsyncIter
   }
 }
 
-/** Reads a request body with plain events, which is cheaper than an async iterator per chunk. */
-export function readRequestBody(req: IncomingMessage, limit: number): Promise<Buffer | undefined | typeof TOO_LARGE> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    let size = 0;
-    const onData = (chunk: Buffer) => {
-      size += chunk.length;
-      if (size > limit) {
-        req.off("data", onData);
-        req.pause(); // stop reading; the 413 closes the connection
-        resolve(TOO_LARGE);
-        return;
-      }
-      chunks.push(chunk);
-    };
-    req.on("data", onData);
-    req.once("end", () => resolve(chunks.length === 0 ? undefined : chunks.length === 1 ? chunks[0] : Buffer.concat(chunks, size)));
-    req.once("error", reject);
-  });
+/** Reads a request body with plain events, and calls back once: no promise, no extra turn. */
+export function readRequestBody(req: IncomingMessage, limit: number, done: (err: unknown, read?: Buffer | typeof TOO_LARGE) => void): void {
+  let chunks: Buffer[] | undefined;
+  let first: Buffer | undefined;
+  let size = 0;
+  let over = false;
+  const onData = (chunk: Buffer) => {
+    size += chunk.length;
+    if (size > limit) {
+      over = true;
+      req.off("data", onData);
+      req.pause(); // stop reading; the 413 closes the connection
+      done(undefined, TOO_LARGE);
+      return;
+    }
+    // most bodies come in one chunk: no list for those
+    if (!first) first = chunk;
+    else (chunks ??= [first]).push(chunk);
+  };
+  req.on("data", onData);
+  req.once("end", () => over || done(undefined, chunks ? Buffer.concat(chunks, size) : first));
+  req.once("error", (err) => over || done(err));
 }

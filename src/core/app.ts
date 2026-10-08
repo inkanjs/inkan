@@ -416,9 +416,10 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
       if (reading) await reading;
       let result: unknown;
       if (r.use.length) {
-        await compose(r.use, async () => {
-          result = await r.handler(x.ctx);
-        })(x.ctx);
+        await chain(r.use, x.ctx, () => {
+          const y = r.handler(x.ctx);
+          return y instanceof Promise ? y.then((v) => void (result = v)) : void (result = y);
+        });
       } else {
         const y = r.handler(x.ctx);
         result = y instanceof Promise ? await y : y;
@@ -468,15 +469,16 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
             if (early !== undefined) return void (result = early);
           }
           if (r.use.length) {
-            await compose(r.use, async () => {
-              result = await r.handler(ctx);
-            })(ctx);
+            await chain(r.use, ctx, () => {
+              const y = r.handler(ctx);
+              return y instanceof Promise ? y.then((v) => void (result = v)) : void (result = y);
+            });
           } else {
             const y = r.handler(ctx);
             result = y instanceof Promise ? await y : y;
           }
         };
-        if (this.global.length) await compose(this.global, dispatch)(ctx);
+        if (this.global.length) await chain(this.global, ctx, dispatch);
         else await dispatch();
       }
       res = this.respond(result, x);
@@ -768,10 +770,11 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     if (Number(req.headers["content-length"] ?? 0) > limit) return this.tooLarge(req, res, limit);
     if (method === "GET" || method === "HEAD") return this.pass(req, res, undefined, undefined, url, m);
     if (route?.streamsBody) return this.pass(req, res, undefined, requestStream(req), url, m);
-    readRequestBody(req, limit).then(
-      (read) => (read === TOO_LARGE ? this.tooLarge(req, res, limit) : this.pass(req, res, read, undefined, url, m)),
-      (err) => this.broken(req, res, err),
-    );
+    readRequestBody(req, limit, (err, read) => {
+      if (err) this.broken(req, res, err);
+      else if (read === TOO_LARGE) this.tooLarge(req, res, limit);
+      else this.pass(req, res, read, undefined, url, m);
+    });
   }
 
   private pass(req: IncomingMessage, res: ServerResponse, body: Buffer | undefined, stream?: AsyncIterable<Buffer>, url?: Target, m?: Match<RouteRecord>) {
@@ -1025,17 +1028,26 @@ export function contractFor(route: RouteRecord, status: number): Schema<any> | u
 
 // ---------- helpers ----------
 
-function compose(mw: Middleware[], last: () => Promise<void>) {
-  return async (ctx: Context<any, any, any, any, any>) => {
-    let index = -1;
-    const run = async (i: number): Promise<void> => {
-      if (i <= index) throw new Error("next() was called twice in one middleware");
-      index = i;
-      if (i === mw.length) return last();
-      await mw[i](ctx, () => run(i + 1));
-    };
-    await run(0);
+const RESOLVED: Promise<unknown> = Promise.resolve();
+
+/**
+ * Runs middleware in order around `last`, each one's `next` the rest of the way. No async
+ * frame of its own: a step's promise is handed on as it is, and a step that returns none
+ * costs none.
+ */
+function chain(mw: Middleware[], ctx: Context<any, any, any, any, any>, last: () => unknown): Promise<unknown> {
+  let index = -1;
+  const run = (i: number): Promise<unknown> => {
+    if (i <= index) return Promise.reject(new Error("next() was called twice in one middleware"));
+    index = i;
+    try {
+      const v = i === mw.length ? last() : mw[i]!(ctx, () => run(i + 1) as Promise<void>);
+      return v instanceof Promise ? v : RESOLVED;
+    } catch (err) {
+      return Promise.reject(err);
+    }
   };
+  return run(0);
 }
 
 /** The answer's own headers (CORS, request id) plus the problem's; filled in place, nothing copied. */
