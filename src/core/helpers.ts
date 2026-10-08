@@ -97,3 +97,80 @@ export function parseCookies(header: string | undefined): Record<string, string>
 export type RedirectStatus = 301 | 302 | 303 | 307 | 308;
 const REDIRECTS = new Set([301, 302, 303, 307, 308]);
 export const isRedirect = (status: number): status is RedirectStatus => REDIRECTS.has(status);
+
+// ---------- rows: as CSV, and as JSON written row by row ----------
+
+export type CsvOptions = {
+  /** The columns, in order: keys, or key → heading. Default: the keys of the first row. */
+  columns?: string[] | Record<string, string>;
+  /** Default `,`; `;` is what a German Excel expects. */
+  separator?: string;
+  /** Starts the file with a byte order mark, so Excel reads it as UTF-8. Default false. */
+  bom?: boolean;
+  /** Offered for download under this name. */
+  filename?: string;
+  /**
+   * Cells that begin with `=`, `+`, `-`, `@`, a tab or a return get a `'` in front, so a
+   * spreadsheet shows them instead of running them as a formula. Default true; false writes
+   * them as they are, for numbers like -3 to stay numbers.
+   */
+  guardFormulas?: boolean;
+};
+
+const FORMULA = /^[=+\-@\t\r]/;
+
+/** One cell: quoted when it holds the separator, a quote or a line break; dates as ISO strings. */
+function cell(v: unknown, sep: string, guard: boolean): string {
+  if (v === null || v === undefined) return "";
+  let s = v instanceof Date ? v.toISOString() : typeof v === "object" ? JSON.stringify(v) : String(v);
+  if (guard && typeof v === "string" && FORMULA.test(s)) s = "'" + s;
+  return s.includes(sep) || s.includes('"') || s.includes("\n") || s.includes("\r") ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+/** Rows as CSV, as they come: a heading, then a line per row, in chunks of about 16 KB. */
+export async function* csvChunks(rows: Iterable<Record<string, unknown>> | AsyncIterable<Record<string, unknown>>, o: CsvOptions = {}): AsyncIterable<string> {
+  const sep = o.separator ?? ",";
+  const guard = o.guardFormulas ?? true;
+  let keys: string[] | undefined;
+  let heads: string[] | undefined;
+  if (o.columns) {
+    keys = Array.isArray(o.columns) ? o.columns : Object.keys(o.columns);
+    heads = Array.isArray(o.columns) ? o.columns : Object.values(o.columns);
+  }
+  let buf = o.bom ? "﻿" : "";
+  if (heads) buf += heads.map((h) => cell(h, sep, guard)).join(sep) + "\r\n";
+  for await (const row of rows) {
+    if (!keys) {
+      keys = Object.keys(row);
+      buf += keys.map((h) => cell(h, sep, guard)).join(sep) + "\r\n";
+    }
+    buf += keys.map((k) => cell(row[k], sep, guard)).join(sep) + "\r\n";
+    if (buf.length >= 16384) {
+      yield buf;
+      buf = "";
+    }
+  }
+  if (buf) yield buf;
+}
+
+/**
+ * Rows as one JSON array, or as one JSON line each (NDJSON), as they come: each row written
+ * by its schema's writer, so it holds only what the contract lists, and checked first when
+ * `check` is given. In chunks of about 16 KB, so the socket is not asked once per row.
+ */
+export async function* jsonRows(rows: Iterable<unknown> | AsyncIterable<unknown>, write: (v: unknown) => string, ndjson: boolean, check?: (row: unknown, index: number) => void): AsyncIterable<string> {
+  let buf = ndjson ? "" : "[";
+  let i = 0;
+  for await (const row of rows) {
+    check?.(row, i);
+    const s = row === undefined ? "null" : write(row);
+    buf += ndjson ? s + "\n" : (i ? "," : "") + s;
+    i++;
+    if (buf.length >= 16384) {
+      yield buf;
+      buf = "";
+    }
+  }
+  if (!ndjson) buf += "]";
+  if (buf) yield buf;
+}

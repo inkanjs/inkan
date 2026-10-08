@@ -18,6 +18,17 @@
   expire. Every cookie goes out as a Set-Cookie of its own, over node:http, `fetch` and
   `inject` (`res.cookies`).
 
+- **Rows as they come.** A handler can return a generator of rows for a list in its
+  contract, such as one over a database cursor: the rows go out as they are read, as a JSON
+  array or as NDJSON for `accept: application/x-ndjson`, each written to the contract and
+  checked in development.
+- **`ctx.csv(rows, options)`** writes rows as CSV the same way, with a separator, a BOM,
+  a file name, and formulas defused unless told otherwise.
+- **`ctx.signal`** aborts when the client goes away or the route's time is up; `timeout`
+  on a route or the app answers 504 past it.
+- **`cache` on a route** keeps the handler's answers per input and caller for a while, and
+  asks once for many requests that come in at the same time.
+
 ### For adapters
 
 - `AdapterResponse.cookies` holds the Set-Cookie headers, one per cookie; an adapter writes

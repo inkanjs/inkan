@@ -18,7 +18,9 @@ import { Reply, type Context, type Example, type Middleware, type RawQuery, type
 import { target, queryObject, type Exchange, type RawRequest, type RawResponse, type Target } from "./context.ts";
 import { NO_HOOKS, runHooks, Scope, type Hooks, type Root } from "./scope.ts";
 import { nextId } from "./request-id.ts";
-import { SafeHtml } from "./helpers.ts";
+import { jsonRows, SafeHtml } from "./helpers.ts";
+import { cached } from "./cache.ts";
+import { ArraySchema } from "../schema/schema.ts";
 import { readRequestBody, requestStream, TOO_LARGE, validateInput } from "./input.ts";
 import { Buffer } from "node:buffer"; // explicit, for runtimes without a global Buffer
 
@@ -44,6 +46,11 @@ export type AppOptions = OpenAPIInfo & {
   logger?: (entry: RequestLog) => void;
   /** The header that carries the request id, in and out, or false. Default `x-request-id`. */
   requestId?: string | false;
+  /**
+   * Milliseconds a handler may take before the answer is a 504 problem and `ctx.signal` is
+   * aborted; a route's own `timeout` wins. Default: no limit.
+   */
+  timeout?: number;
   /** Close in-flight requests cleanly on SIGINT and SIGTERM. Default true. */
   gracefulShutdown?: boolean;
   /**
@@ -265,6 +272,8 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
       r.bodyLimit = bodyLimit ?? (body instanceof RawBodySchema ? body.rules.max : undefined) ?? (r.streamsBody ? Infinity : this.options.bodyLimit);
       r.checksInput = Boolean(params || query || headers || body || r.security?.length);
       r.plan = planOf(r);
+      r.run = r.spec.cache ? cached(r.handler, r.spec.cache) : r.handler;
+      r.timeout = r.spec.timeout ?? this.options.timeout;
       r.info = Object.freeze({ method: r.method, path: r.path });
     }
     const { requestId, docs } = this.options;
@@ -328,7 +337,13 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     }
     const parts: Buffer[] = res.body === undefined ? [] : [Buffer.from(res.body)];
     if (res.stream) {
-      for await (const chunk of res.stream) parts.push(Buffer.from(chunk));
+      try {
+        for await (const chunk of res.stream) parts.push(Buffer.from(chunk));
+      } catch (err) {
+        // as over a socket: what was written stays, the answer ends there, and the error is reported
+        if (this.options.onError) this.options.onError(err, undefined as never);
+        else console.error(err);
+      }
       res.abort?.abort();
     }
     res.done?.();
@@ -336,8 +351,8 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     const encoding = res.headers["content-encoding"];
     const bytes = Buffer.concat(parts);
     text = (encoding === "br" ? brotliDecompressSync(bytes) : encoding === "gzip" ? gunzipSync(bytes) : bytes).toString();
-    const json = /json/.test(type);
-    return { status: res.status, headers: res.headers, cookies: res.cookies ?? [], text, body: json && text ? JSON.parse(text) : text };
+    const json = /(^|\/|\+)json\b/.test(type); // application/json, problem+json; not NDJSON, which is lines
+    return { status: res.status, headers: res.headers, cookies: res.cookies ?? [], text, body: json && text ? parsedOr(text) : text };
   }
 
   // ----- the request path -----
@@ -389,8 +404,8 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
         ctx.route = r.info;
         const reading = validateInput(ctx, r, (m as { params: Record<string, string> }).params, raw); // a promise only when a body has to be parsed
         if (reading || r.use.length) return this.later(x, r, reading);
-        const result = r.handler(ctx);
-        if (result instanceof Promise) return this.settle(x, result);
+        const result = r.run!(ctx);
+        if (result instanceof Promise) return this.settle(x, this.deadline(x, result));
         res = this.respond(result, x);
       }
     } catch (err) {
@@ -418,22 +433,44 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
   private async later(x: Exchange, r: RouteRecord, reading: void | Promise<void>): Promise<RawResponse> {
     let res: RawResponse;
     try {
-      if (reading) await reading;
-      let result: unknown;
-      if (r.use.length) {
-        await chain(r.use, x.ctx, () => {
-          const y = r.handler(x.ctx);
-          return y instanceof Promise ? y.then((v) => void (result = v)) : void (result = y);
-        });
-      } else {
-        const y = r.handler(x.ctx);
-        result = y instanceof Promise ? await y : y;
-      }
-      res = this.respond(result, x);
+      const work = async () => {
+        if (reading) await reading;
+        let result: unknown;
+        if (r.use.length) {
+          await chain(r.use, x.ctx, () => {
+            const y = r.run!(x.ctx);
+            return y instanceof Promise ? y.then((v) => void (result = v)) : void (result = y);
+          });
+        } else {
+          const y = r.run!(x.ctx);
+          result = y instanceof Promise ? await y : y;
+        }
+        return result;
+      };
+      res = this.respond(await this.deadline(x, work()), x);
     } catch (err) {
       res = this.fail(err, x);
     }
     return this.finish(x, res);
+  }
+
+  /**
+   * The work of a request, or a 504 problem once the route's time is up; then `ctx.signal`
+   * is aborted, so the work can stop. Without a limit the work is handed back as it is.
+   */
+  private deadline<T>(x: Exchange, work: Promise<T>): Promise<T> {
+    const ms = x.route?.timeout;
+    if (!ms) return work;
+    let timer: ReturnType<typeof setTimeout>;
+    const late = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        const p = problem(504, "timeout", `The answer took longer than ${ms} ms`);
+        (x.ctx as unknown as { _stop?: (r: unknown) => void } | undefined)?._stop?.(new DOMException(p.detail!, "TimeoutError"));
+        reject(p);
+      }, ms);
+    });
+    work.catch(() => {}); // what it does after the time is up nobody waits for
+    return Promise.race([work, late]).finally(() => clearTimeout(timer));
   }
 
   private async settle(x: Exchange, pending: Promise<unknown>): Promise<RawResponse> {
@@ -475,16 +512,15 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
           }
           if (r.use.length) {
             await chain(r.use, ctx, () => {
-              const y = r.handler(ctx);
+              const y = r.run!(ctx);
               return y instanceof Promise ? y.then((v) => void (result = v)) : void (result = y);
             });
           } else {
-            const y = r.handler(ctx);
+            const y = r.run!(ctx);
             result = y instanceof Promise ? await y : y;
           }
         };
-        if (this.global.length) await chain(this.global, ctx, dispatch);
-        else await dispatch();
+        await this.deadline(x, this.global.length ? chain(this.global, ctx, dispatch) : dispatch());
       }
       res = this.respond(result, x);
     } catch (err) {
@@ -618,12 +654,30 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
               return `An event broke the contract: ${lines}`;
             }
           : undefined;
-      const sseHeaders = { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache", "x-accel-buffering": "no", ...headers };
-      return { status, headers: sseHeaders, stream: encodeEvents(body, abort.signal, check), abort };
+      out.headers = { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-cache", "x-accel-buffering": "no", ...headers };
+      return Object.assign(out, { status, stream: encodeEvents(body, abort.signal, check), abort });
+    }
+    // rows for a list the contract names, one by one: each written by the item's writer, so it
+    // holds only what the contract lists, and checked first in development
+    const rows = route && plan?.hasContract && !headers["content-type"] && isRows(body) ? contractFor(route, status) : undefined;
+    if (rows instanceof ArraySchema) {
+      const item = rows.item as Schema<any>;
+      const check = this.options.validateResponses
+        ? (row: unknown, i: number) => {
+            const r = item.safeParse(row);
+            if (r.ok) return;
+            const lines = r.issues.map((s) => `[${i}]${s.path ? "." + s.path : ""} ${s.message}`).join("; ");
+            throw new Error(`inkan: ${route!.method} ${route!.path} sent a row that breaks its contract, and the answer was cut off: ${lines}`);
+          }
+        : undefined;
+      const ndjson = (x.headers.accept ?? "").includes("application/x-ndjson");
+      headers["content-type"] = ndjson ? "application/x-ndjson" : "application/json; charset=utf-8";
+      return Object.assign(out, { status, stream: jsonRows(body as Iterable<unknown>, item._serializer(), ndjson, check) });
     }
     if (isStream(body)) {
-      // a stream cannot be checked against a schema before it is sent; it goes out as it comes
-      return { status, headers: { "content-type": "application/octet-stream", ...headers }, stream: body };
+      // a stream of bytes cannot be checked against a schema before it is sent; it goes out as it comes
+      out.headers = { "content-type": "application/octet-stream", ...headers };
+      return Object.assign(out, { status, stream: body });
     }
 
     let schema: Schema<any> | undefined;
@@ -863,7 +917,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
         body = read;
       }
     }
-    const out = await this.handle({ method: request.method, url: target, headers, body, stream, remote: info.remote ?? "unknown" });
+    const out = await this.handle({ method: request.method, url: target, headers, body, stream, remote: info.remote ?? "unknown", signal: request.signal });
     return toWebResponse(out);
   }
 
@@ -1021,6 +1075,12 @@ function planOf(route: RouteRecord): NonNullable<RouteRecord["plan"]> {
   return { hasContract: statuses.length > 0, defaultStatus: ok[0] ?? 200 };
 }
 
+/** A list given row by row: a generator, an async generator, a database cursor; not an array, a string or bytes. */
+function isRows(v: unknown): boolean {
+  if (v === null || typeof v !== "object" || Array.isArray(v) || v instanceof Uint8Array || v instanceof EventStream) return false;
+  return typeof (v as Iterable<unknown>)[Symbol.iterator] === "function" || typeof (v as AsyncIterable<unknown>)[Symbol.asyncIterator] === "function";
+}
+
 /** The problem schema every route with input answers a 400 with. */
 const INPUT_PROBLEM = t.problem();
 
@@ -1067,6 +1127,15 @@ function withProblemHeaders(set: Record<string, string>, extra: Record<string, s
 }
 
 const lower = (h: Record<string, string>) => Object.fromEntries(Object.entries(h).map(([k, v]) => [k.toLowerCase(), v]));
+
+/** JSON as a value, or the text as it is when it is not whole: a stream cut off midway. */
+function parsedOr(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return text;
+  }
+}
 
 /** The headers to write, with every cookie as a Set-Cookie of its own. */
 const withCookies = (out: RawResponse): Record<string, string | string[]> => (out.cookies?.length ? { ...out.headers, "set-cookie": out.cookies } : out.headers);

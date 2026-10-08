@@ -2,7 +2,8 @@
 // and a table of routes that an app or a group holds.
 
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { CookieOptions, RedirectStatus, SafeHtml } from "./helpers.ts";
+import type { CookieOptions, CsvOptions, RedirectStatus, SafeHtml } from "./helpers.ts";
+import type { CacheRule } from "./cache.ts";
 import type { Infer, Schema } from "../schema/schema.ts";
 import type { EventStream } from "./stream.ts";
 import type { App } from "./app.ts";
@@ -63,6 +64,13 @@ export type RouteSpec<P, Q, B, H, R extends Responses> = {
   examples?: Example[];
   /** Middleware for this route only. It runs after the input was validated. */
   use?: Middleware[];
+  /**
+   * Milliseconds the handler may take; past them the answer is a 504 problem and
+   * `ctx.signal` is aborted, so the work behind it can stop. Instead of the app's `timeout`.
+   */
+  timeout?: number;
+  /** Keeps the handler's answers for a while: the same input gets the same answer without asking again. */
+  cache?: CacheRule;
 };
 
 export type Simplify<T> = { [K in keyof T]: T[K] } & {};
@@ -137,12 +145,18 @@ export type Context<P = Record<string, string>, Q = RawQuery, B = unknown, H = R
   setCookie(name: string, value: string, options?: CookieOptions): void;
   /** Tells the browser to forget a cookie. */
   clearCookie(name: string, options?: Pick<CookieOptions, "path" | "domain">): void;
+  /** Aborted when the client goes away or the route's `timeout` runs out: hand it to the database or to `fetch`. */
+  signal: AbortSignal;
+  /** Rows as a CSV file, written as they come. */
+  csv(rows: Iterable<Record<string, unknown>> | AsyncIterable<Record<string, unknown>>, options?: CsvOptions): Reply;
   /** Only there when the request came through a socket, not through `inject`. */
   req?: IncomingMessage;
   res?: ServerResponse;
 };
 
-export type Result<R extends Responses> = SuccessBody<R> | Reply | EventStream | AsyncIterable<Uint8Array | string> | void;
+/** The rows of a list answer, one by one: a generator over a database cursor goes out as it reads. */
+type Rows<T> = T extends readonly (infer E)[] ? AsyncIterable<E> | Iterable<E> : never;
+export type Result<R extends Responses> = SuccessBody<R> | Rows<SuccessBody<R>> | Reply | EventStream | AsyncIterable<Uint8Array | string> | void;
 /** A route's handler. `Deco` is what `decorate` put on the context of the app or plugin it belongs to. */
 export type Handler<P, Q, B, H, R extends Responses, Deco = {}> = (ctx: Context<P, Q, B, H, R> & Deco) => Result<R> | Promise<Result<R>>;
 export type Middleware = (ctx: Context<any, any, any, any, any>, next: () => Promise<void>) => unknown;
@@ -163,6 +177,10 @@ export type RouteRecord = {
   bodyLimit?: number;
   /** @internal Whether its body goes to the handler as a stream, unread. */
   streamsBody?: boolean;
+  /** @internal The handler as it runs: with the route's cache around it, when it has one. */
+  run?: Handler<any, any, any, any, any>;
+  /** @internal Its time limit in milliseconds, its own or the app's. */
+  timeout?: number;
   /** @internal Whether it checks any input or credentials; worked out once, like the rest below. */
   checksInput?: boolean;
   /** @internal Whether its contract lists answers, and the status a plain value answers with. */

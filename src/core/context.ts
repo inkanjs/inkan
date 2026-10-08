@@ -7,7 +7,7 @@ import type { Hooks } from "./scope.ts";
 import type { RawQuery } from "./route.ts";
 import { NO_PARAMS } from "./router.ts";
 import { problem } from "./problem.ts";
-import { isRedirect, parseCookies, SafeHtml, serializeCookie, type CookieOptions, type RedirectStatus } from "./helpers.ts";
+import { csvChunks, isRedirect, parseCookies, SafeHtml, serializeCookie, type CookieOptions, type CsvOptions, type RedirectStatus } from "./helpers.ts";
 
 export type RawRequest = {
   method: string;
@@ -19,6 +19,8 @@ export type RawRequest = {
   remote?: string;
   req?: IncomingMessage;
   res?: ServerResponse;
+  /** Aborted when the client goes away, where the platform says so (`fetch`). */
+  signal?: AbortSignal;
 };
 
 export type RawResponse = {
@@ -90,6 +92,10 @@ export class RequestContext {
   private target: Target;
   private host?: string;
   private rawCookie?: string;
+  private rawAuth?: string;
+  private rawSignal?: AbortSignal;
+  private _abort: AbortController | undefined = undefined;
+  private _gone: unknown = undefined;
   private remote?: string;
   private out: RawResponse;
   private _query: unknown = undefined;
@@ -112,7 +118,9 @@ export class RequestContext {
     this.res = raw.res;
     this.target = target;
     this.host = headers.host; // kept here: a header schema may later strip it from ctx.headers
-    this.rawCookie = headers.cookie; // so is this
+    this.rawCookie = headers.cookie; // so are these
+    this.rawAuth = headers.authorization;
+    this.rawSignal = raw.signal;
     this.out = out;
   }
   // Plain getters on the prototype: no proxy, nothing tracked. The setters are there because
@@ -171,6 +179,47 @@ export class RequestContext {
   /** Ends the request with a 404 problem, the same one an unknown route gets. `return ctx.notFound()` reads well. */
   notFound(detail?: string): never {
     throw problem(404, "not-found", detail);
+  }
+
+  /**
+   * Aborted when the client goes away before the answer is out, or when the route's
+   * `timeout` runs out. Hand it to the database driver or to `fetch`, and a query nobody
+   * waits for any more stops. Made on first use.
+   */
+  get signal(): AbortSignal {
+    if (!this._abort) {
+      const ctl = (this._abort = new AbortController());
+      if (this._gone !== undefined) ctl.abort(this._gone);
+      const res = this.res;
+      // "close" also comes after an answer that went out whole; only before that is it the client leaving
+      if (res) res.once("close", () => res.writableFinished || ctl.abort(new DOMException("The client went away", "AbortError")));
+      const given = this.rawSignal;
+      if (given) given.aborted ? ctl.abort(given.reason) : given.addEventListener("abort", () => ctl.abort(given.reason), { once: true });
+    }
+    return this._abort.signal;
+  }
+  /** @internal Aborts the signal, now or once it is made: the route ran out of time. */
+  _stop(reason: unknown) {
+    this._gone = reason;
+    this._abort?.abort(reason);
+  }
+  /** @internal Who is asking, for a cache kept per caller. */
+  _caller(): string {
+    return `${this.rawAuth ?? ""}\n${this.rawCookie ?? ""}`;
+  }
+  /** @internal The answer as it stands, for a cache that replays a status and headers. */
+  _out(): RawResponse {
+    return this.out;
+  }
+
+  /**
+   * Rows as a CSV file, written as they come: an array, or a generator over the database's
+   * cursor, so a million rows never sit in memory at once.
+   */
+  csv(rows: Iterable<Record<string, unknown>> | AsyncIterable<Record<string, unknown>>, options: CsvOptions = {}): Reply {
+    const headers: Record<string, string> = { "content-type": "text/csv; charset=utf-8" };
+    if (options.filename) headers["content-disposition"] = `attachment; filename="${options.filename.replace(/["\\\r\n]/g, "_")}"; filename*=UTF-8''${encodeURIComponent(options.filename)}`;
+    return new Reply(0, csvChunks(rows, options), headers);
   }
 
   /** The request's cookies, by name, read on first use. */
