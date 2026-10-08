@@ -12,8 +12,10 @@
 //   GET  /async/:id                 a handler that waits one event-loop hop
 //   anything else                   404
 //
-//   node servers.mjs <node|express|fastify|hono|inkan|inkan-sealed|inkan-cluster|inkan-uws|inkan-dev> <port>
+//   node servers.mjs <node|express|fastify|hono|inkan|inkan-sealed|inkan-cluster|inkan-uws|inkan-dev|inkan-base> <port>
 
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import http from "node:http";
 import { isBulk, isUser, LIST, ROUTE_COUNT, user } from "./data.mjs";
 
@@ -217,7 +219,9 @@ if (name === "fastify") {
 }
 
 if (name.startsWith("inkan")) {
-  const { app } = await import("./inkan-app.mjs");
+  // inkan-base is another version of inkan, checked out at $INKAN_BASE: the one a change is measured against
+  const from = name === "inkan-base" ? pathToFileURL(join(process.env.INKAN_BASE ?? "", "bench/inkan-app.mjs")).href : "./inkan-app.mjs";
+  const { app } = await import(from);
   // inkan-sealed runs on the seal `inkan seal seal-entry.mjs -o inkan.seal.js` writes
   const seal = name === "inkan-sealed" ? (await import("./inkan.seal.js")).default : undefined;
   if (name === "inkan-uws") {

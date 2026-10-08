@@ -4,6 +4,9 @@ name: bench
 # runner where the network stack is not the bottleneck. Every answer is checked before it
 # is measured. Started by hand; the tables land in the job summary. Shared runners are
 # noisy: compare within one run, not across runs. The defaults take about an hour.
+#
+# To measure a change, name the ref to compare with as `base` and add `inkan-base` to the
+# servers: both versions then run on the same runner in the same run, taking turns.
 
 on:
   workflow_dispatch:
@@ -15,8 +18,11 @@ on:
         description: Rounds (the median is shown)
         default: "3"
       servers:
-        description: Servers, comma separated (node, fastify, hono, inkan, inkan-sealed, inkan-cluster, inkan-uws, inkan-dev, express)
+        description: Servers, comma separated (node, fastify, hono, inkan, inkan-base, inkan-sealed, inkan-cluster, inkan-uws, inkan-dev, express)
         default: "node,fastify,hono,inkan,express"
+      base:
+        description: "A ref to measure against, as the server inkan-base (e.g. main); empty for none"
+        default: ""
       kind:
         description: "http: req/s, latency and memory · cpu: what one request costs the server · both"
         type: choice
@@ -45,8 +51,20 @@ jobs:
       - name: the seal for inkan-sealed
         run: node ../src/cli.ts seal seal-entry.mjs -o inkan.seal.js
         working-directory: bench
+      - name: the version to compare with, next to this one
+        if: inputs.base != ''
+        run: |
+          git fetch --no-tags --depth=1 origin "$BASE"
+          git worktree add "$RUNNER_TEMP/inkan-base" FETCH_HEAD
+          echo "INKAN_BASE=$RUNNER_TEMP/inkan-base" >> "$GITHUB_ENV"
+        env:
+          BASE: ${{ inputs.base }}
       - name: inkan alone, without a network
         run: node inproc.mjs
+        working-directory: bench
+      - name: the version to compare with, alone, without a network
+        if: inputs.base != ''
+        run: node "$INKAN_BASE/bench/inproc.mjs"
         working-directory: bench
       - name: over HTTP, next to the others
         if: inputs.kind != 'cpu'
