@@ -588,13 +588,48 @@ on GitHub, which also measures what one request costs the server in CPU time.
 
 ## Running it
 
-`app.listen()` takes the port from its argument, then `$PORT`, then 3000. So it
-runs under [warden](https://github.com/vxnsin/warden), a container or a PaaS
-without changes:
+`app.listen()` takes the port from its argument, then `$PORT`, then 3000, so nothing about
+where it runs is written into the app. On a server, plainly:
 
 ```sh
-warden run -- node src/app.ts
+PORT=3000 NODE_ENV=production node src/app.ts
 ```
+
+To keep it running and have it start with the machine, a systemd unit:
+
+```ini
+# /etc/systemd/system/api.service
+[Unit]
+Description=api
+After=network.target
+
+[Service]
+WorkingDirectory=/srv/api
+ExecStart=/usr/bin/node src/app.ts
+Environment=PORT=3000 NODE_ENV=production
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+```
+
+`systemctl enable --now api` starts it, and `systemctl stop api` lets the open requests
+finish. With pm2 it is `pm2 start node --name api -- src/app.ts`, then `pm2 save`. In a
+container:
+
+```dockerfile
+FROM node:24-slim
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --omit=dev
+COPY . .
+ENV NODE_ENV=production PORT=3000
+EXPOSE 3000
+CMD ["node", "src/app.ts"]
+```
+
+A PaaS or [warden](https://github.com/vxnsin/warden) (`warden run -- node src/app.ts`) works
+the same way: they set `$PORT` and stop it with SIGTERM, and that is all inkan needs.
 
 On SIGINT or SIGTERM it lets open requests finish (up to ten seconds) before it
 exits. `app.listener` is a plain `(req, res)` function for your own
