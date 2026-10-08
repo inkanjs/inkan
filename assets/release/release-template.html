@@ -12,7 +12,7 @@
   :root { --bg: #1a1614; --ink: #ece1cf; --soft: #cbbda8; --muted: #8a7d72; --seal: #c4381f; --hot: #e2583e;
           --ok: #79c08a; --term: #2a2421; --bar: #312a26; }
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  html, body { width: 1600px; height: 900px; overflow: hidden; }
+  html, body { width: 1600px; height: 900px; overflow: hidden; font-variant-ligatures: none; }
   body {
     font-family: "JetBrains Mono", ui-monospace, monospace; color: var(--ink);
     background:
@@ -47,37 +47,35 @@
 </head>
 <body>
   <div class="left">
-    <div class="badge">v0.4.0</div>
-    <h1 style="font-size:50px">inkan learned <em>hooks</em>,<br>a <em>seal</em> and how<br>to <em>teach</em>.</h1>
+    <div class="badge">v0.5.0</div>
+    <h1 style="font-size:50px">inkan takes <em>files</em>,<br>serves your <em>frontend</em><br>and <em>packs</em> it.</h1>
     <ul>
-      <li><span><b>inkan learn</b>: 12 quests in your terminal</span></li>
-      <li><span><b>Hooks, plugins</b> and typed <b>decorators</b></span></li>
-      <li><span><b>inkan seal</b>: contracts as code, no eval</span></li>
-      <li><span><b>app.fetch</b> for Bun, Deno, serverless</span></li>
-      <li><span><b>security</b> and response headers, enforced</span></li>
-      <li><span><b>workers</b>, file routes, a <b>uWS</b> adapter</span></li>
+      <li><span><b>t.binary()</b>: a file as the body itself</span></li>
+      <li><span><b>t.stream()</b>: uploads larger than memory</span></li>
+      <li><span>a <b>body limit</b> per route</span></li>
+      <li><span><b>serveStatic</b>: your build, SPA and all</span></li>
+      <li><span><b>compress()</b>: brotli or gzip, streams too</span></li>
+      <li><span><b>ctx.ip</b>, and rate limits that use it</span></li>
     </ul>
-    <div class="install">npx @vxnsin/inkan learn</div>
+    <div class="install">npm install @vxnsin/inkan</div>
   </div>
 
   <div class="term">
     <div class="bar">
       <div class="dot" style="background:#e5534b"></div><div class="dot" style="background:#e3b341"></div><div class="dot" style="background:#57c26a"></div>
-      <span>PowerShell — inkan learn</span>
+      <span>PowerShell — node app.ts</span>
     </div>
-<pre>  <span class="r">印</span> <span class="b">inkan learn</span> <span class="d">· quest 3 of 12 ·</span> <span class="b">rules for a body</span>
+<pre>  <span class="r">印</span> <span class="b">inkan</span>  <span class="d">listening on</span> http://localhost:3000
 
-  <span class="d">A body schema is checked before your handler</span>
-  <span class="d">runs. A body that breaks it never reaches you.</span>
+  <span class="d">app.post("/backups",</span>
+  <span class="d">  { body: </span><span class="b">t.stream().max(2 * 1024 ** 3)</span><span class="d"> },</span>
+  <span class="d">  ({ body }) => pipeline(body, toDisk()))</span>
 
-  Add POST /teas: name at least 1 character,
-  grams a whole number of at least 1.
-
-  <span class="r">✗</span> POST /teas with { grams: -5 } answered 201:
-    it got in. Give grams a .min(1)
-  <span class="g">✓</span> <span class="b">quest 3 done!</span> <span class="d">rules for a body</span>
-
-  <span class="r">印</span> <span class="b">inkan learn</span> <span class="d">· quest 4 of 12 ·</span> <span class="b">examples are tests</span></pre>
+  <span class="b">POST</span>   /backups              <span class="g">201</span>  <span class="d">1.4 GB, never in memory</span>
+  <span class="b">POST</span>   /backups              <span class="r">413</span>  <span class="d">past its limit</span>
+  <span class="b">GET</span>    /assets/index-B2k9.js <span class="g">200</span>  <span class="d">br · cached a year</span>
+  <span class="b">GET</span>    /wiki/holidays        <span class="g">200</span>  <span class="d">index.html, spa</span>
+  <span class="b">GET</span>    /api/tea              <span class="r">404</span>  <span class="d">a problem, not a page</span></pre>
   </div>
 </body>
 </html>
