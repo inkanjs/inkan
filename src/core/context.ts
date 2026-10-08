@@ -99,6 +99,11 @@ export class RequestContext {
     this.target = target;
     this.host = headers.host; // kept here: a header schema may later strip it from ctx.headers
     this.out = out;
+    // experiment: everything made at once, as before
+    this._query = target.search ? parseQuery(target.search) : {};
+    this._state = {};
+    this._status = (code) => void (out.status = code);
+    this._header = (name, value) => void (out.headers[name.toLowerCase()] = value);
   }
   // Plain getters on the prototype: no proxy, nothing tracked. The setters are there because
   // the contract puts the checked values back.
