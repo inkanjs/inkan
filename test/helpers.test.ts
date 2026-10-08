@@ -139,3 +139,121 @@ test("the new names are the context's own: decorate refuses them", () => {
     assert.throws(() => inkan(quiet).decorate(name, 1), /already has/, name);
   }
 });
+
+// ---------- for answers made from a lot of data ----------
+
+test("a list given row by row goes out as JSON, each row trimmed to the contract", async () => {
+  const Tea = t.object({ id: t.int(), name: t.string() });
+  async function* fromDb() {
+    for (let i = 1; i <= 3; i++) yield { id: i, name: `tea ${i}`, secret: "kept back" };
+  }
+  const app = inkan(quiet).get("/teas", { response: { 200: t.array(Tea) } }, () => fromDb());
+  const res = await app.inject({ url: "/teas" });
+  assert.equal(res.headers["content-type"], "application/json; charset=utf-8");
+  assert.deepEqual(res.body, [
+    { id: 1, name: "tea 1" },
+    { id: 2, name: "tea 2" },
+    { id: 3, name: "tea 3" },
+  ]);
+  const lines = await app.inject({ url: "/teas", headers: { accept: "application/x-ndjson" } });
+  assert.equal(lines.headers["content-type"], "application/x-ndjson");
+  assert.equal(lines.text, '{"id":1,"name":"tea 1"}\n{"id":2,"name":"tea 2"}\n{"id":3,"name":"tea 3"}\n');
+});
+
+test("many rows go out in chunks, and a row that breaks the contract cuts the answer off in development", async () => {
+  const app = inkan({ ...quiet, onError: () => {} }).get("/many", { response: { 200: t.array(t.object({ n: t.int() })) } }, function* () {
+    for (let n = 0; n < 5000; n++) yield { n };
+    yield { n: "not a number" } as never;
+  });
+  const res = await app.inject({ url: "/many" });
+  assert.equal(res.status, 200, "the status went out with the first rows");
+  assert.ok(res.text.startsWith('[{"n":0},{"n":1}'));
+  assert.ok(!res.text.endsWith("]"), "cut off, so a client cannot take it for the whole list");
+});
+
+test("csv writes rows as they come, quoted where needed, with formulas defused", async () => {
+  async function* rows() {
+    yield { id: 1, name: 'Tea, "green"', note: "=HYPERLINK(1)", at: new Date("2026-01-02T03:04:05Z") };
+    yield { id: 2, name: "line\nbreak", note: null, at: undefined };
+  }
+  const app = inkan(quiet).get("/export", ({ csv }) => csv(rows(), { filename: "teas 2026.csv" }));
+  const res = await app.inject({ url: "/export" });
+  assert.equal(res.headers["content-type"], "text/csv; charset=utf-8");
+  assert.equal(res.headers["content-disposition"], `attachment; filename="teas 2026.csv"; filename*=UTF-8''teas%202026.csv`);
+  assert.equal(res.text, `id,name,note,at\r\n1,"Tea, ""green""",'=HYPERLINK(1),2026-01-02T03:04:05.000Z\r\n2,"line\nbreak",,\r\n`);
+
+  const de = inkan(quiet).get("/de", ({ csv }) => csv([{ a: "1,5", b: -3 }], { separator: ";", bom: true, columns: { a: "Preis", b: "Bestand" } }));
+  assert.equal((await de.inject({ url: "/de" })).text, "﻿Preis;Bestand\r\n1,5;-3\r\n");
+});
+
+test("a route past its timeout answers 504 and aborts ctx.signal", async () => {
+  let aborted: unknown;
+  const app = inkan(quiet).get("/slow", { timeout: 30 }, async ({ signal }) => {
+    await new Promise((resolve) => signal.addEventListener("abort", resolve));
+    aborted = signal.reason;
+    return { late: true };
+  });
+  const res = await app.inject({ url: "/slow" });
+  assert.equal(res.status, 504);
+  assert.equal(res.body.type, "timeout");
+  await new Promise((r) => setImmediate(r));
+  assert.equal((aborted as DOMException).name, "TimeoutError");
+
+  const quick = inkan({ ...quiet, timeout: 1000 }).get("/q", async () => ({ ok: true }));
+  assert.equal((await quick.inject({ url: "/q" })).status, 200, "the app's timeout leaves quick routes alone");
+});
+
+test("ctx.signal aborts when the client goes away over a socket", async () => {
+  let reason: unknown;
+  let started!: () => void;
+  const begun = new Promise<void>((r) => (started = r));
+  const app = inkan(quiet).get("/wait", ({ signal }) => {
+    started();
+    return new Promise((resolve) => signal.addEventListener("abort", () => resolve((reason = signal.reason))));
+  });
+  const server = await app.listen(0, "127.0.0.1");
+  try {
+    const ac = new AbortController();
+    const req = fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}/wait`, { signal: ac.signal }).catch(() => undefined);
+    await begun;
+    ac.abort();
+    await req;
+    for (let i = 0; i < 50 && !reason; i++) await new Promise((r) => setTimeout(r, 10));
+    assert.equal((reason as DOMException).name, "AbortError");
+  } finally {
+    server.closeAllConnections();
+    server.close();
+  }
+});
+
+test("cache keeps a handler's answer per input and per caller, and asks once for many at the same time", async () => {
+  let asked = 0;
+  const app = inkan(quiet).get("/stock/:id", { params: t.object({ id: t.int() }), cache: { seconds: 60 } }, async ({ params, header }) => {
+    asked++;
+    header("x-from", "db");
+    await new Promise((r) => setTimeout(r, 20));
+    return { id: params.id, n: asked };
+  });
+  const same = await Promise.all([1, 2, 3].map(() => app.inject({ url: "/stock/1" })));
+  assert.equal(asked, 1, "three at once, one question");
+  assert.deepEqual(same.map((r) => r.body.n), [1, 1, 1]);
+  assert.ok(same.every((r) => r.headers["x-from"] === "db"), "headers the handler set come along");
+  assert.notEqual(same[0].headers["x-request-id"], same[1].headers["x-request-id"], "every answer keeps its own id");
+  await app.inject({ url: "/stock/2" });
+  assert.equal(asked, 2, "another input asks again");
+  await app.inject({ url: "/stock/1", headers: { cookie: "sid=other" } });
+  assert.equal(asked, 3, "another caller asks again");
+
+  let shared = 0;
+  const open = inkan(quiet).get("/menu", { cache: { seconds: 60, shared: true } }, () => ({ n: ++shared }));
+  await open.inject({ url: "/menu", headers: { cookie: "sid=a" } });
+  assert.equal((await open.inject({ url: "/menu", headers: { cookie: "sid=b" } })).body.n, 1, "shared: the same for everybody");
+
+  let failing = 0;
+  const flaky = inkan({ ...quiet, onError: () => {} }).get("/f", { cache: { seconds: 60 } }, () => {
+    if (++failing === 1) throw new Error("db down");
+    return { ok: true };
+  });
+  assert.equal((await flaky.inject({ url: "/f" })).status, 500);
+  assert.equal((await flaky.inject({ url: "/f" })).status, 200, "a failure is not kept");
+});
