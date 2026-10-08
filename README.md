@@ -641,6 +641,17 @@ everybody. The body limit holds while the body is read, with or without a
 `content-length`, and a stream the client stops reading stops its source. CI runs
 the same requests on Bun and Deno on every push.
 
+### Next.js, Vite, TanStack Query and friends
+
+[inkanjs/integrations](https://github.com/inkanjs/integrations) has a package for each:
+[`@inkanjs/next`](https://github.com/inkanjs/integrations/tree/main/packages/next) turns an
+app into Next.js route handlers in one line,
+[`@inkanjs/vite`](https://github.com/inkanjs/integrations/tree/main/packages/vite) runs the
+API inside `vite dev` on the frontend's port (Vue, React, Svelte, Solid), and
+[`@inkanjs/query`](https://github.com/inkanjs/integrations/tree/main/packages/query) gives
+TanStack Query the typed client. Nuxt, SvelteKit, Astro and Remix need no package; the
+[recipes](https://github.com/inkanjs/integrations/tree/main/recipes) show the few lines.
+
 ### Other servers
 
 `app.exchange({ method, url, headers, body, remote })` is the one door inkan has for
