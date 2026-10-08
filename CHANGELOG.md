@@ -29,6 +29,42 @@
 - **`cache` on a route** keeps the handler's answers per input and caller for a while, and
   asks once for many requests that come in at the same time.
 
+### Faster
+
+- **Less work per request.** A request id from a counter instead of a random UUID, route
+  data worked out once when the app is built, a request with a body routed once, no context
+  for a request no route takes, and the answer written into one object.
+- **Schemas check through stamps**: one function per schema, made once from its rules, in
+  place of a walk over the schema tree on every request. They check exactly as before.
+- **Answers trimmed to the contract in one step.** A plain object that holds just what the
+  contract lists goes to the native writer as it is; anything else is copied with only the
+  declared fields first. The copy is faster than the writer it replaces.
+- **Middleware without async frames of its own**, and bodies read without a promise.
+- The numbers, phase by phase, are in [`bench/reports/0.6.0.md`](bench/reports/0.6.0.md).
+
+### Fixed
+
+- An answer can no longer carry a key its contract does not list through an object whose
+  declared field came from its prototype or was not enumerable; such objects are copied
+  with only the declared fields first.
+- A declared field named like an `Object.prototype` member (`constructor`, `toString`) is
+  left out when missing, instead of being written as `null`.
+- An invalid `Date` in a `t.date()` field is written as `null` instead of throwing.
+- Functions and symbols in object fields and records are left out, as `JSON.stringify`
+  leaves them out, instead of being written as `null`.
+- An event name like `constructor` is a contract error for `t.events()`, not a crash.
+
+### Changed
+
+- **The request id is no longer a UUID.** A fresh id is a random prefix made once per
+  process, the cluster worker, and a counter: `0k3f9a2w3-1c8`. It is unique per process
+  and worker, but not unguessable; an id a client sends is still used when it looks safe.
+- **Seals are format 2.** `inkan seal` now stamps the checks only, and writing stays the
+  schema's own, so a sealed contract can never write differently. A seal made by 0.5 is
+  not used (with a warning) until `inkan seal` runs again.
+- An answer that had to be trimmed is written in the order of its contract's fields; one
+  that already fits keeps its own order, as before.
+
 ### For adapters
 
 - `AdapterResponse.cookies` holds the Set-Cookie headers, one per cookie; an adapter writes
