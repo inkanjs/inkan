@@ -1,6 +1,34 @@
 # Changelog
 
-## Unreleased
+## 0.5.0
+
+### New
+
+- **Bodies as they come.** `t.binary()` takes the whole body as bytes, of any media type,
+  for a file sent as the body itself. `t.stream()` hands the body to the handler unread, chunk
+  by chunk as it arrives, for uploads larger than memory; past its limit the stream throws a
+  413 problem, and an answer before the body is read (a 401, a problem the handler threw)
+  still reaches the client. Both take `.max(bytes)` and `.accept(...types)`; anything else
+  is a 415. OpenAPI lists the media types, and the typed client sends a `Blob`, bytes or a
+  `ReadableStream` as they are.
+- **A body limit per route.** `bodyLimit` on a route, or the `max` of a `t.binary()` or
+  `t.stream()` body, instead of the app's. The limit is known before the body is read, so a
+  request that says it is too large is a 413 at once. For adapters, `app.bodyFor(method,
+  url)` names the limit and whether to hand the body over unread, as `stream` on
+  `app.exchange()`; `app.fetch()` and `app.exchange()` keep to it.
+- **`serveStatic({ dir, spa, exclude })`**, a plugin for the built frontend next to the API:
+  hashed assets cached for a year, everything else asked for again, ETag and 304, HEAD, and
+  with `spa` the `index.html` for every path without a file, except under `exclude`. Every
+  route of the app wins against the files; nothing outside the folder and no dotfile is
+  served.
+- **`compress()`**, a plugin on one onSend hook: brotli or gzip, as the client's
+  accept-encoding takes it, for text, JSON, JavaScript and SVG above a threshold, streams
+  too, event streams not. `inject` unpacks what it gets, as `fetch` does.
+- **`ctx.ip`**, the client's address, from the socket or from the platform (`app.fetch(req,
+  { remote })`, an adapter's `remote`). `rateLimit` counts by it, so clients on Bun, Deno or
+  an adapter are told apart too.
+- **File routes under Vite.** The import that loads them is marked `@vite-ignore`, so a
+  bundler that sees inkan as source no longer warns about it.
 
 ### Changed
 

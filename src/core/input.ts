@@ -3,7 +3,7 @@
 
 import type { IncomingMessage } from "node:http";
 import { HttpProblem, problem } from "./problem.ts";
-import type { Issue, Schema, UploadedFile } from "../schema/schema.ts";
+import { RawBodySchema, StreamSchema, type Issue, type Schema, type UploadedFile } from "../schema/schema.ts";
 import type { Context, RouteRecord, Security } from "./route.ts";
 import { queryObject, type RawRequest } from "./context.ts";
 import { Buffer } from "node:buffer"; // explicit, for runtimes without a global Buffer
@@ -103,6 +103,29 @@ export function validateInput(
   ctx.query = take("query", spec.query, ctx.query, true);
   ctx.headers = take("headers", spec.headers, ctx.headers, true);
 
+  // a body taken as it comes: not parsed, only its media type checked, and a stream left unread
+  if (spec.body instanceof RawBodySchema) {
+    const type = contentType.split(";")[0].trim().toLowerCase();
+    const sent = raw.stream !== undefined || Boolean(raw.body?.length);
+    if (sent && !spec.body.accepts(type)) {
+      throw problem(415, "unsupported-media-type", `Send the body as ${spec.body.mediaTypes().join(" or ")}, not ${type || "without a type"}`);
+    }
+    const value =
+      spec.body instanceof StreamSchema
+        ? limited(raw.stream ?? chunks(raw.body), route.bodyLimit ?? Infinity)
+        : sent
+          ? raw.body ?? Buffer.alloc(0)
+          : spec.body.meta.optional
+            ? undefined
+            : Buffer.alloc(0);
+    ctx.body = take("body", spec.body, value, false);
+    if (errors.length) {
+      const where = [...new Set(errors.map((e) => e.in))].join(" and ");
+      throw new HttpProblem(400, "validation", `The ${where} does not match the contract`, { errors });
+    }
+    return;
+  }
+
   const finish = (body: Body) => {
     if (spec.body && (body.kind === "binary" || body.kind === "text")) {
       throw problem(415, "unsupported-media-type", "Send the body as application/json, application/x-www-form-urlencoded or multipart/form-data");
@@ -119,6 +142,64 @@ export function validateInput(
 }
 
 export const TOO_LARGE = Symbol("too large");
+
+/** How much of a body nobody reads is still taken in and let go, so the answer reaches the client; past it the connection is cut. */
+const DRAIN = 16 * 1024 * 1024;
+
+/**
+ * A request's body as it arrives, for a route that takes a stream. Read with `read()`
+ * rather than the request's own iterator: that one destroys the socket when the reader
+ * stops, and the answer (a 413, a problem the handler threw) would never arrive. Here a
+ * reader that stops early leaves the rest to be read and let go.
+ */
+export function requestStream(req: IncomingMessage): AsyncIterable<Buffer> {
+  return {
+    async *[Symbol.asyncIterator]() {
+      let finished = false;
+      try {
+        for (;;) {
+          const chunk = req.read() as Buffer | null;
+          if (chunk !== null) {
+            yield chunk;
+            continue;
+          }
+          if (req.readableEnded) return void (finished = true);
+          await new Promise<void>((resolve, reject) => {
+            const done = (err?: Error) => {
+              req.off("readable", ok).off("end", ok).off("error", done);
+              err ? reject(err) : resolve();
+            };
+            const ok = () => done();
+            req.on("readable", ok).on("end", ok).on("error", done);
+          });
+        }
+      } finally {
+        if (!finished && !req.destroyed) {
+          let left = DRAIN;
+          req.on("data", (c: Buffer) => {
+            if ((left -= c.length) < 0) req.destroy();
+          });
+          req.resume();
+        }
+      }
+    },
+  };
+}
+
+/** A whole body as a stream of one chunk, for a stream route reached by inject, fetch or an adapter. */
+async function* chunks(body: Buffer | undefined): AsyncIterable<Buffer> {
+  if (body?.length) yield body;
+}
+
+/** The body's chunks as they arrive, and a 413 problem the moment there are more than `limit` bytes. */
+async function* limited(source: AsyncIterable<Buffer>, limit: number): AsyncIterable<Buffer> {
+  let size = 0;
+  for await (const chunk of source) {
+    size += chunk.length;
+    if (size > limit) throw problem(413, "body-too-large", `Request bodies may be at most ${limit} bytes`);
+    yield chunk;
+  }
+}
 
 /** Reads a request body with plain events, which is cheaper than an async iterator per chunk. */
 export function readRequestBody(req: IncomingMessage, limit: number): Promise<Buffer | undefined | typeof TOO_LARGE> {

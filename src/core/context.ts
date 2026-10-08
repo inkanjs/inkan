@@ -11,6 +11,8 @@ export type RawRequest = {
   url: string;
   headers: Record<string, string | string[] | undefined>;
   body?: Buffer;
+  /** The body, unread, for a route that takes it as a stream; `body` stays undefined then. */
+  stream?: AsyncIterable<Buffer>;
   remote?: string;
   req?: IncomingMessage;
   res?: ServerResponse;
@@ -79,7 +81,9 @@ export class RequestContext {
   header: (name: string, value: string) => void;
   private target: Target;
   private host?: string;
+  private remote?: string;
   constructor(raw: RawRequest, target: Target, id: string, headers: Record<string, string>, out: { status: number; headers: Record<string, string> }) {
+    this.remote = raw.remote;
     this.method = raw.method;
     this.path = target.pathname;
     this.id = id;
@@ -91,6 +95,11 @@ export class RequestContext {
     this.host = headers.host; // kept here: a header schema may later strip it from ctx.headers
     this.status = (code) => void (out.status = code);
     this.header = (name, value) => void (out.headers[name.toLowerCase()] = value);
+  }
+  /** The client's address: the platform's word for it, or the socket's. */
+  get ip(): string | undefined {
+    const r = this.remote ?? this.req?.socket.remoteAddress;
+    return r === "unknown" ? undefined : r;
   }
   /** Built only when a handler asks for it; most never do. */
   get url(): URL {

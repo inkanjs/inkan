@@ -79,7 +79,8 @@ export async function loadRoutes(dir: string, define: (method: string, path: str
   for (const file of routeFiles(dir)) {
     const rel = relative(dir, file);
     const path = routePath(rel);
-    const mod = (await import(pathToFileURL(file).href)) as Record<string, unknown>;
+    // vite-ignore: the files are found at run time; a bundler has nothing to resolve here
+    const mod = (await import(/* @vite-ignore */ pathToFileURL(file).href)) as Record<string, unknown>;
     let found = false;
     for (const [name, method] of METHOD_EXPORTS) {
       const r = mod[name] as FileRoute | Handler<any, any, any, any, any> | undefined;

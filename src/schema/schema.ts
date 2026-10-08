@@ -856,6 +856,69 @@ export class FileSchema extends Schema<UploadedFile> {
   }
 }
 
+// ---------- bodies as they come ----------
+
+/**
+ * A request body taken as it comes, not parsed: a file sent as the body itself, a
+ * webhook's signed bytes. `max` is also the route's body limit, so it may be larger than
+ * the app's; `accept` names the media types it takes, and anything else is a 415.
+ */
+export abstract class RawBodySchema<T> extends Schema<T> {
+  /** @internal */
+  rules: { max?: number; accept?: string[] } = {};
+
+  /** The most bytes the body may have. It is this route's body limit, past the app's `bodyLimit` too. */
+  max(bytes: number) { const c = this.clone(); c.rules = { ...this.rules, max: bytes }; return c; }
+  /** Media types the body may have: `"image/png"`, or `"image/*"` for a whole family. Default: any. */
+  accept(...types: string[]) { const c = this.clone(); c.rules = { ...this.rules, accept: types }; return c; }
+
+  /** @internal Whether a body of this media type may come in. */
+  accepts(type: string) {
+    const { accept } = this.rules;
+    return !accept || accept.some((a) => (a.endsWith("/*") ? type.startsWith(a.slice(0, -1)) : type === a));
+  }
+  /** @internal The media types for the OpenAPI document. */
+  mediaTypes() {
+    return this.rules.accept?.length ? this.rules.accept : ["application/octet-stream"];
+  }
+
+  protected json() {
+    const s: JsonSchema = { type: "string", format: "binary" };
+    if (this.rules.max !== undefined) s["x-max-bytes"] = this.rules.max;
+    return s;
+  }
+}
+
+/** The whole body as bytes, read before the handler runs. */
+export class BinarySchema extends RawBodySchema<Buffer> {
+  protected check(v: unknown, path: string, _coerce: boolean, issues: Issue[]) {
+    if (!Buffer.isBuffer(v)) {
+      issues.push({ path, message: `expected the body as bytes, got ${typeOf(v)}` });
+      return FAIL;
+    }
+    if (v.length === 0 && !this.meta.optional) {
+      issues.push({ path, message: "is empty" });
+      return FAIL;
+    }
+    return v;
+  }
+}
+
+/**
+ * The body as a stream of chunks, read by the handler while it arrives: for an upload too
+ * large to hold in memory. Nothing is read before the handler, and past `max` the stream
+ * throws a 413 problem. Without `max` there is no limit.
+ */
+export class StreamSchema extends RawBodySchema<AsyncIterable<Buffer>> {
+  protected check(v: unknown, path: string, _coerce: boolean, issues: Issue[]) {
+    if (typeof v !== "object" || v === null || typeof (v as AsyncIterable<Buffer>)[Symbol.asyncIterator] !== "function") {
+      issues.push({ path, message: `expected the body as a stream, got ${typeOf(v)}` });
+      return FAIL;
+    }
+    return v as AsyncIterable<Buffer>;
+  }
+}
+
 /** One event of a server-sent event stream, as a handler yields it and a client reads it. */
 export type ServerEvent<E extends Record<string, Schema<any>>> = {
   [K in keyof E & string]: { event: K; data: Infer<E[K]>; id?: string };
@@ -918,6 +981,10 @@ export const t = {
   empty: () => new AnySchema<undefined>().optional().describe("No content"),
   /** A file in a multipart/form-data body. A body with a file in it is read as multipart. */
   file: () => new FileSchema(),
+  /** The whole request body as bytes, any media type: an upload sent as the body itself. */
+  binary: () => new BinarySchema(),
+  /** The request body as a stream of chunks, for the handler to read as it arrives: an upload too large for memory. */
+  stream: () => new StreamSchema(),
   /** A server-sent event stream: the events it may send, each with the schema of its data. */
   events: <E extends Record<string, Schema<any>>>(events: E) => new EventsSchema(events),
   /** An RFC 9457 problem document, the shape every inkan error has. */
