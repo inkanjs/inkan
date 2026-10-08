@@ -221,8 +221,8 @@ if (name.startsWith("inkan")) {
   // inkan-sealed runs on the seal `inkan seal seal-entry.mjs -o inkan.seal.js` writes
   const seal = name === "inkan-sealed" ? (await import("./inkan.seal.js")).default : undefined;
   if (name === "inkan-uws") {
-    // the same app on uWebSockets.js, through the adapter in adapters/uws
-    const { serve } = await import("../adapters/uws/index.js");
+    // the same app on uWebSockets.js, through @inkanjs/uws (github.com/inkanjs/integrations)
+    const { serve } = await import("@inkanjs/uws");
     await serve(app(false), { port: Number(port), host: "127.0.0.1" });
     ready();
   } else if (name === "inkan-cluster") {

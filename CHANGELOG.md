@@ -4,6 +4,9 @@
 
 ### Changed
 
+- **@inkanjs/uws moved** to [inkanjs/integrations](https://github.com/inkanjs/integrations),
+  next to `@inkanjs/next`, `@inkanjs/vite` and `@inkanjs/query`, and is on npm. The bench uses
+  it from there.
 - **Node 22 or newer.** The package said 20, which reached its end of life in April 2026
   and was never in CI; CI tests 22, 24 and 26.
 

@@ -41,7 +41,7 @@ jobs:
         working-directory: bench
       - name: uWebSockets.js for inkan-uws, installed on purpose from its GitHub release
         run: npm install --no-audit --no-fund --ignore-scripts --legacy-peer-deps --no-save --allow-git=all "uWebSockets.js@github:uNetworking/uWebSockets.js#v20.71.0"
-        working-directory: adapters/uws
+        working-directory: bench
       - name: the seal for inkan-sealed
         run: node ../src/cli.ts seal seal-entry.mjs -o inkan.seal.js
         working-directory: bench

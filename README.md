@@ -657,15 +657,16 @@ TanStack Query the typed client. Nuxt, SvelteKit, Astro and Remix need no packag
 `app.exchange({ method, url, headers, body, remote })` is the one door inkan has for
 any server: plain values in, `{ status, headers, body | stream }` out. `listen` and
 `fetch` use nothing else, and neither does an adapter. The first one is
-[`@inkanjs/uws`](adapters/uws), for [uWebSockets.js](https://github.com/uNetworking/uWebSockets.js):
+[`@inkanjs/uws`](https://github.com/inkanjs/integrations/tree/main/packages/uws), for [uWebSockets.js](https://github.com/uNetworking/uWebSockets.js):
 
 ```ts
 import { serve } from "@inkanjs/uws";
 const server = await serve(app, { port: 3000 });
 ```
 
-It is installed apart, so inkan itself keeps no dependencies, and CI runs the same
-set of requests against `listen`, `fetch` and every adapter. An adapter reads the
+It is installed apart, so inkan itself keeps no dependencies, and the same set of
+requests runs against `listen` and `fetch` here and against every adapter in
+[inkanjs/integrations](https://github.com/inkanjs/integrations). An adapter reads the
 body up to `app.options.bodyLimit`, writes the answer, aborts a stream whose client
 left, calls `done()` when the answer is out, and runs `app.started()` and
 `app.stopped()` around its server for the onListen and onClose hooks.

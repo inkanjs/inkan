@@ -50,17 +50,3 @@ jobs:
       - name: deno
         run: deno run --allow-env --allow-read test/platforms/smoke.ts
 
-  # the same requests on every adapter in adapters/, each with what it needs
-  adapters:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 24
-      - name: uWebSockets.js, installed on purpose from its GitHub release
-        run: npm install --no-audit --no-fund --ignore-scripts --legacy-peer-deps --no-save --allow-git=all "uWebSockets.js@github:uNetworking/uWebSockets.js#v20.71.0"
-        working-directory: adapters/uws
-      - run: node --test --test-timeout=20000 test.ts
-        working-directory: adapters/uws
