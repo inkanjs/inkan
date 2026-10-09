@@ -86,8 +86,12 @@ export function buildOpenAPI(records: RouteRecord[], info: OpenAPIInfo = {}) {
     return named._schema(ctx);
   };
 
+  // OpenAPI has no WebSockets: one is a GET with an extension, or, where the path has a GET of
+  // its own, an extension on the path item
+  const gets = new Set(records.filter((r) => r.method === "GET").map((r) => r.path));
   for (const r of records) {
     const { spec } = r;
+    const ws = r.method === "WS";
     if (spec.hidden) continue;
     const op: Record<string, unknown> = { operationId: spec.operationId ?? operationId(r) };
     if (spec.summary) op.summary = spec.summary;
@@ -151,6 +155,14 @@ export function buildOpenAPI(records: RouteRecord[], info: OpenAPIInfo = {}) {
         "x-inkan-implied": true,
       };
     }
+    if (ws) {
+      const { message, send } = spec as { message?: Schema<any>; send?: Schema<any> };
+      responses["101"] = { description: "Switching Protocols: the connection is a WebSocket from here on" };
+      op["x-inkan-websocket"] = {
+        message: message ? message._schema(ctx) : { description: "Text or binary, unchecked" },
+        send: send ? send._schema(ctx) : { description: "Unchecked" },
+      };
+    }
     if (!Object.keys(responses).length) responses["200"] = { description: "OK" };
     op.responses = responses;
     if (spec.examples?.length) op["x-inkan-examples"] = spec.examples;
@@ -160,7 +172,9 @@ export function buildOpenAPI(records: RouteRecord[], info: OpenAPIInfo = {}) {
       for (const b of r.box.chain()) for (const d of b.describers) d(op, (view ??= routeView(r)), components, ref);
     }
 
-    (paths[toOpenAPIPath(r.path)] ??= {})[r.method.toLowerCase()] = op;
+    const item = (paths[toOpenAPIPath(r.path)] ??= {});
+    if (!ws) item[r.method.toLowerCase()] = op;
+    else item[gets.has(r.path) ? "x-inkan-websocket" : "get"] = op;
   }
 
   const doc: Record<string, unknown> = {

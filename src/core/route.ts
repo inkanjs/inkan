@@ -8,6 +8,7 @@ import type { Infer, Schema } from "../schema/schema.ts";
 import type { EventStream } from "./stream.ts";
 import type { App } from "./app.ts";
 import type { Box, Hooks, Scope } from "./scope.ts";
+import { acceptor, type WsHandler, type WsMethod, type WsSpec } from "./ws.ts";
 
 export type Responses = { [status: number]: Schema<any> };
 
@@ -234,6 +235,8 @@ export type RouteRecord = {
   plan?: { hasContract: boolean; defaultStatus: number };
   /** @internal `ctx.route` for it: one object, shared by its requests. */
   info?: Readonly<RouteInfo>;
+  /** @internal For a WebSocket route (method "WS"): what runs once the upgrade request became a socket. */
+  socket?: WsHandler<any, any, any, any, any, any>;
 };
 
 /** What the type of an app remembers about one route, for the typed client. */
@@ -343,6 +346,22 @@ export class Routes<Defs extends RouteDefs = any, Deco = {}> {
   put: RouteMethod<this, "PUT"> = ((p: string, a: unknown, b?: unknown) => this.define("PUT", p, a, b)) as never;
   patch: RouteMethod<this, "PATCH"> = ((p: string, a: unknown, b?: unknown) => this.define("PATCH", p, a, b)) as never;
   delete: RouteMethod<this, "DELETE"> = ((p: string, a: unknown, b?: unknown) => this.define("DELETE", p, a, b)) as never;
+
+  /**
+   * A WebSocket at `path`. The upgrade request goes through the hooks, the security and the
+   * params, query and headers checks like a GET, and is answered with that status when one
+   * of them says no; only then does it become a socket. `message` is what the client sends,
+   * `send` what the server does: both JSON, both checked.
+   *
+   *   app.ws("/rooms/:room", { query: t.object({ name: t.string() }), message: Say, send: Said }, (socket, ctx) => {
+   *     socket.on("message", (m) => socket.send({ text: m.text, from: ctx.query.name }));
+   *   });
+   */
+  ws: WsMethod<this> = ((path: string, spec: WsSpec<any, any, any, any, any>, handler: WsHandler<any, any, any, any, any>) => {
+    const s = spec as RouteRecord["spec"];
+    this.add({ method: "WS", path, spec: s, handler: acceptor, use: spec.use ?? [], security: securityList(spec.security), socket: handler });
+    return this;
+  }) as never;
 
   /** Puts a group's routes under a prefix. In a chain, the type knows them under their new paths. */
   mount: MountMethod<this> = ((prefix: string, group: Routes) => {

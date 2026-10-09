@@ -1,7 +1,8 @@
 import cluster from "node:cluster";
 import { availableParallelism } from "node:os";
 import { brotliDecompressSync, gunzipSync } from "node:zlib";
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { createServer, ServerResponse, STATUS_CODES, type IncomingMessage, type Server } from "node:http";
+import type { Duplex } from "node:stream";
 import { HttpProblem, problem, type ProblemBody } from "./problem.ts";
 import { type Match, Router } from "./router.ts";
 import { EventsSchema, RawBodySchema, StreamSchema, t, type Infer, type Issue, type Schema, type UploadedFile } from "../schema/schema.ts";
@@ -23,6 +24,7 @@ import { jsonRows, SafeHtml } from "./helpers.ts";
 import { cached } from "./cache.ts";
 import { ArraySchema } from "../schema/schema.ts";
 import { readRequestBody, requestStream, TOO_LARGE, validateInput } from "./input.ts";
+import { Connection, UPGRADING, writeAnswer, writeSwitch, type Upgrading, type WsSpec } from "./ws.ts";
 import { Buffer } from "node:buffer"; // explicit, for runtimes without a global Buffer
 
 // ---------- the app ----------
@@ -439,7 +441,17 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
   private unmatched(m: Match<RouteRecord>, method: string, path: string, out: Exchange["out"]): HttpProblem | undefined {
     if (m.kind === "none") return problem(404, "not-found", `No route for ${method} ${path}`);
     if (m.kind !== "method") return;
-    const allow = [...m.allow, "OPTIONS"].join(", ");
+    let methods = m.allow;
+    if (methods.includes("WS")) {
+      // a WebSocket's path: a plain request is told to upgrade, and the Allow header names only HTTP methods
+      methods = methods.filter((a) => a !== "WS");
+      if (!methods.length && method !== "OPTIONS") {
+        const p = problem(426, "upgrade-required", `${path} is a WebSocket: open it with an upgrade to websocket`);
+        p.headers.upgrade = "websocket";
+        return p;
+      }
+    }
+    const allow = [...methods, "OPTIONS"].join(", ");
     if (method === "OPTIONS") {
       out.status = 204;
       out.headers.allow = allow;
@@ -835,6 +847,89 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
   }
 
   /**
+   * A Node `upgrade` listener, for `server.on("upgrade", app.upgradeListener)` on a server
+   * made by hand; `listen` adds it by itself when the app has a WebSocket route. An upgrade
+   * to a path without one is a 404.
+   */
+  get upgradeListener() {
+    return (req: IncomingMessage, socket: Duplex, head: Buffer) => void this.upgrade(req, socket, head);
+  }
+
+  /** @internal The open WebSockets, made with the first one. */
+  _sockets?: Set<Connection>;
+
+  /**
+   * An upgrade request: routed among the WebSocket routes, then the same way as any request
+   * (hooks, security, input, middleware). An answer other than the 101 the route's acceptor
+   * gives is written onto the socket as it is, and the connection ends.
+   */
+  private upgrade(req: IncomingMessage, socket: Duplex, head: Buffer) {
+    socket.on("error", () => {}); // a client that goes away mid-handshake is no crash; the socket reports the rest
+    if (this.loading) return void this.ready().then(() => this.upgrade(req, socket, head), (err) => this.broken(req, socket, err));
+    if (!this.built) this.build();
+    const url = target(req.url ?? "/");
+    const m = this.router.match("WS", url.pathname);
+    const route = m.kind === "found" ? m.route : undefined;
+    const gone = new AbortController(); // ctx.signal: aborted once the socket closes, before the upgrade or after it
+    socket.once("close", () => gone.abort(new DOMException("The client went away", "AbortError")));
+    const state: Upgrading = {};
+    (req as unknown as Record<symbol, Upgrading>)[UPGRADING] = state;
+    const raw = { method: req.method ?? "GET", url: req.url ?? "/", headers: req.headers, req, signal: gone.signal };
+    let out: RawResponse | Promise<RawResponse>;
+    try {
+      out = this.handle(raw, url, route ? m : NO_ROUTE);
+    } catch (err) {
+      return this.broken(req, socket, err);
+    }
+    const go = (o: RawResponse) => {
+      if (o.status !== 101 || !state.ctx || !route) {
+        o.abort?.abort();
+        writeAnswer(socket, o.status, STATUS_CODES[o.status] ?? "", o.headers, o.cookies, o.body);
+        return void o.done?.();
+      }
+      if (socket.destroyed) return void o.done?.();
+      writeSwitch(socket, req.headers["sec-websocket-key"] as string, o.headers, o.cookies);
+      o.done?.();
+      this.accept(route, state.ctx, socket, head);
+    };
+    if (out instanceof Promise) out.then(go, (err) => this.broken(req, socket, err));
+    else go(out);
+  }
+
+  /** The upgrade went through: the socket, and the route's handler with it. */
+  private accept(route: RouteRecord, ctx: Context<any, any, any, any, any>, socket: Duplex, head: Buffer) {
+    const spec = route.spec as WsSpec<unknown, unknown, unknown, unknown, unknown>;
+    const report = (err: unknown) => (this.options.onError ? this.options.onError(err, ctx) : console.error(err));
+    const ws = new Connection(socket, {
+      maxMessage: spec.maxMessage ?? 1024 * 1024,
+      heartbeat: spec.heartbeat ?? 30_000,
+      message: spec.message,
+      send: spec.send,
+      check: Boolean(this.options.validateResponses),
+      label: `WS ${route.path}`,
+      report,
+    });
+    const sockets = (this._sockets ??= new Set());
+    sockets.add(ws);
+    void ws.closed.then(() => sockets.delete(ws));
+    try {
+      const r = route.socket!(ws, ctx);
+      if (r instanceof Promise) r.catch((err) => ws.broke(err));
+    } catch (err) {
+      ws.broke(err);
+    }
+    ws.start(head);
+  }
+
+  /** Closes every open WebSocket with 1001 and resolves once they are gone: part of a shutdown. */
+  private closeSockets(): Promise<unknown> | undefined {
+    if (!this._sockets?.size) return;
+    const all = [...this._sockets];
+    for (const ws of all) ws.close(1001, "the server is shutting down");
+    return Promise.all(all.map((ws) => ws.closed));
+  }
+
+  /**
    * For adapters: how the body of a request to this method and target is to be read. `limit`
    * is the most bytes it may have, the route's own or the app's; with `stream` the adapter
    * hands the body over unread, as `AdapterRequest.stream`.
@@ -916,7 +1011,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
 
   /** For adapters: runs the onClose hooks, once the adapter's server has stopped taking requests. */
   async stopped(): Promise<void> {
-    await this._jobs?.stop();
+    await Promise.all([this._jobs?.stop(), this.closeSockets()]);
     for (const hook of this._onClose) await hook();
   }
 
@@ -953,9 +1048,13 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
   }
 
   /** Something failed outside every handler (the socket, inkan itself): log it and answer 500. */
-  private broken(req: IncomingMessage, res: ServerResponse, err: unknown) {
+  private broken(req: IncomingMessage, res: ServerResponse | Duplex, err: unknown) {
     if (this.options.onError) this.options.onError(err, { req, res } as never);
     else console.error(err);
+    if (!(res instanceof ServerResponse)) {
+      const body = JSON.stringify({ type: "internal", title: "Internal Server Error", status: 500, instance: req.url });
+      return writeAnswer(res, 500, "Internal Server Error", { "content-type": "application/problem+json" }, [], body);
+    }
     if (res.headersSent) return void res.destroy();
     const body = JSON.stringify({ type: "internal", title: "Internal Server Error", status: 500, instance: req.url });
     this.send(res, { status: 500, headers: { "content-type": "application/problem+json" }, body });
@@ -1060,6 +1159,8 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
 
   private open(port?: number, host?: string): Promise<Server> {
     const server = createServer(this.listener);
+    // only an app with a WebSocket route listens for upgrades; one without answers them as plain requests
+    if (this._records.some((r) => r.method === "WS")) server.on("upgrade", this.upgradeListener);
     if (process.env.INKAN_NO_LISTEN) return Promise.resolve(server); // the CLI loads the app only to read it
     const p = port ?? (process.env.PORT ? Number(process.env.PORT) : 3000);
     const h = host ?? process.env.HOST;
@@ -1077,7 +1178,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
               console.log(JSON.stringify({ time: new Date().toISOString(), msg: "listening", port, worker: WORKER }));
             } else this.banner(server);
           }
-          if (this.options.gracefulShutdown) shutdownOnSignal(server, this._onClose, [() => this._jobs?.stop()]);
+          if (this.options.gracefulShutdown) shutdownOnSignal(server, this._onClose, [() => this._jobs?.stop(), () => this.closeSockets()]);
           resolve(server);
         })().catch((err) => server.close(() => reject(err)));
       });
@@ -1102,6 +1203,9 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
 }
 
 export const inkan = (options?: AppOptions): App<{}, {}> => new App(options);
+
+/** The match an upgrade to a path without a WebSocket route gets: a 404, whatever HTTP routes the path has. */
+const NO_ROUTE: Match<RouteRecord> = { kind: "none" };
 
 /** `ctx.route.meta` of a route without `meta`. */
 const NO_META = Object.freeze({});

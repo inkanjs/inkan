@@ -226,6 +226,7 @@ export async function runChecks(app: App, opts: CheckOptions = {}): Promise<Chec
   const index = indexExamples(app);
   try {
     for (const r of app.routes()) {
+      if (r.method === "WS") continue; // a WebSocket has no examples to run
       const label = `${r.method} ${r.path}`;
       if (opts.only && !label.includes(opts.only)) continue;
       const examples = r.spec.examples ?? [];
