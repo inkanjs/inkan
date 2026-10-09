@@ -20,7 +20,7 @@
   With `workers`, `listen` refuses jobs kept in memory; `JobStore` is the interface for a
   store the processes share, `memoryStore()` the one inkan has. The routes get examples made
   from the first start example, so `inkan check` covers them.
-- **WebSockets.** `app.ws(path, { params, query, headers, message, send, security, maxMessage, heartbeat }, (socket, ctx) => …)`,
+- **WebSockets.** `app.ws(path, { params, query, headers, message, send, security, origins, maxMessage, maxConnections, heartbeat, handshakeTimeout }, (socket, ctx) => …)`,
   RFC 6455 written on `node:http`'s upgrade event, no dependency. The upgrade request is
   routed and goes through `onRequest`, the security, the params/query/headers checks,
   middleware and `preHandler` like a GET; a no answers with its status (400, 401, 404, …)
@@ -34,6 +34,20 @@
   off a peer that stops answering, the closing handshake with its codes. `socket.send`
   resolves once the socket takes more; `bufferedAmount` says how much waits. Messages that
   come before the handler listens wait for it. `ctx.signal` aborts when the socket closes.
+  `origins` guards against cross-site WebSocket hijacking: an upgrade whose Origin is not
+  the app's own (Host and `ctx.protocol`) is a 403 `origin-not-allowed` before any hook runs;
+  a list adds origins, a function `(origin, ctx) => boolean` decides alone, `"*"` lets every
+  page in, a request without an Origin (not a browser) goes through; `wsOrigins` sets it for
+  the whole app. Also before any hook: an upgrade that is not a GET over HTTP/1.1 without a
+  body is a 400, `sec-websocket-key` has to be canonical base64, and past `maxConnections`
+  it is a 503 `too-many-connections`. A handshake that is not answered within
+  `handshakeTimeout` (default 10 s) is cut off. Limits: a message comes in at most 1024
+  frames, each after the first counted 64 bytes against `maxMessage`; text is checked as
+  UTF-8 frame by frame; at most 4 × `maxMessage` (1 MiB at least) waits to be written, past
+  it the socket is cut off with 1008; a peer that floods pings without reading gets only
+  its latest one answered, and nothing goes out after the server's close frame. Close
+  reasons name the path and the rule, never the value sent. Binary messages are copies of
+  their own.
   On SIGINT or SIGTERM every socket is closed with 1001. A plain request to a WebSocket
   path is a 426. `listen` only listens for upgrades when the app has a WebSocket route;
   a hand-made server takes `server.on("upgrade", app.upgradeListener)`. Not there:
