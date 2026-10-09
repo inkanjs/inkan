@@ -14,7 +14,7 @@ import { folderOf, loadRoutes } from "./files.ts";
 import type { HttpProblem } from "./problem.ts";
 import { defineJob, type JobHub, type JobMethod } from "./jobs.ts";
 import type { JsonSchema, Schema } from "../schema/schema.ts";
-import { joinPath, Routes, type Context, type DecoOf, type OperationRoute, type RouteDefs, type RouteInfo, type RouteRecord, type WithDeco } from "./route.ts";
+import { joinPath, Routes, type Context, type DecoOf, type OperationRoute, type Prefixed, type RouteDefs, type RouteInfo, type RouteRecord, type WithDeco, type WithRoutes } from "./route.ts";
 
 type Ctx<Deco> = Context<any, any, any, any, any> & Deco;
 /** `decorate` as a property, so its type can name the app or scope it returns. */
@@ -34,11 +34,16 @@ export type ResolveOptions = {
    */
   when?: (route: RouteInfo) => boolean;
 };
-/** `register` as a property: the scope it returns knows what a shared plugin decorated. */
-export type RegisterMethod<Self> = <O extends object = {}, A = {}>(
-  p: Plugin<O, DecoOf<Self>, A> | ((app: Scope<{}, DecoOf<Self>>, options: O) => unknown),
-  options?: O & { prefix?: string },
-) => WithDeco<Self, A>;
+/**
+ * `register` as a property: the scope it returns knows what a shared plugin decorated, and
+ * the routes a plugin made with `plugin()` defined, under the prefix it is registered with.
+ */
+export type RegisterMethod<Self> = <O extends object = {}, A = {}, D extends RouteDefs = {}, Pre extends string = "">(
+  p: Plugin<O, DecoOf<Self>, A, D> | ((app: Scope<{}, DecoOf<Self>>, options: O) => unknown),
+  options?: O & { prefix?: Pre },
+) => WithRoutes<WithDeco<Self, A>, Prefixed<D, Pre>>;
+/** Only a type: the routes a plugin's setup defined in a chain on the scope it returns. */
+type RoutesOf<R> = R extends { readonly _defs: infer D extends RouteDefs } ? (0 extends 1 & D ? {} : D) : {};
 
 /** An answer on its way out, as onSend sees it. A hook may change it, or return another. */
 export type Outgoing = {
@@ -150,16 +155,20 @@ export interface Root {
 const SHARED = Symbol("inkan.shared");
 /** Only a type: what a shared plugin puts on the context of the scope it is registered in. */
 declare const ADDS: unique symbol;
+/** Only a type: the routes a plugin defines, for the type of the app it is registered in. */
+declare const DEFS: unique symbol;
 
 /**
  * A plugin: a function that gets a scope of its own and the options it was registered with.
  * Make one with `plugin()` to name it or to share what it adds with the scope around it.
- * `Deco` is what it needs on the context, `Adds` what a shared one puts there.
+ * `Deco` is what it needs on the context, `Adds` what a shared one puts there, `Defs` the
+ * routes it defines, by `"METHOD /path"` without the prefix it is registered with.
  */
-export type Plugin<O = any, Deco = any, Adds = {}> = ((app: Scope<{}, Deco>, options: O) => unknown) & {
+export type Plugin<O = any, Deco = any, Adds = {}, Defs extends RouteDefs = {}> = ((app: Scope<{}, Deco>, options: O) => unknown) & {
   readonly [SHARED]?: boolean;
   readonly pluginName?: string;
   readonly [ADDS]?: Adds;
+  readonly [DEFS]?: Defs;
 };
 
 /**
@@ -172,11 +181,19 @@ export type Plugin<O = any, Deco = any, Adds = {}> = ((app: Scope<{}, Deco>, opt
  * parameter, not as a type argument, or there is nothing left to infer them from.
  *
  *   const auth = plugin((app, o: AuthOptions) => app.decorateRequest("user", (ctx) => read(ctx, o)), { shared: true });
+ *
+ * Any plugin, shared or not, that returns its scope hands on the routes it defined in that
+ * chain too: after `app.register(auth, { prefix: "/auth" })` the typed client of the app
+ * knows `POST /auth/login`. A plain function passed to `register` hands on nothing.
  */
 export function plugin<O = {}, Deco = {}, R = void>(
   setup: (app: Scope<{}, Deco>, options: O) => R,
   opts: { name?: string; shared: true },
-): Plugin<O, Deco, DecoOf<Awaited<R>>>;
+): Plugin<O, Deco, DecoOf<Awaited<R>>, RoutesOf<Awaited<R>>>;
+export function plugin<O = {}, Deco = {}, R = void>(
+  setup: (app: Scope<{}, Deco>, options: O) => R,
+  opts?: { name?: string; shared?: false },
+): Plugin<O, Deco, {}, RoutesOf<Awaited<R>>>;
 export function plugin<O = {}, Deco = {}>(setup: (app: Scope<{}, Deco>, options: O) => unknown, opts?: { name?: string; shared?: boolean }): Plugin<O, Deco>;
 export function plugin(setup: (app: Scope, options: unknown) => unknown, opts: { name?: string; shared?: boolean } = {}): Plugin {
   const p = (app: Scope, options: unknown) => setup(app, options);

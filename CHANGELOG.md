@@ -38,6 +38,12 @@
   (`(app) => app.decorateRequest("user", …)`) hands its decorations on: after
   `app.register(auth)` the handlers see `ctx.user` typed. `Plugin` has a third type
   parameter for what it adds.
+- **Routes out of plugins reach the typed client.** A plugin made with `plugin()`, shared or
+  not, that returns its scope hands on the routes it defined in that chain: after
+  `app.register(auth, { prefix: "/auth" })`, `client<typeof app>` knows `POST /auth/login`
+  with its params, body and answers. Prefixes add up through plugins that register others.
+  `Plugin` has a fourth type parameter for its routes; a plain function passed to
+  `register` hands no types on.
 - **`ctx.route.security` and `ctx.route.meta`.** Hooks see the credentials a route asks
   for, its own or its group's, and a free-form `meta` from its spec
   (`{ meta: { auth: { roles: ["admin"] } } }`). Plugins name what they read by extending
