@@ -6,6 +6,7 @@
 //
 //   cd bench && npm install && node run.mjs [servers] [seconds] [rounds]
 //   node run.mjs node,fastify,hono,inkan,express 15 3
+//   ONLY="hello · 10 connections" PIN=12 node run.mjs node,fastify,inkan 5 5
 
 import { spawn } from "node:child_process";
 import { appendFileSync, readFileSync } from "node:fs";
@@ -21,7 +22,7 @@ const warmup = 3;
 const workers = Math.max(1, Math.min(4, availableParallelism() - 1));
 const json = { "content-type": "application/json" };
 
-const scenarios = [
+const all = [
   { name: "hello · 10 connections", path: "/hello", connections: 10, status: 200 },
   { name: "hello · 100 connections", path: "/hello", status: 200 },
   { name: "hello · 512 connections", path: "/hello", connections: 512, status: 200 },
@@ -35,6 +36,9 @@ const scenarios = [
   { name: "404", path: "/nowhere/at/all", status: 404 },
   { name: "400 (invalid body)", path: "/users", method: "POST", headers: json, body: '{"name":"","age":"x"}', status: 400 },
 ];
+// ONLY="hello · 10 connections,404" measures some scenarios only
+const only = process.env.ONLY?.split(",");
+const scenarios = only ? all.filter((s) => only.includes(s.name)) : all;
 
 const cannon = (opts) => new Promise((resolve, reject) => autocannon(opts, (err, res) => (err ? reject(err) : resolve(res))));
 const median = (xs) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)];
