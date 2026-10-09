@@ -5,7 +5,14 @@
 //
 // The route is an ordinary route of the method "WS": the upgrade request goes through the
 // router, the hooks, the security and the input checks like a GET, and only once all of
-// them let it through does it become a socket.
+// them let it through does it become a socket. Before all of them come the checks that cost
+// nothing: a GET over HTTP/1.1 without a body, a page of an allowed origin, a free slot
+// under `maxConnections`; and the whole handshake has `handshakeTimeout` to finish.
+//
+// Limits: a message has at most `maxMessage` bytes and MAX_FRAGMENTS frames (each frame
+// after the first costs FRAME_COST bytes more), text is checked as UTF-8 frame by frame,
+// and at most four times `maxMessage` (1 MiB at least) may wait to be written before the
+// socket is cut off with 1008. While the peer reads nothing, only its latest ping is answered.
 //
 // Broadcasting needs no helper, a Set will do (one per process when the app runs `workers`):
 //
@@ -51,11 +58,33 @@ export type WsSpec<P, Q, H, In, Out> = {
   /** Middleware for the upgrade request. It runs after the input was validated. */
   use?: Middleware[];
   meta?: RouteMeta;
-  /** The most bytes one message may have, fragments together. Past it the socket closes with 1009. Default 1 MiB. */
+  /**
+   * The most bytes one message may have, fragments together, each fragment after the first
+   * counted 64 bytes more; a message comes in at most 1024 frames. Past either the socket
+   * closes with 1009. Four times this (1 MiB at least) may wait to be written before the
+   * socket is cut off with 1008. Default 1 MiB.
+   */
   maxMessage?: number;
   /** Milliseconds between pings; a peer that has not answered the last one by the next is cut off. Default 30 000, false for none. */
   heartbeat?: number | false;
+  /**
+   * The pages that may open the socket, by the Origin header browsers send. Default (or the
+   * app's `wsOrigins`): only the app's own origin (the Host header and `ctx.protocol`), and
+   * requests without an Origin, which are not browsers. A list adds those origins to the own
+   * one; a function decides alone (its `ctx` is the request before hooks and input checks:
+   * headers, protocol, path); `"*"` lets every page in. Anything else is a 403
+   * `origin-not-allowed` before any hook runs, so another site cannot open the socket with
+   * the user's cookies (cross-site WebSocket hijacking).
+   */
+  origins?: WsOrigins;
+  /** The most sockets this route holds open at once, handshakes on the way counted; past it the upgrade is a 503. Default: no limit. */
+  maxConnections?: number;
+  /** Milliseconds the upgrade request has to get its answer (hooks, security, middleware) before the connection is cut. Default 10 000. */
+  handshakeTimeout?: number;
 };
+
+/** Which pages may open a WebSocket: see `WsSpec.origins`. */
+export type WsOrigins = string[] | "*" | ((origin: string | undefined, ctx: Context<any, any, any, any, any>) => boolean);
 
 /** The socket a WebSocket route's handler gets. `In` is what the client sends, `Out` what the server does. */
 export interface WsSocket<In = string | Buffer, Out = unknown> extends AsyncIterable<In> {
@@ -92,6 +121,34 @@ export type WsMethod<Self> = <Path extends string, P = PathParams<Path>, Q = Raw
 const GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 export const acceptKey = (key: string) => createHash("sha1").update(key + GUID).digest("base64");
 
+/** Whether a sec-websocket-key is 16 bytes in canonical base64: decoded and encoded again, it is the same text. */
+export const canonicalKey = (key: unknown): key is string =>
+  typeof key === "string" && key.length === 24 && Buffer.from(key, "base64").toString("base64") === key;
+
+/**
+ * Whether the page an upgrade comes from may open the socket. `own` is the app's origin as the
+ * request names it (scheme and Host). Origins are compared as URL origins, so `http://X:80`
+ * is `http://x`.
+ */
+export function originAllowed(rule: WsOrigins | undefined, origin: string | undefined, own: () => string, ctx: () => Context<any, any, any, any, any>): boolean {
+  if (rule === "*") return true;
+  if (typeof rule === "function") return rule(origin, ctx()) === true;
+  if (origin === undefined) return true; // not a browser: no cookies of somebody else's to ride on
+  const o = originOf(origin);
+  if (!o) return false; // "null", or not a URL
+  if (o === originOf(own())) return true;
+  return Array.isArray(rule) && rule.some((r) => originOf(r) === o);
+}
+
+function originOf(s: string): string | undefined {
+  try {
+    const o = new URL(s).origin;
+    return o === "null" ? undefined : o;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Marks an IncomingMessage that came in through the upgrade event; the route's acceptor finds it there. */
 export const UPGRADING = Symbol("inkan.upgrading");
 export type Upgrading = { ctx?: Context<any, any, any, any, any> };
@@ -101,6 +158,7 @@ export function acceptor(ctx: Context<any, any, any, any, any>): undefined {
   const req = ctx.req as (Record<symbol, Upgrading | undefined> & { headers: Record<string, string | string[] | undefined> }) | undefined;
   const state = req?.[UPGRADING];
   const h = req?.headers ?? {};
+  // strict on purpose: the header is "websocket" and nothing else, not a list to pick from
   if (!state || String(h.upgrade).toLowerCase() !== "websocket") {
     const p = problem(426, "upgrade-required", `${ctx.path} is a WebSocket: open it with an upgrade to websocket`);
     p.headers.upgrade = "websocket";
@@ -113,7 +171,7 @@ export function acceptor(ctx: Context<any, any, any, any, any>): undefined {
     throw p;
   }
   const key = h["sec-websocket-key"];
-  if (typeof key !== "string" || !/^[A-Za-z0-9+/]{22}==$/.test(key)) throw problem(400, "bad-handshake", "sec-websocket-key is not 16 bytes in base64");
+  if (!canonicalKey(key)) throw problem(400, "bad-handshake", "sec-websocket-key is not 16 bytes in base64");
   state.ctx = ctx;
   ctx.status(101);
   return undefined;
@@ -155,6 +213,20 @@ function reasonBytes(reason: string): Buffer {
   while (end > 0 && (b[end]! & 0xc0) === 0x80) end--; // back to the start of a character
   return b.subarray(0, end);
 }
+
+/** Bytes of their own: a message that is a view into a socket's chunk would keep the whole chunk alive. */
+function own(b: Buffer): Buffer {
+  if (b.byteOffset === 0 && b.buffer.byteLength === b.length) return b;
+  const copy = Buffer.allocUnsafeSlow(b.length);
+  b.copy(copy);
+  return copy;
+}
+
+/** An issue's rule without the value the client sent ("expected an integer, got ..."): a close reason echoes no input. */
+const withoutValue = (message: string) => {
+  const i = message.indexOf(", got ");
+  return i < 0 ? message : message.slice(0, i);
+};
 
 /** Bytes as they arrive, taken off the front in the sizes the frames ask for. */
 class Bytes {
@@ -214,6 +286,12 @@ export type SocketOptions = {
 
 const CLOSE_WAIT = 3000; // ms the client has to answer a close frame before the socket is cut
 const HOLD = 16; // messages kept for a handler that does not listen yet, before reading pauses
+/** The most frames one message may come in; past it the socket closes with 1009. Not an option. */
+export const MAX_FRAGMENTS = 1024;
+/** What each frame after a message's first costs against `maxMessage`, on top of its bytes: empty frames are not free. */
+const FRAME_COST = 64;
+/** The least the write buffer may hold before a socket is cut off with 1008; otherwise four times `maxMessage`. */
+const MIN_BUFFER = 1024 * 1024;
 
 type Listeners = { message: ((m: any) => void)[]; close: ((code: number, reason: string) => void)[]; error: ((e: Error) => void)[] };
 
@@ -237,6 +315,14 @@ export class Connection implements WsSocket<any, any> {
   private parts: Buffer[] = [];
   private partsOp = 0;
   private partsSize = 0;
+  private frames = 0;
+  /** A fragmented text message, decoded as it comes so bad UTF-8 is caught at once. */
+  private decoder?: TextDecoder;
+  private texts: string[] = [];
+  /** The payload of the latest ping not yet answered, while the socket cannot take more. */
+  private pong?: Buffer;
+  /** The most bytes waiting to be written before the socket is cut off. */
+  private bufferCap: number;
   private alive = true;
   private pinger?: ReturnType<typeof setInterval>;
   private closer?: ReturnType<typeof setTimeout>;
@@ -251,6 +337,7 @@ export class Connection implements WsSocket<any, any> {
   constructor(socket: Duplex, options: SocketOptions) {
     this.socket = socket;
     this.o = options;
+    this.bufferCap = Math.max(4 * options.maxMessage, MIN_BUFFER);
     if (options.send) this.write = options.send._serializer();
     let done!: () => void;
     this.closed = new Promise((r) => (done = r));
@@ -341,6 +428,7 @@ export class Connection implements WsSocket<any, any> {
     this.stopped = true;
     this.bytes = new Bytes();
     this.parts = [];
+    this.texts = [];
     this.sendClose(code, reason);
     this.socket.end();
     this.closer ??= setTimeout(() => this.socket.destroy(), CLOSE_WAIT);
@@ -367,6 +455,15 @@ export class Connection implements WsSocket<any, any> {
   private put(op: number, payload: Buffer): boolean {
     const s = this.socket;
     if (s.destroyed || !s.writable) return true;
+    if (this.sentClose && op !== CLOSE) return true; // nothing goes out after our close frame
+    if ((s as Duplex & { writableLength: number }).writableLength > this.bufferCap) {
+      // the peer does not read, or the handler writes without waiting: cut it off
+      this.code = 1008;
+      this.reason = "too much is waiting to be written";
+      this.readyState = 2;
+      s.destroy();
+      return true;
+    }
     const parts = frame(op, payload);
     if (parts.length === 1) return s.write(parts[0]);
     s.cork();
@@ -440,7 +537,9 @@ export class Connection implements WsSocket<any, any> {
           if (op !== CONTINUATION && op !== TEXT && op !== BINARY) return this.fail(1002, `unknown opcode ${op}`);
           if (op === CONTINUATION && !this.partsOp) return this.fail(1002, "a continuation without a message to continue");
           if (op !== CONTINUATION && this.partsOp) return this.fail(1002, "a new message before the last one ended");
-          if (this.partsSize + len > this.o.maxMessage) return this.fail(1009, `messages may have at most ${this.o.maxMessage} bytes`);
+          const frames = op === CONTINUATION ? this.frames + 1 : 1;
+          if (frames > MAX_FRAGMENTS) return this.fail(1009, `a message may come in at most ${MAX_FRAGMENTS} frames`);
+          if (this.partsSize + len + (frames - 1) * FRAME_COST > this.o.maxMessage) return this.fail(1009, `messages may have at most ${this.o.maxMessage} bytes`);
         }
         this.len = len;
         this.head = false;
@@ -457,20 +556,52 @@ export class Connection implements WsSocket<any, any> {
 
   private frameIn(payload: Buffer) {
     const op = this.op;
-    if (op === PING) return void this.put(PONG, payload);
+    if (op === PING) return this.pingIn(payload);
     if (op === PONG) return;
     if (op === CLOSE) return this.closeIn(payload);
     if (this.sentClose) return; // closing: data is no longer delivered
-    if (op !== CONTINUATION) this.partsOp = op;
-    this.parts.push(payload);
+    if (op !== CONTINUATION) {
+      if (this.fin) return this.message(op, payload); // one frame, the usual case
+      this.partsOp = op;
+      this.frames = 0;
+      if (op === TEXT) this.decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+    }
+    this.frames++;
     this.partsSize += payload.length;
+    if (this.decoder) {
+      let text: string;
+      try {
+        text = this.decoder.decode(payload, { stream: !this.fin }); // a character split across frames waits for its rest
+      } catch {
+        return this.fail(1007, "a text message that is not valid UTF-8");
+      }
+      if (text) this.texts.push(text);
+    } else if (payload.length) this.parts.push(payload);
     if (!this.fin) return;
-    const whole = this.parts.length === 1 ? this.parts[0]! : Buffer.concat(this.parts, this.partsSize);
     const kind = this.partsOp;
+    const whole = this.decoder ? this.texts.join("") : this.parts.length === 1 ? this.parts[0]! : Buffer.concat(this.parts, this.partsSize);
     this.parts = [];
+    this.texts = [];
+    this.decoder = undefined;
     this.partsOp = 0;
     this.partsSize = 0;
+    this.frames = 0;
     this.message(kind, whole);
+  }
+
+  /** A ping is answered with a pong; while the socket cannot take more, only the latest one is. */
+  private pingIn(payload: Buffer) {
+    if (this.sentClose) return;
+    const s = this.socket as Duplex & { writableNeedDrain?: boolean };
+    if (!s.writableNeedDrain) return void this.put(PONG, payload);
+    const waiting = this.pong !== undefined;
+    this.pong = Buffer.from(payload);
+    if (waiting) return;
+    s.once("drain", () => {
+      const p = this.pong;
+      this.pong = undefined;
+      if (p) this.put(PONG, p);
+    });
   }
 
   private closeIn(payload: Buffer) {
@@ -499,12 +630,13 @@ export class Connection implements WsSocket<any, any> {
     this.socket.end();
   }
 
-  private message(kind: number, data: Buffer) {
+  private message(kind: number, data: Buffer | string) {
     let value: unknown;
-    if (kind === TEXT) {
+    if (typeof data === "string") value = data; // decoded frame by frame already
+    else if (kind === TEXT) {
       if (!isUtf8(data)) return this.fail(1007, "a text message that is not valid UTF-8");
       value = data.toString();
-    } else value = data;
+    } else value = own(data);
     const contract = this.o.message;
     if (contract) {
       if (kind !== TEXT) return this.fail(1003, "messages are JSON text, not binary");
@@ -514,7 +646,7 @@ export class Connection implements WsSocket<any, any> {
         return this.fail(1007, "the message is not JSON");
       }
       const r = contract.safeParse(value);
-      if (!r.ok) return this.fail(1007, r.issues.map((i) => `${i.path || "(message)"} ${i.message}`).join("; "));
+      if (!r.ok) return this.fail(1007, r.issues.map((i) => `${i.path || "(message)"} ${withoutValue(i.message)}`).join("; "));
       value = r.value;
     }
     if (!this.listeners.message.length || this.held.length) {

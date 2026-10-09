@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { connect, type Socket } from "node:net";
 import { request } from "node:http";
 import { randomBytes } from "node:crypto";
-import { inkan, t, type App } from "../src/index.ts";
+import { inkan, t, type App, type WsSocket } from "../src/index.ts";
 import { client } from "../src/client.ts";
 
 const quiet = { log: false, gracefulShutdown: false } as const;
@@ -477,6 +477,238 @@ test("send resolves once the socket can take more, and bufferedAmount says how m
   }
 });
 
+// ---------- hardening ----------
+
+/** Writes `text` on a fresh connection and collects what comes back until the server hangs up or `ms` pass. */
+function exchange(port: number, text: string, ms = 2000): Promise<{ status: number; text: string; closed: boolean }> {
+  return new Promise((resolve) => {
+    const sock = connect(port, "127.0.0.1");
+    let got = "";
+    let over = false;
+    const done = (closed: boolean) => {
+      if (over) return;
+      over = true;
+      clearTimeout(timer);
+      sock.destroy();
+      resolve({ status: Number(got.split(" ")[1]) || 0, text: got, closed });
+    };
+    const timer = setTimeout(() => done(false), ms);
+    sock.on("data", (b) => (got += b.toString()));
+    sock.on("error", () => {});
+    sock.on("close", () => done(true));
+    sock.write(text);
+  });
+}
+const handshake = (path: string, extra = "", line = `GET ${path} HTTP/1.1`) =>
+  `${line}\r\nHost: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: ${randomBytes(16).toString("base64")}\r\n${extra}\r\n`;
+
+test("empty continuation frames cannot pile up: a message has at most 1024 fragments, each charged against maxMessage", async () => {
+  const app = inkan(quiet)
+    .ws("/o", {}, (socket) => socket.on("message", () => {}))
+    .ws("/small", { maxMessage: 1000 }, (socket) => socket.on("message", (m) => void socket.sendRaw(m)));
+  const s = await served(app);
+  try {
+    const r = await raw(s.port, "/o");
+    r.send(0x1, Buffer.alloc(0), { fin: false });
+    const empty = Buffer.from([0x00, 0x80, 1, 2, 3, 4]); // a masked, empty continuation
+    r.sock.write(Buffer.concat(Array(5000).fill(empty)));
+    assert.equal((closeCode(await r.next()) as { code: number }).code, 1009);
+
+    // 100 one-byte fragments are 100 bytes, but the frames they came in cost more than 1000
+    const q = await raw(s.port, "/small");
+    q.send(0x1, "x", { fin: false });
+    for (let i = 0; i < 98; i++) q.send(0x0, "x", { fin: false });
+    q.send(0x0, "x");
+    assert.equal((closeCode(await q.next()) as { code: number }).code, 1009);
+  } finally {
+    await s.close();
+  }
+});
+
+test("a cross-site upgrade is a 403 before any hook runs; same origin, listed origins, \"*\" and no Origin go through", async () => {
+  let hooks = 0;
+  const app = inkan(quiet)
+    .ws("/s", {}, () => {})
+    .ws("/listed", { origins: ["https://good.example"] }, () => {})
+    .ws("/any", { origins: "*" }, () => {})
+    .ws("/fn", { origins: (origin, ctx) => origin === "http://fn.example" && ctx.path === "/fn" }, () => {});
+  app.onRequest(() => void hooks++);
+  const s = await served(app);
+  try {
+    const evil = await exchange(s.port, handshake("/s", "Origin: http://evil.example\r\nCookie: sid=abc\r\n"));
+    assert.equal(evil.status, 403);
+    assert.match(evil.text, /"type":"origin-not-allowed"/);
+    assert.equal(hooks, 0, "no hook ran");
+    assert.equal((await exchange(s.port, handshake("/s", "Origin: https://x\r\n"))).status, 403, "another scheme is another origin");
+    assert.equal((await exchange(s.port, handshake("/s", "Origin: null\r\n"))).status, 403);
+
+    const ok = async (path: string, origin?: string) => {
+      const r = await raw(s.port, path, origin ? `Origin: ${origin}\r\n` : "");
+      r.sock.destroy();
+      return r.status;
+    };
+    assert.equal(await ok("/s", "http://x"), 101, "same origin");
+    assert.equal(await ok("/s", "http://X:80"), 101, "same origin, spelled otherwise");
+    assert.equal(await ok("/s"), 101, "no Origin: not a browser");
+    assert.equal(await ok("/listed", "https://good.example"), 101);
+    assert.equal(await ok("/listed", "http://x"), 101, "the own origin stays allowed");
+    assert.equal((await exchange(s.port, handshake("/listed", "Origin: https://evil.example\r\n"))).status, 403);
+    assert.equal(await ok("/any", "http://evil.example"), 101);
+    assert.equal(await ok("/fn", "http://fn.example"), 101);
+    assert.equal((await exchange(s.port, handshake("/fn", "Origin: http://x\r\n"))).status, 403);
+
+    const t2 = await served(inkan({ ...quiet, wsOrigins: "*" }).ws("/s", {}, () => {}));
+    try {
+      const r = await raw(t2.port, "/s", "Origin: http://evil.example\r\n");
+      r.sock.destroy();
+      assert.equal(r.status, 101, "the app's default");
+    } finally {
+      await t2.close();
+    }
+  } finally {
+    await s.close();
+  }
+});
+
+test("a ping flood from a peer that does not read stays bounded: pongs are coalesced", async () => {
+  let ws: WsSocket | undefined;
+  const app = inkan(quiet).ws("/o", { heartbeat: false }, (socket) => void (ws = socket));
+  const s = await served(app);
+  try {
+    const r = await raw(s.port, "/o");
+    r.sock.pause();
+    const ping = Buffer.concat([Buffer.from([0x89, 0x80 | 125]), randomBytes(4), Buffer.alloc(125)]);
+    const batch = Buffer.concat(Array(2000).fill(ping));
+    for (let i = 0; i < 60; i++) if (!r.sock.write(batch)) await new Promise((x) => r.sock.once("drain", x));
+    await sleep(200);
+    assert.equal(ws!.readyState, 1, "still open");
+    assert.ok(ws!.bufferedAmount < 256 * 1024, `bufferedAmount ${ws!.bufferedAmount}`);
+    r.sock.destroy();
+  } finally {
+    await s.close();
+  }
+});
+
+test("a handler that writes past the buffer limit without waiting is cut off with 1008", async () => {
+  let code: number | undefined;
+  const app = inkan(quiet).ws("/flood", { heartbeat: false }, (socket) => {
+    socket.on("close", (c) => (code = c));
+    const chunk = Buffer.alloc(64 * 1024);
+    for (let i = 0; i < 400; i++) void socket.sendRaw(chunk);
+  });
+  const s = await served(app);
+  try {
+    const r = await raw(s.port, "/flood");
+    r.sock.pause();
+    for (let i = 0; i < 100 && code === undefined; i++) await sleep(20);
+    assert.equal(code, 1008);
+    r.sock.destroy();
+  } finally {
+    await s.close();
+  }
+});
+
+test("nothing goes out after the server's close frame, not even a pong", async () => {
+  const app = inkan(quiet).ws("/kick", {}, (socket) => socket.close(4001, "go away"));
+  const s = await served(app);
+  try {
+    const r = await raw(s.port, "/kick");
+    assert.equal((closeCode(await r.next()) as { code: number }).code, 4001);
+    r.send(0x9, "still there?");
+    await assert.rejects(r.next(300), /no frame came/);
+    r.sock.destroy();
+  } finally {
+    await s.close();
+  }
+});
+
+test("a handshake that never gets an answer is cut off; maxConnections answers 503 past its count", async () => {
+  const app = inkan(quiet)
+    .ws("/slow", { handshakeTimeout: 100 }, () => {})
+    .ws("/one", { maxConnections: 1 }, () => {});
+  app.onRequest((ctx) => (ctx.path === "/slow" ? new Promise<void>(() => {}) : undefined));
+  const s = await served(app);
+  try {
+    const slow = await exchange(s.port, handshake("/slow"), 2000);
+    assert.equal(slow.closed, true, "the server hung up");
+    assert.equal(slow.text, "");
+
+    const first = await raw(s.port, "/one");
+    assert.equal(first.status, 101);
+    const second = await exchange(s.port, handshake("/one"));
+    assert.equal(second.status, 503);
+    assert.match(second.text, /"type":"too-many-connections"/);
+    first.sock.destroy();
+    await sleep(50);
+    const third = await raw(s.port, "/one");
+    assert.equal(third.status, 101, "the slot is free again");
+    third.sock.destroy();
+  } finally {
+    await s.close();
+  }
+});
+
+test("an upgrade that is not a GET, not HTTP/1.1 or carries a body is a 400 before any hook; the key must be canonical base64", async () => {
+  let hooks = 0;
+  const app = inkan(quiet).ws("/o", {}, () => {});
+  app.onRequest(() => void hooks++);
+  const s = await served(app);
+  try {
+    assert.equal((await exchange(s.port, handshake("/o", "Content-Length: 5\r\n", "POST /o HTTP/1.1") + "hello")).status, 400);
+    assert.equal((await exchange(s.port, handshake("/o", "", "GET /o HTTP/1.0"))).status, 400);
+    assert.equal((await exchange(s.port, handshake("/o", "Content-Length: 5\r\n") + "hello")).status, 400);
+    assert.equal((await exchange(s.port, handshake("/o", "Transfer-Encoding: chunked\r\n") + "0\r\n\r\n")).status, 400);
+    assert.equal(hooks, 0, "no hook ran");
+
+    const bad = await exchange(s.port, handshake("/o").replace(/Sec-WebSocket-Key: .*\r\n/, "Sec-WebSocket-Key: AAAAAAAAAAAAAAAAAAAAAB==\r\n"));
+    assert.equal(bad.status, 400, "trailing bits set: not canonical");
+  } finally {
+    await s.close();
+  }
+});
+
+test("a text fragment that is not UTF-8 closes with 1007 at once, before the message ends", async () => {
+  const app = inkan(quiet).ws("/o", {}, (socket) => socket.on("message", () => {}));
+  const s = await served(app);
+  try {
+    const r = await raw(s.port, "/o");
+    r.send(0x1, Buffer.from([0x61, 0xff]), { fin: false });
+    assert.equal((closeCode(await r.next(500)) as { code: number }).code, 1007);
+  } finally {
+    await s.close();
+  }
+});
+
+test("binary messages are copies of their own, not views into the socket's chunks", async () => {
+  const sizes: [number, number][] = [];
+  const app = inkan(quiet).ws("/o", {}, (socket) => socket.on("message", (m) => void sizes.push([(m as Buffer).length, (m as Buffer).buffer.byteLength])));
+  const s = await served(app);
+  try {
+    const r = await raw(s.port, "/o");
+    r.send(0x2, randomBytes(100));
+    for (let i = 0; i < 50 && !sizes.length; i++) await sleep(10);
+    assert.deepEqual(sizes, [[100, 100]]);
+    r.sock.destroy();
+  } finally {
+    await s.close();
+  }
+});
+
+test("the close reason of a broken message names the path and the rule, never the value", async () => {
+  const app = inkan(quiet).ws("/o", { message: t.object({ n: t.int() }) }, (socket) => socket.on("message", () => {}));
+  const s = await served(app);
+  try {
+    const r = await raw(s.port, "/o");
+    r.send(0x1, JSON.stringify({ n: "leak-me" }));
+    const c = closeCode(await r.next()) as { code: number; reason: string };
+    assert.equal(c.code, 1007);
+    assert.match(c.reason, /^n expected an integer/);
+    assert.doesNotMatch(c.reason, /leak-me/);
+  } finally {
+    await s.close();
+  }
+});
+
 test("SIGINT/SIGTERM close every open socket with 1001 before the server stops", async () => {
   const app = inkan({ log: false }).ws("/stay", {}, () => {});
   const server = await app.listen(0, "127.0.0.1");
@@ -560,3 +792,4 @@ test("OpenAPI lists a WebSocket as a GET with x-inkan-websocket; beside a GET of
   assert.match(page.text, /client sends/);
   assert.match(page.text, /m-ws/);
 });
+

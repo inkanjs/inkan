@@ -24,7 +24,7 @@ import { jsonRows, SafeHtml } from "./helpers.ts";
 import { cached } from "./cache.ts";
 import { ArraySchema } from "../schema/schema.ts";
 import { readRequestBody, requestStream, TOO_LARGE, validateInput } from "./input.ts";
-import { Connection, UPGRADING, writeAnswer, writeSwitch, type Upgrading, type WsSpec } from "./ws.ts";
+import { Connection, originAllowed, UPGRADING, writeAnswer, writeSwitch, type Upgrading, type WsOrigins, type WsSpec } from "./ws.ts";
 import { Buffer } from "node:buffer"; // explicit, for runtimes without a global Buffer
 
 // ---------- the app ----------
@@ -69,6 +69,8 @@ export type AppOptions = OpenAPIInfo & {
    * since anyone can send these headers.
    */
   trustProxy?: TrustProxy;
+  /** The pages that may open the app's WebSockets, for every route without `origins` of its own. Default: the app's own origin. See `WsSpec.origins`. */
+  wsOrigins?: WsOrigins;
   /** Development mode. Default: NODE_ENV is not "production". */
   dev?: boolean;
   onError?: (error: unknown, ctx: Context<any, any, any, any, any>) => void;
@@ -857,11 +859,14 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
 
   /** @internal The open WebSockets, made with the first one. */
   _sockets?: Set<Connection>;
+  /** Sockets and handshakes per WebSocket route with `maxConnections`. */
+  private wsCount = new Map<RouteRecord, number>();
 
   /**
-   * An upgrade request: routed among the WebSocket routes, then the same way as any request
-   * (hooks, security, input, middleware). An answer other than the 101 the route's acceptor
-   * gives is written onto the socket as it is, and the connection ends.
+   * An upgrade request: routed among the WebSocket routes, checked for what costs nothing
+   * (`refuse`), then the same way as any request (hooks, security, input, middleware). An
+   * answer other than the 101 the route's acceptor gives is written onto the socket as it
+   * is, and the connection ends.
    */
   private upgrade(req: IncomingMessage, socket: Duplex, head: Buffer) {
     socket.on("error", () => {}); // a client that goes away mid-handshake is no crash; the socket reports the rest
@@ -870,6 +875,23 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     const url = target(req.url ?? "/");
     const m = this.router.match("WS", url.pathname);
     const route = m.kind === "found" ? m.route : undefined;
+    // a handshake that never gets its answer (a hook that hangs) does not hold the socket forever
+    const limit = (route?.spec as WsSpec<unknown, unknown, unknown, unknown, unknown> | undefined)?.handshakeTimeout ?? HANDSHAKE_TIMEOUT;
+    const deadline = setTimeout(() => socket.destroy(), limit);
+    deadline.unref();
+    socket.once("close", () => clearTimeout(deadline));
+    let no: HttpProblem | undefined;
+    try {
+      no = this.refuse(req, url, route, socket);
+    } catch (err) {
+      clearTimeout(deadline);
+      return this.broken(req, socket, err); // an `origins` function that threw
+    }
+    if (no) {
+      clearTimeout(deadline);
+      const body = JSON.stringify({ ...no.toJSON(), instance: req.url });
+      return writeAnswer(socket, no.status, STATUS_CODES[no.status] ?? "", withProblemHeaders({}, no.headers), [], body);
+    }
     const gone = new AbortController(); // ctx.signal: aborted once the socket closes, before the upgrade or after it
     socket.once("close", () => gone.abort(new DOMException("The client went away", "AbortError")));
     const state: Upgrading = {};
@@ -882,6 +904,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
       return this.broken(req, socket, err);
     }
     const go = (o: RawResponse) => {
+      clearTimeout(deadline);
       if (o.status !== 101 || !state.ctx || !route) {
         o.abort?.abort();
         writeAnswer(socket, o.status, STATUS_CODES[o.status] ?? "", o.headers, o.cookies, o.body);
@@ -894,6 +917,36 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     };
     if (out instanceof Promise) out.then(go, (err) => this.broken(req, socket, err));
     else go(out);
+  }
+
+  /**
+   * The checks that cost next to nothing, made before any hook, security or middleware: a
+   * handshake that cannot be one (not a GET, not HTTP/1.1, a body), a page from another
+   * origin, a route that holds as many sockets as it may. A problem to answer with, or none.
+   */
+  private refuse(req: IncomingMessage, url: Target, route: RouteRecord | undefined, socket: Duplex): HttpProblem | undefined {
+    if (req.method !== "GET") return problem(400, "bad-handshake", "A WebSocket handshake is a GET");
+    if (req.httpVersionMajor !== 1 || req.httpVersionMinor < 1) return problem(400, "bad-handshake", "A WebSocket handshake is HTTP/1.1");
+    const h = req.headers;
+    if ((h["content-length"] !== undefined && h["content-length"] !== "0") || h["transfer-encoding"] !== undefined) {
+      return problem(400, "bad-handshake", "A WebSocket handshake has no body");
+    }
+    if (!route) return;
+    const spec = route.spec as WsSpec<unknown, unknown, unknown, unknown, unknown>;
+    const rule = spec.origins ?? this.options.wsOrigins;
+    if (rule !== "*" && (h.origin !== undefined || typeof rule === "function")) {
+      let ctx: Context<any, any, any, any, any> | undefined;
+      const early = () => (ctx ??= new route.box!.Ctx({ method: "GET", url: req.url ?? "/", headers: h, req }, url, "", h as Record<string, string>, fresh()) as Context<any, any, any, any, any>);
+      const own = () => `${early().protocol}://${h.host ?? ""}`;
+      if (!originAllowed(rule, h.origin, own, early)) return problem(403, "origin-not-allowed", `This page may not open the WebSocket at ${url.pathname}`);
+    }
+    const max = spec.maxConnections;
+    if (max !== undefined) {
+      const n = this.wsCount.get(route) ?? 0;
+      if (n >= max) return problem(503, "too-many-connections", `The WebSocket at ${url.pathname} holds as many sockets as it may`);
+      this.wsCount.set(route, n + 1);
+      socket.once("close", () => this.wsCount.set(route, (this.wsCount.get(route) ?? 1) - 1));
+    }
   }
 
   /** The upgrade went through: the socket, and the route's handler with it. */
@@ -1203,6 +1256,9 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
 }
 
 export const inkan = (options?: AppOptions): App<{}, {}> => new App(options);
+
+/** Milliseconds an upgrade request has to get its answer, for a route without `handshakeTimeout`. */
+const HANDSHAKE_TIMEOUT = 10_000;
 
 /** The match an upgrade to a path without a WebSocket route gets: a 404, whatever HTTP routes the path has. */
 const NO_ROUTE: Match<RouteRecord> = { kind: "none" };
