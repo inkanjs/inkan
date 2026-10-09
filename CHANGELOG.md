@@ -120,6 +120,18 @@
   no internal fields of the route record.
 - **`scope.dev` and `scope.prefix`**, read-only: whether the app runs in development, and
   the path prefix of the scope a plugin was given (`""` for the app).
+- **Plugins name the inkan versions they work with.** `plugin(fn, { name: "inkan-quota",
+  inkan: ">=0.7.0 <0.8.0" })`: `register()` throws on any other
+  (`inkan-quota needs inkan >=0.7.0 <0.8.0, this app runs 0.9.1`), and a range that is not
+  one throws where the plugin is made. Ranges read as npm reads them (`^`, `~`, `0.7.x`,
+  `<`, `>=`, hyphens, spaces and `||`), prereleases included; no dependency for it.
+  `PluginOptions` is exported.
+- **`inkan create plugin <name> [folder]`** writes a package for a plugin of your own:
+  `index.js` with its types in `index.d.ts` (no build step, like the official packages),
+  `test.ts` on `app.inject`, the `inkan-plugin` keyword, `@vxnsin/inkan` as a peer for
+  the minor that runs (the same range the plugin names), README, MIT license, and a CI
+  workflow for Node 22 and 24. It refuses names npm would not take, the `@inkanjs` scope,
+  and a folder that is there.
 - `RouteMeta` takes symbol keys as well, so a plugin can keep its key to itself.
 - The pages inkan serves itself (`/docs`, `/openapi.json`, `/_inkan`) are answered before
   any hook runs, so hooks such as secure headers do not apply to them. Turn a page off

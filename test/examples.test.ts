@@ -23,7 +23,7 @@ function pointAtSource(dir: string) {
 }
 
 test("every template folder is listed, and every listed example has a folder", () => {
-  const folders = readdirSync(templatesDir()).sort();
+  const folders = readdirSync(templatesDir()).filter((f) => f !== "plugin").sort(); // plugin is for `inkan create plugin`
   assert.deepEqual(folders, EXAMPLES.map((e) => e.name).sort());
 });
 

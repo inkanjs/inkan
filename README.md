@@ -156,7 +156,7 @@ Everything else lives on **[the website](https://inkan-dev.vercel.app/docs)**:
 | [Sealed contracts](https://inkan-dev.vercel.app/docs/seal) | contracts compiled ahead of time, no `eval` |
 | [Running it](https://inkan-dev.vercel.app/docs/deploy) | node, systemd, pm2, containers, workers, Bun, Deno, serverless |
 | [Integrations](https://inkan-dev.vercel.app/docs/integrations) | Next.js, Vite, TanStack Query, uWebSockets.js |
-| [CLI](https://inkan-dev.vercel.app/docs/cli) | `inkan check`, `inkan seal`, `inkan learn`, `inkan examples` |
+| [CLI](https://inkan-dev.vercel.app/docs/cli) | `inkan check`, `inkan seal`, `inkan learn`, `inkan examples`, `inkan create plugin` |
 
 ## How fast
 

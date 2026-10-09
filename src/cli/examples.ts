@@ -22,9 +22,9 @@ export const EXAMPLES: ExampleInfo[] = [
 export const templatesDir = () => fileURLToPath(new URL("../../templates/", import.meta.url));
 
 // npm leaves dotfiles like .gitignore out of a package, so they travel with an underscore.
-const RENAME: Record<string, string> = { _gitignore: ".gitignore", _dockerignore: ".dockerignore", _github: ".github" };
+export const RENAME: Record<string, string> = { _gitignore: ".gitignore", _dockerignore: ".dockerignore", _github: ".github" };
 
-function walk(dir: string): string[] {
+export function walk(dir: string): string[] {
   return readdirSync(dir).flatMap((name) => {
     const p = join(dir, name);
     return statSync(p).isDirectory() ? walk(p) : [p];

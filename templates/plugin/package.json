@@ -1,0 +1,39 @@
+{
+  "name": "{{name}}",
+  "version": "0.1.0",
+  "description": "An inkan plugin.",
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "inkan-plugin"
+  ],
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "default": "./index.js"
+    }
+  },
+  "files": [
+    "index.js",
+    "index.d.ts"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=22.18"
+  },
+  "peerDependencies": {
+    "@vxnsin/inkan": "{{range}}"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@vxnsin/inkan": "^{{version}}",
+    "typescript": "^7.0.2"
+  },
+  "scripts": {
+    "test": "node --test test.ts",
+    "typecheck": "tsc",
+    "prepublishOnly": "npm run typecheck && npm test"
+  }
+}
