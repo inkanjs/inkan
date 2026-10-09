@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.7.0 (unreleased)
+
+### Faster
+
+- **Objects check by their own keys.** An object's fields are read in the order the value
+  holds them, mostly the contract's, and each field's check is called directly: a body of
+  50 items checks in about 70 % of the time, a small body in two thirds. Every field is
+  still checked once, in the contract's order, with the same issues.
+- **Answers fit without `Object.keys`.** Whether an answer can go to the native writer as
+  it is is told by a for-in over it: half the time for a list of 100, a quarter less to
+  write it.
+- **Middleware routes answer in one async frame**, without a closure per request; a route
+  with a `timeout` races its work as before.
+
 ## 0.6.0
 
 ### New
