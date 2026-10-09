@@ -32,7 +32,7 @@ aside h4{font:600 11px var(--mono);text-transform:uppercase;letter-spacing:.08em
 aside a{display:flex;gap:8px;align-items:baseline;padding:3px 6px;border-radius:3px;text-decoration:none;font:12.5px var(--mono)}
 aside a:hover{background:var(--paper-2)}aside a .p{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .m{font:700 10.5px var(--mono);min-width:44px;display:inline-block}
-.m-get{color:var(--get)}.m-post{color:var(--post)}.m-put{color:var(--put)}.m-patch{color:var(--patch)}.m-delete{color:var(--delete)}
+.m-get{color:var(--get)}.m-post{color:var(--post)}.m-put{color:var(--put)}.m-patch{color:var(--patch)}.m-delete{color:var(--delete)}.m-ws{color:var(--patch)}
 .intro{margin:0 0 22px;color:var(--ink-2);max-width:68ch}
 .win{background:var(--card);border:1px solid var(--ink);border-radius:4px;box-shadow:4px 4px 0 var(--line);margin:0 0 26px;scroll-margin-top:84px}
 .bar{display:flex;align-items:center;gap:10px;padding:8px 12px;border-bottom:1px solid var(--ink);background:var(--paper-2);border-radius:4px 4px 0 0}

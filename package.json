@@ -1,6 +1,6 @@
 {
   "name": "@vxnsin/inkan",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "An API server for Node where the docs can't lie: one contract per route gives you validation, types, OpenAPI, docs and tests.",
   "keywords": [
     "api",

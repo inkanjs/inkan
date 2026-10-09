@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { AddressInfo } from "node:net";
-import { html, inkan, raw, t } from "../src/index.ts";
+import { html, inkan, raw, t, type Middleware } from "../src/index.ts";
 
 const quiet = { log: false, gracefulShutdown: false } as const;
 
@@ -201,6 +201,28 @@ test("a route past its timeout answers 504 and aborts ctx.signal", async () => {
 
   const quick = inkan({ ...quiet, timeout: 1000 }).get("/q", async () => ({ ok: true }));
   assert.equal((await quick.inject({ url: "/q" })).status, 200, "the app's timeout leaves quick routes alone");
+});
+
+test("a timeout counts the route's middleware too", async () => {
+  const wait: Middleware = async (_ctx, next) => {
+    await new Promise((r) => setTimeout(r, 60));
+    await next();
+  };
+  const pass: Middleware = async (ctx, next) => {
+    ctx.header("x-mw", "1");
+    await next();
+  };
+  const app = inkan(quiet)
+    .get("/slow", { timeout: 20, use: [wait] }, () => ({ late: true }))
+    .get("/quick", { timeout: 1000, use: [pass] }, async () => ({ ok: true }))
+    .get("/plain", { use: [pass] }, () => ({ ok: 1 }));
+  const slow = await app.inject({ url: "/slow" });
+  assert.equal(slow.status, 504);
+  assert.equal(slow.body.type, "timeout");
+  const quick = await app.inject({ url: "/quick" });
+  assert.deepEqual([quick.status, quick.body, quick.headers["x-mw"]], [200, { ok: true }, "1"]);
+  const plain = await app.inject({ url: "/plain" });
+  assert.deepEqual([plain.status, plain.body, plain.headers["x-mw"]], [200, { ok: 1 }, "1"]);
 });
 
 test("ctx.signal aborts when the client goes away over a socket", async () => {

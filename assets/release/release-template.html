@@ -47,16 +47,15 @@
 </head>
 <body>
   <div class="left">
-    <div class="badge">v0.6.0</div>
-    <h1 style="font-size:50px">inkan got <em>faster</em><br>and speaks <em>more</em><br>than <em>JSON</em>.</h1>
+    <div class="badge">v0.7.0</div>
+    <h1 style="font-size:50px">inkan learned to <em>wait</em>,<br><em>talk back</em>, and <br>take <em>stamps</em>.</h1>
     <ul>
-      <li><span><b>5.5 % faster</b>, level with Fastify</span></li>
-      <li><span><b>html``</b>, safe by default, and layouts</span></li>
-      <li><span><b>text</b>, <b>redirect</b>, <b>notFound</b>, <b>cookies</b></span></li>
-      <li><span><b>rows</b> streamed under the contract</span></li>
-      <li><span><b>ctx.csv</b> for a million rows</span></li>
-      <li><span><b>signal</b>, <b>timeout</b> and a route <b>cache</b></span></li>
-      <li><span>five writer bugs fixed, two of them <b>leaks</b></span></li>
+      <li><span><b>app.job</b>: queues, progress, <b>cron</b></span></li>
+      <li><span><b>app.ws</b>: websockets with a contract</span></li>
+      <li><span><b>@inkanjs/auth</b>, session and six more</span></li>
+      <li><span>a <b>plugin API</b>, typed end to end</span></li>
+      <li><span><b>env()</b>, <b>pressure</b>, <b>context()</b></span></li>
+      <li><span><b>5 % faster</b>, ahead of Fastify on average</span></li>
     </ul>
     <div class="install">npm install @vxnsin/inkan</div>
   </div>
@@ -68,15 +67,15 @@
     </div>
 <pre>  <span class="r">印</span> <span class="b">inkan</span>  <span class="d">listening on</span> http://localhost:3000
 
-  <span class="d">app.get("/teas",</span>
-  <span class="d">  { response: { 200: </span><span class="b">t.array(Tea)</span><span class="d"> }, </span><span class="b">timeout: 60_000</span><span class="d"> },</span>
-  <span class="d">  ({ signal }) => db.rows(SQL, { </span><span class="b">signal</span><span class="d"> }))</span>
+  <span class="d">app.register(</span><span class="b">auth</span><span class="d">({ users, secret }))</span>
+  <span class="d">   .job("/exports", { </span><span class="b">every: "0 3 * * *"</span><span class="d"> }, run)</span>
+  <span class="d">   .ws("/rooms/:room", { </span><span class="b">message: Say</span><span class="d"> }, chat)</span>
 
-  <span class="b">GET</span>    /teas                 <span class="g">200</span>  <span class="d">1.2M rows, as they come</span>
-  <span class="b">GET</span>    /teas   ndjson        <span class="g">200</span>  <span class="d">one line per row</span>
-  <span class="b">GET</span>    /teas.csv             <span class="g">200</span>  <span class="d">formulas defused</span>
-  <span class="b">GET</span>    /stock/7              <span class="g">200</span>  <span class="d">cached, asked once</span>
-  <span class="b">GET</span>    /report               <span class="r">504</span>  <span class="d">query stopped</span></pre>
+  <span class="b">POST</span>   /auth/login           <span class="g">200</span>  <span class="d">session set</span>
+  <span class="b">POST</span>   /exports              <span class="g">202</span>  <span class="d">queued, 1 ahead</span>
+  <span class="b">GET</span>    /exports/k3f/events   <span class="g">200</span>  <span class="d">42 % … 100 %</span>
+  <span class="b">WS</span>     /rooms/tea            <span class="g">101</span>  <span class="d">message checked</span>
+  <span class="b">WS</span>     /rooms/tea  evil.com  <span class="r">403</span>  <span class="d">origin refused</span></pre>
   </div>
 </body>
 </html>

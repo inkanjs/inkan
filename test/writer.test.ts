@@ -369,6 +369,24 @@ test("only declared fields are written, wherever on the object they live", () =>
   assert.equal(write(t.object({ a: t.int() }), inherited), '{"a":1}');
   const hidden = Object.defineProperty({ secret: 1 }, "a", { value: 2, enumerable: false });
   assert.equal(write(t.object({ a: t.int() }), hidden), '{"a":2}');
+  // a declared field that is not enumerable, with nothing else on the object
+  const alone = Object.defineProperty({}, "a", { value: 2, enumerable: false });
+  assert.equal(write(t.object({ a: t.int(), b: t.int().optional() }), alone), '{"a":2}');
+  const both = Object.defineProperty({ b: 1 }, "a", { value: 2, enumerable: false });
+  assert.equal(write(t.object({ a: t.int(), b: t.int() }), both), '{"a":2,"b":1}');
+});
+
+test("a key Object.prototype was given is written as the contract says, not lent to every object", () => {
+  const S = t.object({ a: t.int(), b: t.int().optional() });
+  Object.defineProperty(Object.prototype, "b", { value: 9, enumerable: true, configurable: true, writable: true });
+  try {
+    assert.equal(write(S, { a: 1 }), reference(S, { a: 1 }));
+    assert.equal(write(S, { a: 1 }), '{"a":1,"b":9}');
+    assert.equal(write(t.array(S), [{ a: 1 }]), '[{"a":1,"b":9}]');
+  } finally {
+    delete (Object.prototype as Record<string, unknown>).b;
+  }
+  assert.equal(write(S, { a: 1 }), '{"a":1}');
 });
 
 test("a field named like an Object.prototype member is left out when missing", () => {

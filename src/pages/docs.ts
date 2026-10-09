@@ -76,6 +76,11 @@ function card(path, method, op, idx) {
     h += "</table>";
   }
   if (op.requestBody) h += "<h5>body</h5>" + block(firstContent(op.requestBody.content));
+  var ws = op["x-inkan-websocket"];
+  if (ws) {
+    h += '<p class="mono muted">a WebSocket: open it with <code>new WebSocket("' + esc((location.protocol === "https:" ? "wss://" : "ws://") + location.host + path) + '")</code>. Messages are JSON; one that breaks the contract closes it with 1007.</p>';
+    h += "<h5>client sends</h5>" + block(ws.message) + "<h5>server sends</h5>" + block(ws.send);
+  }
   var exs = op["x-inkan-examples"] || [];
   var covered = exs.map(function (ex) { return expected(op, ex); });
   h += "<h5>responses</h5><table>";
@@ -334,6 +339,8 @@ function boot(spec) {
   Object.keys(spec.paths).forEach(function (path) {
     Object.keys(spec.paths[path]).forEach(function (method) {
       var op = spec.paths[path][method], tag = (op.tags && op.tags[0]) || "routes";
+      if (method.indexOf("x-") === 0 && !(op && op["x-inkan-websocket"])) return; // other extensions of the path item
+      if (op["x-inkan-websocket"]) method = "ws"; // a WebSocket, listed as a GET or beside one
       (groups[tag] = groups[tag] || []).push({ path: path, method: method, op: op, idx: idx });
       cards.push(card(path, method, op, idx++));
     });

@@ -138,6 +138,7 @@ gives a hint (then a clearer one) when you press `h`. It keeps your progress, so
 | **Serves the docs** | At `/docs`. Every example has a send button, and a route gets its seal 印 when all of its examples answer as promised. |
 | **Runs examples as tests** | `inkan check` or `app.check()`, in-process, no port. Routes without examples are listed, so nothing hides. |
 | **Shows what happened** | `/_inkan` is a live log of the last 200 requests and what broke the contract. Development only, loopback only, secret headers hidden. |
+| **Speaks WebSocket** | `app.ws(path, { message, send }, handler)`: the upgrade goes through the same hooks, security and checks as a GET, messages both ways are JSON checked against their contract, and `client.ws` is typed from it. Only pages of the app's own origin may open it unless `origins` says otherwise, and every socket has limits: `maxMessage` (1 MiB), 1024 frames per message, a bounded write buffer, `maxConnections`, a 10 s handshake. No dependency, no permessage-deflate. |
 | **Errors in one shape** | `throw problem(404, "tea-not-found", "…")` gives an RFC 9457 document. Every built-in error has the same shape, with a stable `type` to switch on. |
 
 ## Learn more
@@ -155,7 +156,7 @@ Everything else lives on **[the website](https://inkan-dev.vercel.app/docs)**:
 | [Sealed contracts](https://inkan-dev.vercel.app/docs/seal) | contracts compiled ahead of time, no `eval` |
 | [Running it](https://inkan-dev.vercel.app/docs/deploy) | node, systemd, pm2, containers, workers, Bun, Deno, serverless |
 | [Integrations](https://inkan-dev.vercel.app/docs/integrations) | Next.js, Vite, TanStack Query, uWebSockets.js |
-| [CLI](https://inkan-dev.vercel.app/docs/cli) | `inkan check`, `inkan seal`, `inkan learn`, `inkan examples` |
+| [CLI](https://inkan-dev.vercel.app/docs/cli) | `inkan check`, `inkan seal`, `inkan learn`, `inkan examples`, `inkan create plugin` |
 
 ## How fast
 
@@ -164,11 +165,12 @@ measured, with a bare `node:http` server as 100:
 
 | | node:http | **inkan** | Fastify | Hono | Express |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| score | 100 | **89.1** | 88.6 | 84.9 | 42.4 |
+| score | 100 | **91.4** | 87.7 | 82.9 | 44.7 |
 
-inkan and Fastify are level within the spread of a run. Every scenario, how it is measured
+inkan is ahead of Fastify in every run, on average, though not in every scenario: Fastify
+still leads the async handler. Every scenario, how it is measured
 and how to run it yourself are on **[the benchmarks page](https://inkan-dev.vercel.app/benchmarks)**;
-how 0.6.0 got there is in [`bench/reports/0.6.0.md`](bench/reports/0.6.0.md), and the bench
+how 0.7.0 got there is in [`bench/reports/0.7.0.md`](bench/reports/0.7.0.md), and the bench
 itself in [`bench/`](bench).
 
 ## How inkan is made

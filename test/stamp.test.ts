@@ -68,6 +68,28 @@ test("objects, arrays, records and unions check as before, with the same paths",
   );
 });
 
+test("objects with their keys in any order, missing, extra or borrowed check as before", () => {
+  const Abc = (t: T) => t.object({ a: t.int(), b: t.string().optional(), c: t.int().default(3), "0": t.int().optional(), ["__proto__"]: t.int().optional() });
+  const inherited = Object.assign(Object.create({ a: 1, b: "x" }), { c: 2 });
+  const hidden = Object.defineProperty({ b: "y" }, "a", { value: 7, enumerable: false });
+  const values = [
+    { a: 1, b: "x", c: 2 },
+    { c: 2, b: "x", a: 1 },
+    { b: "x", a: "no", c: "no" },
+    { x: 1, a: 1, y: 2, c: 2, b: 3 },
+    { c: 2 },
+    { 0: "5", a: 1 },
+    JSON.parse('{"__proto__": 4, "a": 1}'),
+    JSON.parse('{"__proto__": "x", "b": 1}'),
+    inherited,
+    hidden,
+    Object.create(null),
+  ];
+  same(Abc, values, "any order");
+  same((t) => Abc(t).strict(), values, "any order, strict");
+  same((t) => Abc(t).passthrough(), values, "any order, passthrough");
+});
+
 test("refine, transform, lazy and events check as before", () => {
   same((t) => t.int().refine((n) => n % 2 === 0, "must be even"), [...odd, 2, 3], "refine");
   same((t) => t.string().transform((s) => s.length).optional(), [...odd, "abc"], "transform");

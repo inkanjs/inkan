@@ -8,6 +8,7 @@ import type { Infer, Schema } from "../schema/schema.ts";
 import type { EventStream } from "./stream.ts";
 import type { App } from "./app.ts";
 import type { Box, Hooks, Scope } from "./scope.ts";
+import { acceptor, type WsHandler, type WsMethod, type WsSpec } from "./ws.ts";
 
 export type Responses = { [status: number]: Schema<any> };
 
@@ -21,11 +22,18 @@ export type Example = {
   status?: number;
   /** A part of the response body that has to be in the answer, compared deeply. */
   expect?: unknown;
-  /** Values to keep from this answer for examples that come after it: `{ id: "body.id" }`. */
+  /**
+   * Values to keep from this answer for examples that come after it, read from `body.<path>`,
+   * `headers.<name>`, `cookies.<name>` (a cookie the answer sets) or `status`:
+   * `{ id: "body.id", where: "headers.location", sid: "cookies.sid" }`.
+   */
   keep?: Record<string, string>;
   /**
    * Another example that runs first, as `"POST /teas > a new oolong"`. What it keeps fills
-   * `{name}` placeholders in this example's params, query, headers and body.
+   * `{name}` placeholders in this example's params, query, headers and body. The examples of
+   * one chain share a cookie jar, as a browser would: a cookie an answer sets is sent with the
+   * requests after it that its Path covers, until an answer clears it (Max-Age=0, or an Expires
+   * gone by). Every chain starts with an empty jar, so cookies never cross from one to another.
    */
   after?: string;
 };
@@ -35,6 +43,42 @@ export type Example = {
  * documents them; whether they are good is for your hook or middleware to say.
  */
 export type Security = "bearer" | "basic" | { apiKey: string; in?: "header" | "query" | "cookie" };
+
+/**
+ * Free-form facts about a route for plugins to read in their hooks, as `ctx.route.meta`
+ * (and as `route.meta` in `describe`). A plugin names what it reads by adding to this interface:
+ *
+ *   declare module "@vxnsin/inkan" {
+ *     interface RouteMeta { auth?: { roles: string[] } }
+ *   }
+ *
+ * Keys may be symbols too: a plugin that keeps its key to itself cannot clash with another.
+ *
+ *   const AUTH = Symbol("auth");
+ *   app.get("/me", { meta: { [AUTH]: { roles: ["admin"] } } }, handler);
+ */
+export interface RouteMeta {
+  [key: string]: unknown;
+  [key: symbol]: unknown;
+}
+
+/** `ctx.route`: the route that matched, as it was written. One object per route, made before the first request. */
+export type RouteInfo = {
+  method: string;
+  path: string;
+  /** The credentials it asks for, its own or its group's; empty for none. */
+  security: readonly Security[];
+  /** Its `meta`, or an empty object. */
+  meta: Readonly<RouteMeta>;
+};
+
+/**
+ * The route a `describe` hook adds to: what `ctx.route` holds, plus the spec it was
+ * written with (summary, tags, schemas, examples, ...). Read-only: change the operation instead.
+ */
+export type OperationRoute = Readonly<RouteInfo> & {
+  readonly spec: Readonly<RouteSpec<any, any, any, any, Responses>>;
+};
 
 export type RouteSpec<P, Q, B, H, R extends Responses> = {
   summary?: string;
@@ -71,6 +115,8 @@ export type RouteSpec<P, Q, B, H, R extends Responses> = {
   timeout?: number;
   /** Keeps the handler's answers for a while: the same input gets the same answer without asking again. */
   cache?: CacheRule;
+  /** Facts for plugins, read in hooks as `ctx.route.meta`: `{ auth: { roles: ["admin"] } }`. */
+  meta?: RouteMeta;
 };
 
 export type Simplify<T> = { [K in keyof T]: T[K] } & {};
@@ -91,11 +137,14 @@ export type SuccessBody<R> = {} extends R
   ? unknown
   : { [K in keyof R]: K extends SuccessStatus ? Infer<R[K]> : never }[keyof R];
 
+/** Headers of an answer. A list goes out as one line per entry for `set-cookie`, joined with ", " for any other. */
+export type ReplyHeaders = Record<string, string | string[]>;
+
 export class Reply<S extends number = number, Body = unknown> {
   status: S;
   body: Body;
-  headers: Record<string, string>;
-  constructor(status: S, body: Body, headers: Record<string, string> = {}) {
+  headers: ReplyHeaders;
+  constructor(status: S, body: Body, headers: ReplyHeaders = {}) {
     this.status = status;
     this.body = body;
     this.headers = headers;
@@ -103,7 +152,7 @@ export class Reply<S extends number = number, Body = unknown> {
 }
 
 /** Answers with a status that is not the default one, or with extra headers. */
-export const reply = <S extends number, B>(status: S, body?: B, headers?: Record<string, string>) =>
+export const reply = <S extends number, B>(status: S, body?: B, headers?: ReplyHeaders) =>
   new Reply(status, body, headers);
 
 export type Context<P = Record<string, string>, Q = RawQuery, B = unknown, H = RawHeaders, R extends Responses = {}> = {
@@ -114,21 +163,30 @@ export type Context<P = Record<string, string>, Q = RawQuery, B = unknown, H = R
   id: string;
   /**
    * The client's address, as the socket or the platform says it. Behind a proxy that is the
-   * proxy; read its `x-forwarded-for` yourself when you trust it.
+   * proxy, unless the app's `trustProxy` says to believe what it forwards.
    */
   ip: string | undefined;
+  /** Whether the request came over TLS: the socket, the URL `fetch` got, or with `trustProxy` x-forwarded-proto. */
+  secure: boolean;
+  /** "https" when `secure`, otherwise "http". */
+  protocol: "http" | "https";
   params: P;
   query: Q;
   headers: H;
+  /**
+   * The headers as they arrived, names in lower case, even where the route's header schema
+   * cut `headers` down to its contract. The request's own object: read it, do not change it.
+   */
+  rawHeaders: Readonly<Record<string, string | string[] | undefined>>;
   body: B;
   /** Free space for middleware to hand things to the handler. */
   state: Record<string, unknown>;
-  /** The route that matched, as it was written. Undefined when no route matched. */
-  route?: { method: string; path: string };
+  /** The route that matched, as it was written, with its security and meta. Undefined when no route matched. */
+  route?: RouteInfo;
   /** Sets the status used when the handler returns a plain value. */
   status(code: number): void;
   header(name: string, value: string): void;
-  reply<S extends keyof R & number>(status: S, body: Infer<R[S]>, headers?: Record<string, string>): Reply<S>;
+  reply<S extends keyof R & number>(status: S, body: Infer<R[S]>, headers?: ReplyHeaders): Reply<S>;
   /** Plain text. The status is the one `status()` set, or the usual one, unless given here. */
   text(body: string, status?: number): Reply;
   /** HTML. Write it with the `html` tag, which escapes every value put into it. */
@@ -186,7 +244,9 @@ export type RouteRecord = {
   /** @internal Whether its contract lists answers, and the status a plain value answers with. */
   plan?: { hasContract: boolean; defaultStatus: number };
   /** @internal `ctx.route` for it: one object, shared by its requests. */
-  info?: Readonly<{ method: string; path: string }>;
+  info?: Readonly<RouteInfo>;
+  /** @internal For a WebSocket route (method "WS"): what runs once the upgrade request became a socket. */
+  socket?: WsHandler<any, any, any, any, any, any>;
 };
 
 /** What the type of an app remembers about one route, for the typed client. */
@@ -296,6 +356,22 @@ export class Routes<Defs extends RouteDefs = any, Deco = {}> {
   put: RouteMethod<this, "PUT"> = ((p: string, a: unknown, b?: unknown) => this.define("PUT", p, a, b)) as never;
   patch: RouteMethod<this, "PATCH"> = ((p: string, a: unknown, b?: unknown) => this.define("PATCH", p, a, b)) as never;
   delete: RouteMethod<this, "DELETE"> = ((p: string, a: unknown, b?: unknown) => this.define("DELETE", p, a, b)) as never;
+
+  /**
+   * A WebSocket at `path`. The upgrade request goes through the hooks, the security and the
+   * params, query and headers checks like a GET, and is answered with that status when one
+   * of them says no; only then does it become a socket. `message` is what the client sends,
+   * `send` what the server does: both JSON, both checked.
+   *
+   *   app.ws("/rooms/:room", { query: t.object({ name: t.string() }), message: Say, send: Said }, (socket, ctx) => {
+   *     socket.on("message", (m) => socket.send({ text: m.text, from: ctx.query.name }));
+   *   });
+   */
+  ws: WsMethod<this> = ((path: string, spec: WsSpec<any, any, any, any, any>, handler: WsHandler<any, any, any, any, any>) => {
+    const s = spec as RouteRecord["spec"];
+    this.add({ method: "WS", path, spec: s, handler: acceptor, use: spec.use ?? [], security: securityList(spec.security), socket: handler });
+    return this;
+  }) as never;
 
   /** Puts a group's routes under a prefix. In a chain, the type knows them under their new paths. */
   mount: MountMethod<this> = ((prefix: string, group: Routes) => {

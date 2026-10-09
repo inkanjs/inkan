@@ -110,3 +110,127 @@ test("a missing path value is caught before anything is sent", async () => {
   const loose = client<typeof api>("http://shop.local", { fetch: viaInject(api) });
   await assert.rejects(() => (loose.get as any)("/teas/:id", { params: {} }), /needs a value for :id/);
 });
+
+test("events: a job followed through the client, every event narrowed by its name", async () => {
+  const { t: s } = await import("../src/index.ts");
+  let release!: () => void;
+  const ready = new Promise<void>((r) => (release = r));
+  const jobs = inkan(quiet).job(
+    "/exports",
+    { body: s.object({ rows: s.int() }), progress: s.object({ done: s.int(), total: s.int() }), result: s.object({ url: s.string() }) },
+    async (job) => {
+      await ready;
+      job.progress({ done: job.input.rows, total: job.input.rows });
+      return { url: "/x.csv" };
+    },
+  );
+  const api = client<typeof jobs>("http://jobs.local", { fetch: viaInject(jobs) });
+  const started = await api.post("/exports", { body: { rows: 3 } });
+  assert.equal(started.status, 202);
+  if (!started.ok) return assert.fail("the job did not start");
+  const id: string = started.data.id;
+  const state: "queued" | "running" | "done" | "failed" | "canceled" = started.data.state;
+  const created: string = started.data.createdAt; // a Date on the server, a string on the wire
+  assert.ok(state && created);
+
+  setTimeout(release, 20);
+  const seen: string[] = [];
+  for await (const e of api.events("/exports/:id/events", { params: { id } })) {
+    seen.push(e.event);
+    if (e.event === "progress") {
+      const done: number = e.data.done;
+      assert.equal(done, 3);
+    } else {
+      const st: string = e.data.state;
+      assert.ok(st);
+    }
+  }
+  assert.deepEqual(seen, ["status", "progress", "end"]);
+
+  const result = await api.get("/exports/:id/result", { params: { id }, query: { wait: 1 } });
+  if (result.ok) assert.equal(result.data.url, "/x.csv");
+  else assert.fail("no result");
+
+  await assert.rejects(
+    async () => {
+      for await (const _ of api.events("/exports/:id/events", { params: { id: "missing" } })) void _;
+    },
+    (err: { status: number; problem: { type: string } }) => err.status === 404 && err.problem.type === "job-not-found",
+  );
+
+  const typesOnly = () => {
+    void (async () => {
+      for await (const e of api.events("/exports/:id/events", { params: { id } })) {
+        // @ts-expect-error a status event has no done; only progress does
+        if (e.event === "status") void e.data.done;
+      }
+      // @ts-expect-error only routes that answer with events can be followed
+      void api.events("/exports/:id", { params: { id } });
+      // @ts-expect-error the stream needs its id
+      void api.events("/exports/:id/events");
+      const del = await api.delete("/exports/:id", { params: { id } });
+      if (del.ok && del.status === 204) void del.data;
+    })();
+  };
+  assert.equal(typeof typesOnly, "function");
+});
+
+test("routes a plugin defines reach the typed client, under the prefix it is registered with", async () => {
+  const { plugin, t: s } = await import("../src/index.ts");
+  const Login = s.object({ name: s.string() });
+  // shared: its decorations and its routes go to the app
+  const auth = plugin(
+    (app, o: { realm: string }) =>
+      app
+        .decorate("realm", o.realm)
+        .post("/login", { body: Login, response: { 200: s.object({ name: s.string(), realm: s.string() }), 401: s.problem() } }, (ctx) => ({
+          name: ctx.body.name,
+          realm: ctx.realm,
+        }))
+        .get("/users/:id", { params: s.object({ id: s.int() }), response: { 200: s.object({ id: s.int() }) } }, (ctx) => ({ id: ctx.params.id })),
+    { shared: true },
+  );
+  // not shared: a scope of its own, but its routes are the app's all the same
+  const health = plugin((app) => app.get("/health", { response: { 200: s.object({ up: s.boolean() }) } }, () => ({ up: true })));
+  // a plugin that registers another hands both its routes on
+  const v1 = plugin((app) => app.register(health, { prefix: "/v1" }).get("/", () => ({ root: true })));
+
+  const app = inkan(quiet)
+    .register(auth, { realm: "tea", prefix: "/auth" })
+    .register(health)
+    .register(v1, { prefix: "/api" })
+    .get("/me", (ctx) => ({ realm: ctx.realm }));
+  const api = client<typeof app>("http://auth.local", { fetch: viaInject(app) });
+
+  const login = await api.post("/auth/login", { body: { name: "ada" } });
+  assert.equal(login.status, 200);
+  if (login.ok) {
+    const realm: string = login.data.realm;
+    assert.equal(realm, "tea");
+  }
+  const user = await api.get("/auth/users/:id", { params: { id: 7 } });
+  if (user.ok) {
+    const id: number = user.data.id;
+    assert.equal(id, 7);
+  } else assert.fail("GET /auth/users/:id failed");
+  const up = await api.get("/health");
+  assert.equal(up.ok && up.data.up, true);
+  assert.equal((await api.get("/api/v1/health")).status, 200);
+  assert.equal((await api.get("/api")).status, 200);
+
+  const typesOnly = () => {
+    // @ts-expect-error registered under /auth: there is no /login
+    void api.post("/login", { body: { name: "ada" } });
+    // @ts-expect-error the body is the plugin's contract
+    void api.post("/auth/login", { body: { name: 1 } });
+    void (async () => {
+      const r = await api.get("/api/v1/health");
+      // @ts-expect-error up is a boolean, as the plugin's contract says
+      if (r.ok) void (r.data.up satisfies string);
+    });
+    // @ts-expect-error a plain function passed to register hands no types on
+    void client<typeof plain>("http://x").get("/plain");
+  };
+  const plain = inkan(quiet).register((scope) => scope.get("/plain", () => ({})));
+  assert.equal(typeof typesOnly, "function");
+});

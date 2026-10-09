@@ -3,6 +3,7 @@
 // request costs the server. Several rounds, the lowest of each, since noise only adds time.
 //
 //   cd bench && npm install && node cpu.mjs [servers] [seconds] [rounds]
+//   ONLY="hello,async handler" PIN=12 node cpu.mjs fastify,inkan,inkan-base 3 5
 
 import { fork } from "node:child_process";
 import { appendFileSync } from "node:fs";
@@ -13,7 +14,7 @@ const servers = (process.argv[2] ?? "node,fastify,hono,inkan").split(",");
 const seconds = Number(process.argv[3] ?? 5);
 const rounds = Number(process.argv[4] ?? 3);
 const json = { "content-type": "application/json" };
-const scenarios = [
+const all = [
   ["hello", "/hello"],
   ["params + query", "/users/42?fields=name"],
   ["small JSON body", "/users", "POST", '{"name":"Mio","age":3}'],
@@ -26,6 +27,9 @@ const scenarios = [
   ["400", "/users", "POST", '{"name":"","age":"x"}'],
   ["hello, at the end", "/hello"],
 ];
+// ONLY="hello,404" measures some scenarios only
+const only = process.env.ONLY?.split(",");
+const scenarios = only ? all.filter(([label]) => only.includes(label)) : all;
 const cannon = (o) => new Promise((resolve, reject) => autocannon(o, (e, r) => (e ? reject(e) : resolve(r))));
 
 const best = {}; // scenario -> server -> µs

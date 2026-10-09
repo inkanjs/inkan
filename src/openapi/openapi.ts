@@ -2,8 +2,13 @@
 // the schemas that validate a request are the ones that describe it.
 
 import { STATUS_CODES } from "node:http";
-import type { RouteRecord, Security } from "../core/route.ts";
+import type { OperationRoute, RouteRecord, Security } from "../core/route.ts";
 import { ArraySchema, EventsSchema, FileSchema, ObjectSchema, RawBodySchema, t, type JsonSchema, type RefContext, type Schema } from "../schema/schema.ts";
+
+const NO_META = Object.freeze({});
+/** What a describe hook sees of a route: `ctx.route`'s fields and the spec, read-only. */
+const routeView = (r: RouteRecord): OperationRoute =>
+  Object.freeze({ ...(r.info ?? { method: r.method, path: r.path, security: Object.freeze([...(r.security ?? [])]), meta: r.spec.meta ?? NO_META }), spec: r.spec });
 
 /** A body with a file anywhere at its top level goes as multipart/form-data. */
 const carriesFiles = (s: Schema<any>) =>
@@ -71,10 +76,22 @@ export function buildOpenAPI(records: RouteRecord[], info: OpenAPIInfo = {}) {
   const ctx: RefContext = { components: new Map() };
   const paths: Record<string, Record<string, unknown>> = {};
   const problemRef = () => t.problem()._schema(ctx);
-  const schemes = new Map<string, JsonSchema>();
+  // what describe() hooks see and may add to; schemas join it at the end
+  const components: Record<string, Record<string, any>> = { securitySchemes: {} };
+  const schemes = components.securitySchemes!;
+  // for describe() hooks: a schema listed once under components.schemas, the way a route's named ones are
+  const ref = (schema: Schema<any>, name?: string): JsonSchema => {
+    const named = name ? schema.named(name) : schema;
+    if (!named.meta.name) throw new TypeError(`Name the schema to refer to it: ref(schema, "Name") or schema.named("Name")`);
+    return named._schema(ctx);
+  };
 
+  // OpenAPI has no WebSockets: one is a GET with an extension, or, where the path has a GET of
+  // its own, an extension on the path item
+  const gets = new Set(records.filter((r) => r.method === "GET").map((r) => r.path));
   for (const r of records) {
     const { spec } = r;
+    const ws = r.method === "WS";
     if (spec.hidden) continue;
     const op: Record<string, unknown> = { operationId: spec.operationId ?? operationId(r) };
     if (spec.summary) op.summary = spec.summary;
@@ -122,7 +139,7 @@ export function buildOpenAPI(records: RouteRecord[], info: OpenAPIInfo = {}) {
     if (r.security?.length) {
       op.security = r.security.map((s) => {
         const [name, scheme] = schemeOf(s);
-        schemes.set(name, scheme);
+        schemes[name] ??= scheme;
         return { [name]: [] };
       });
       responses["401"] ??= {
@@ -138,11 +155,26 @@ export function buildOpenAPI(records: RouteRecord[], info: OpenAPIInfo = {}) {
         "x-inkan-implied": true,
       };
     }
+    if (ws) {
+      const { message, send } = spec as { message?: Schema<any>; send?: Schema<any> };
+      responses["101"] = { description: "Switching Protocols: the connection is a WebSocket from here on" };
+      op["x-inkan-websocket"] = {
+        message: message ? message._schema(ctx) : { description: "Text or binary, unchecked" },
+        send: send ? send._schema(ctx) : { description: "Unchecked" },
+      };
+    }
     if (!Object.keys(responses).length) responses["200"] = { description: "OK" };
     op.responses = responses;
     if (spec.examples?.length) op["x-inkan-examples"] = spec.examples;
+    // what the scopes around the route add: outermost first, as with hooks
+    if (r.box) {
+      let view: OperationRoute | undefined;
+      for (const b of r.box.chain()) for (const d of b.describers) d(op, (view ??= routeView(r)), components, ref);
+    }
 
-    (paths[toOpenAPIPath(r.path)] ??= {})[r.method.toLowerCase()] = op;
+    const item = (paths[toOpenAPIPath(r.path)] ??= {});
+    if (!ws) item[r.method.toLowerCase()] = op;
+    else item[gets.has(r.path) ? "x-inkan-websocket" : "get"] = op;
   }
 
   const doc: Record<string, unknown> = {
@@ -155,9 +187,9 @@ export function buildOpenAPI(records: RouteRecord[], info: OpenAPIInfo = {}) {
   };
   if (info.servers) doc.servers = info.servers;
   doc.paths = paths;
-  const components: Record<string, unknown> = {};
-  if (ctx.components.size) components.schemas = Object.fromEntries(ctx.components);
-  if (schemes.size) components.securitySchemes = Object.fromEntries(schemes);
-  if (Object.keys(components).length) doc.components = components;
+  const all: Record<string, Record<string, any>> = { schemas: { ...Object.fromEntries(ctx.components), ...components.schemas } };
+  for (const k in components) if (k !== "schemas") all[k] = components[k]!;
+  for (const k of Object.keys(all)) if (!Object.keys(all[k]!).length) delete all[k];
+  if (Object.keys(all).length) doc.components = all;
   return doc;
 }

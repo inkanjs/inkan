@@ -1,5 +1,213 @@
 # Changelog
 
+## 0.7.0
+
+### New
+
+- **Background jobs.** `app.job(path, { body, progress, result, concurrency, queue, keep, timeout, owner }, run)`
+  defines five ordinary routes around a queue, so the docs, OpenAPI, hooks, security, the
+  typed client and `inkan check` see them like any other: `POST path` starts a job (202,
+  with its `location`; 503 when the queue is full or the server stops), `GET path/:id` tells
+  how it stands, `GET path/:id/events` follows it as server-sent events (its status, the
+  latest progress only, then the end, and the stream closes), `GET path/:id/result?wait=10`
+  waits for what it made, and `DELETE path/:id` cancels it or forgets it once it is over.
+  The work gets `job.input`, `job.signal` and `job.progress(p)`; ids are random, a job of
+  someone else is a 404 with `owner`, a thrown problem is the job's `error`, and in
+  development a progress or result that breaks its contract fails the job. Finished jobs are
+  kept for `keep` seconds. On SIGINT or SIGTERM waiting jobs are canceled, event streams
+  end at once, and running jobs get a few seconds before their signal is aborted.
+  **Jobs run in the process that started them: one still running when it ends is lost.**
+  With `workers`, `listen` refuses jobs kept in memory; `JobStore` is the interface for a
+  store the processes share, `memoryStore()` the one inkan has. The routes get examples made
+  from the first start example, so `inkan check` covers them.
+- **WebSockets.** `app.ws(path, { params, query, headers, message, send, security, origins, maxMessage, maxConnections, heartbeat, handshakeTimeout }, (socket, ctx) => …)`,
+  RFC 6455 written on `node:http`'s upgrade event, no dependency. The upgrade request is
+  routed and goes through `onRequest`, the security, the params/query/headers checks,
+  middleware and `preHandler` like a GET; a no answers with its status (400, 401, 404, …)
+  and no socket. `message` is what the client sends: JSON, checked, typed in
+  `socket.on("message")` and `for await (const m of socket)`; one that is not JSON or breaks
+  the contract closes the socket with 1007 and the reason. `send` is what the server sends:
+  `socket.send(v)` writes it as JSON with only what the contract lists, and in development a
+  value that breaks it throws (reported, 1011). Without `message`, text arrives as a string
+  and binary as a Buffer. Frames: masking required (1002), fragments, UTF-8 checked (1007),
+  `maxMessage` (default 1 MiB, 1009), ping/pong with a `heartbeat` (default 30 s) that cuts
+  off a peer that stops answering, the closing handshake with its codes. `socket.send`
+  resolves once the socket takes more; `bufferedAmount` says how much waits. Messages that
+  come before the handler listens wait for it. `ctx.signal` aborts when the socket closes.
+  `origins` guards against cross-site WebSocket hijacking: an upgrade whose Origin is not
+  the app's own (Host and `ctx.protocol`) is a 403 `origin-not-allowed` before any hook runs;
+  a list adds origins, a function `(origin, ctx) => boolean` decides alone, `"*"` lets every
+  page in, a request without an Origin (not a browser) goes through; `wsOrigins` sets it for
+  the whole app. Also before any hook: an upgrade that is not a GET over HTTP/1.1 without a
+  body is a 400, `sec-websocket-key` has to be canonical base64, and past `maxConnections`
+  it is a 503 `too-many-connections`. A handshake that is not answered within
+  `handshakeTimeout` (default 10 s) is cut off. Limits: a message comes in at most 1024
+  frames, each after the first counted 64 bytes against `maxMessage`; text is checked as
+  UTF-8 frame by frame; at most 4 × `maxMessage` (1 MiB at least) waits to be written, past
+  it the socket is cut off with 1008; a peer that floods pings without reading gets only
+  its latest one answered, and nothing goes out after the server's close frame. Close
+  reasons name the path and the rule, never the value sent. Binary messages are copies of
+  their own.
+  On SIGINT or SIGTERM every socket is closed with 1001. A plain request to a WebSocket
+  path is a 426. `listen` only listens for upgrades when the app has a WebSocket route;
+  a hand-made server takes `server.on("upgrade", app.upgradeListener)`. Not there:
+  permessage-deflate (no extension is negotiated), subprotocol choice (a hook may set
+  `sec-websocket-protocol`), and `app.fetch` (Bun and Deno have upgrade APIs of their own).
+  With `workers`, each process holds its own sockets: broadcast with a `Set` of sockets per
+  process, or through a shared bus.
+- **`client.ws(path, { params, query })`** opens a WebSocket route with the platform's
+  `WebSocket`: `send` takes what the route's `message` says, messages arrive parsed and
+  narrowed by the route's `send`, `ready` resolves once it is open, and leaving a
+  `for await` loop closes it. In Node, `headers` go with the upgrade.
+- **OpenAPI and the docs list WebSockets**: a GET with a 101 and an `x-inkan-websocket`
+  extension holding the `message` and `send` schemas (on the path item where the path has
+  a GET of its own); the docs page shows them as `WS` with both contracts.
+- **`client.events(path, { params })`** reads a route that answers with `t.events(...)` as an
+  async iterator, each event narrowed by its name; leaving the loop closes the stream.
+- **Cookies in `inkan check`.** The examples of one `after` chain share a cookie jar, as a
+  browser would: a cookie an answer sets goes with the requests after it that its `Path`
+  covers, until an answer clears it (`Max-Age=0` or an `Expires` gone by). Every chain
+  starts with an empty jar, so a login example and a `/me` example after it pass, and
+  nothing crosses into another chain. `keep` reads `cookies.<name>` (a cookie the answer
+  sets) besides `body.<path>`, `headers.<name>` and `status`.
+- **Per-request decorations.** `scope.decorateRequest("user", (ctx) => …)` puts a value on
+  the context that is made the first time a request reads it and kept for the rest of that
+  request; a request that never asks never makes it. Typed like `decorate`, refused for the
+  same names, and only the scopes that use it carry its getter.
+- **Async per-request decorations.** An `init` that returns a promise makes `ctx.user` that
+  promise, typed `Promise<User>`: made once however often it is read, never for a request
+  that does not read it, and a problem it throws is the answer. With
+  `decorateRequest(name, init, { before: "handler", when: (route) => route.security.length > 0 })`
+  it is awaited after the input is checked and before the preHandler hooks, so they and the
+  handler see the value itself, typed without the promise. `when` picks the routes, asked
+  once per route; reading it on a route it leaves out throws, instead of handing over a
+  promise typed as the value. Apps that do not use it pay nothing for it.
+- **Types out of shared plugins.** A plugin made with `shared: true` that returns its scope
+  (`(app) => app.decorateRequest("user", …)`) hands its decorations on: after
+  `app.register(auth)` the handlers see `ctx.user` typed. `Plugin` has a third type
+  parameter for what it adds.
+- **Routes out of plugins reach the typed client.** A plugin made with `plugin()`, shared or
+  not, that returns its scope hands on the routes it defined in that chain: after
+  `app.register(auth, { prefix: "/auth" })`, `client<typeof app>` knows `POST /auth/login`
+  with its params, body and answers. Prefixes add up through plugins that register others.
+  `Plugin` has a fourth type parameter for its routes; a plain function passed to
+  `register` hands no types on.
+- **`ctx.route.security` and `ctx.route.meta`.** Hooks see the credentials a route asks
+  for, its own or its group's, and a free-form `meta` from its spec
+  (`{ meta: { auth: { roles: ["admin"] } } }`). Plugins name what they read by extending
+  the exported `RouteMeta` interface. Worked out once per route, before the first request.
+- **`scope.describe((operation, route, components) => …)`** lets a plugin add to the
+  OpenAPI operation of every route in its scope: header parameters, answers, descriptions,
+  and details of a security scheme such as `bearerFormat: "JWT"`.
+- **`trustProxy`** on the app: `true`, a number of hops, or a function that names your
+  proxies. `ctx.ip`, and with it `rateLimit`, then reads `x-forwarded-for` or `forwarded`.
+  Off by default; an app without it pays nothing for it.
+- **`onSend(fn, { last: true })`** runs a hook after every other onSend hook of a route.
+  `compress` uses it, so a hook that reads the body (an ETag) sees it before it is packed,
+  wherever either was registered.
+- **`ctx.rawHeaders`**: the request's headers as they arrived, names in lower case, even
+  where a route's header schema cut `ctx.headers` down to its contract. The request's own
+  object, not a copy: read it, do not change it.
+- **`ctx.secure` and `ctx.protocol`** (`"http"` or `"https"`): the TLS socket under
+  `listen`, the URL's scheme under `app.fetch`, `secure` on an adapter's request, and with
+  `trustProxy` what the trusted proxies forward in `x-forwarded-proto` or forwarded's
+  `proto=`. `ctx.url` takes its scheme from it.
+- **`ref(schema, name?)` for `describe` hooks**, their fourth argument: lists a `t.*`
+  schema once under `components.schemas` and returns `{ $ref }` to it, as a route's named
+  schemas are. An unnamed schema needs `name`.
+- **The route a `describe` hook gets is public**: the frozen `ctx.route` view (`method`,
+  `path`, `security`, `meta`) plus the `spec` it was written with, typed `OperationRoute`;
+  no internal fields of the route record.
+- **`scope.dev` and `scope.prefix`**, read-only: whether the app runs in development, and
+  the path prefix of the scope a plugin was given (`""` for the app).
+- **Plugins name the inkan versions they work with.** `plugin(fn, { name: "inkan-quota",
+  inkan: ">=0.7.0 <0.8.0" })`: `register()` throws on any other
+  (`inkan-quota needs inkan >=0.7.0 <0.8.0, this app runs 0.9.1`), and a range that is not
+  one throws where the plugin is made. Ranges read as npm reads them (`^`, `~`, `0.7.x`,
+  `<`, `>=`, hyphens, spaces and `||`), prereleases included; no dependency for it.
+  `PluginOptions` is exported.
+- **`inkan create plugin <name> [folder]`** writes a package for a plugin of your own:
+  `index.js` with its types in `index.d.ts` (no build step, like the official packages),
+  `test.ts` on `app.inject`, the `inkan-plugin` keyword, `@vxnsin/inkan` as a peer for
+  the minor that runs (the same range the plugin names), README, MIT license, and a CI
+  workflow for Node 22 and 24. It refuses names npm would not take, the `@inkanjs` scope,
+  and a folder that is there.
+- `RouteMeta` takes symbol keys as well, so a plugin can keep its key to itself.
+- The pages inkan serves itself (`/docs`, `/openapi.json`, `/_inkan`) are answered before
+  any hook runs, so hooks such as secure headers do not apply to them. Turn a page off
+  (`docs: false`, …) or serve it from a route of your own to put hooks on it.
+- `serializeCookie` and `parseCookies` are exported, for plugins that read or write
+  cookies outside a context. So are the types `RouteInfo`, `RouteMeta`, `Security`,
+  `OperationHook`, `OperationRoute` and `TrustProxy`.
+- **`env(schema, source = process.env)`** checks environment variables with a `t.object`
+  schema, coerced like a query string (numbers, booleans, enums, defaults, optional), and
+  hands back the typed value, frozen. An empty variable counts as unset. It throws one error
+  that lists every problem (`PORT must be an integer, got "abc"`, `DATABASE_URL is
+  required`), never with the value of a name that looks secret (SECRET, TOKEN, KEY, PASSWORD).
+- **Overload protection: `pressure`** on the app, `{ eventLoopDelay, heapUsed, rss,
+  retryAfter, check, exempt, interval }`. A timer (unref'd, every second) samples the event
+  loop's delay, the heap (bytes or `"90%"` of its limit), resident memory and your own
+  `check()`, and sets one flag. While it is set every request gets a 503 `under-pressure`
+  problem with `retry-after`, before its body is read and before any hook; inkan's own pages
+  and the `exempt` paths still answer. `app.pressure()` hands back the last sample for a
+  health route. Off by default: no timer, and nothing to read per request.
+- **Request context: `context: true` and `context()`.** Each request runs inside an
+  AsyncLocalStorage holding its context, so code far from the handler (a logger, a database
+  helper) reads `context()?.id` or `context()?.user` without having it passed. Outside a
+  request it is undefined; with no app in the process that turned it on it throws. A
+  background job runs with its own `job.ctx`, never inside the store of the request that
+  started it, and timers inkan makes during a request (the job sweeper) do not keep that
+  store either. Off by default; on, it costs about 0.5-1 µs a request (`bench/inproc.mjs`:
+  113 % of the time without it, geomean).
+- **Scheduled jobs: `every`.** `app.job(path, { every: "0 3 * * *" }, run)`, or
+  `every: { cron, input, timezone: "UTC" | "local" }` (UTC by default), starts the job on a
+  schedule as a POST would: the same queue, concurrency and store, without an owner, and
+  `job.ctx` a context of no real request. A five-field cron with `*`, lists, ranges, steps
+  and names (`mon-fri`, `jan`), Vixie's rule for day of month and day of week (either one
+  when both are restricted) and `@daily` and friends; no dependency. A job with a `body`
+  needs `input`, checked against it when the job is defined, as are the expression and the
+  zone. A run is skipped while the last one the schedule started still waits or runs.
+  Timers are unref'd and set for the next minute each time, so they do not drift, and
+  waits past 24.8 days go in hops. Schedules start once the app listens (or on
+  `app.started()` for an adapter) and stop on shutdown; with `workers` only worker 1
+  runs them, and a worker that replaces it takes its place.
+- **`reply()` takes a list for `set-cookie`**: each entry goes out as a line of its own,
+  next to the cookies `ctx.setCookie()` made, so a proxy can pass an upstream's cookies on
+  as they came. A list for any other header is joined with `", "`. `ReplyHeaders` is exported.
+
+### Faster
+
+- **On average ahead of Fastify now.** On the GitHub runner, three runs: inkan 91.4 (90.3–92.2)
+  against Fastify 87.7 (87.4–88.1) and 0.6.0 86.7, with node:http as 100. Not in every
+  scenario: Fastify still leads the async handler. The numbers, run by run and scenario by
+  scenario, are in [`bench/reports/0.7.0.md`](bench/reports/0.7.0.md).
+
+- **Objects check by their own keys.** An object's fields are read in the order the value
+  holds them, mostly the contract's, and each field's check is called directly: a body of
+  50 items checks in about 70 % of the time, a small body in two thirds. Every field is
+  still checked once, in the contract's order, with the same issues.
+- **Answers fit without `Object.keys`.** Whether an answer can go to the native writer as
+  it is is told by a for-in over it: half the time for a list of 100, a quarter less to
+  write it.
+- **Middleware routes answer in one async frame**, without a closure per request; a route
+  with a `timeout` races its work as before.
+
+### Changed
+
+- `compress` runs after every other onSend hook instead of in the order it was registered.
+- `register()` returns the app or scope typed with what a shared plugin added, instead of
+  `this`; for any other plugin the type is the same as before.
+- A plugin may return a value (its scope); anything but a promise is ignored as before.
+- `app.dev` is read-only, like `scope.dev`; set development mode with the `dev` option.
+- On SIGINT or SIGTERM a connection whose answer ends during the shutdown is closed right
+  after it, instead of when the client lets it go.
+
+### Fixed
+
+- A problem a hook or a handler returns instead of throwing is answered with its own status
+  and shape, as a thrown one is. It used to go out as a 200 with the problem as its body.
+
+
 ## 0.6.0
 
 ### New

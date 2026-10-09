@@ -1,7 +1,8 @@
 import cluster from "node:cluster";
 import { availableParallelism } from "node:os";
 import { brotliDecompressSync, gunzipSync } from "node:zlib";
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { createServer, ServerResponse, STATUS_CODES, type IncomingMessage, type Server } from "node:http";
+import type { Duplex } from "node:stream";
 import { HttpProblem, problem, type ProblemBody } from "./problem.ts";
 import { type Match, Router } from "./router.ts";
 import { EventsSchema, RawBodySchema, StreamSchema, t, type Infer, type Issue, type Schema, type UploadedFile } from "../schema/schema.ts";
@@ -15,13 +16,17 @@ import { paint, useColor } from "./color.ts";
 import type { Seal } from "../seal/compile.ts";
 import { applySeal, type SealState } from "../seal/seal.ts";
 import { Reply, type Context, type Example, type Middleware, type RawQuery, type RouteRecord, type Responses, type RouteDefs } from "./route.ts";
-import { target, queryObject, type Exchange, type RawRequest, type RawResponse, type Target } from "./context.ts";
+import { target, queryObject, trustingContext, type Exchange, type RawRequest, type RawResponse, type Target, type TrustProxy } from "./context.ts";
 import { NO_HOOKS, runHooks, Scope, type Hooks, type Root } from "./scope.ts";
 import { nextId } from "./request-id.ts";
+import { JobHub } from "./jobs.ts";
 import { jsonRows, SafeHtml } from "./helpers.ts";
 import { cached } from "./cache.ts";
 import { ArraySchema } from "../schema/schema.ts";
 import { readRequestBody, requestStream, TOO_LARGE, validateInput } from "./input.ts";
+import { Connection, originAllowed, UPGRADING, writeAnswer, writeSwitch, type Upgrading, type WsOrigins, type WsSpec } from "./ws.ts";
+import { Gauge, type PressureOptions, type PressureSample } from "./pressure.ts";
+import { contextStorage, type Cell } from "./request-context.ts";
 import { Buffer } from "node:buffer"; // explicit, for runtimes without a global Buffer
 
 // ---------- the app ----------
@@ -59,6 +64,15 @@ export type AppOptions = OpenAPIInfo & {
    * SIGTERM lets every one finish its open requests. Default: one process, no cluster.
    */
   workers?: number | "auto";
+  /**
+   * Believe the proxies in front of the app about who the client is: `ctx.ip` then reads
+   * x-forwarded-for (or forwarded). `true` trusts every proxy, a number that many hops,
+   * a function the addresses it says yes to. Default off: `ctx.ip` is the socket's address,
+   * since anyone can send these headers.
+   */
+  trustProxy?: TrustProxy;
+  /** The pages that may open the app's WebSockets, for every route without `origins` of its own. Default: the app's own origin. See `WsSpec.origins`. */
+  wsOrigins?: WsOrigins;
   /** Development mode. Default: NODE_ENV is not "production". */
   dev?: boolean;
   onError?: (error: unknown, ctx: Context<any, any, any, any, any>) => void;
@@ -67,6 +81,26 @@ export type AppOptions = OpenAPIInfo & {
    * Each one is used only while it matches its contract; the rest run as without a seal.
    */
   seal?: Seal;
+  /**
+   * Overload protection. A timer samples the process every second (unref'd): the event
+   * loop's delay (99th percentile, ms), the V8 heap in use (bytes, or `"90%"` of its limit),
+   * resident memory, and your own `check()`. While a limit is passed, every request is
+   * answered with a 503 `under-pressure` problem and `retry-after` before its body is read,
+   * and before hooks, the log and the inspector; the pages inkan serves itself and the
+   * `exempt` paths still answer. `app.pressure()` hands back the last sample, for a health
+   * route. Default off: no timer, and a request reads nothing for it.
+   */
+  pressure?: PressureOptions;
+  /**
+   * Answers every request inside an AsyncLocalStorage that holds its context, so code far
+   * from the handler reads it with `context()`: `context()?.id` in a logger, `context()?.user`
+   * in a database helper. Background jobs run with their own (`job.ctx`), not the store of
+   * the request that started them. Default off: a request pays nothing, and `context()` throws
+   * unless another app in the process turned it on. On, it costs about 0.5-1 µs a request
+   * (bench/inproc.mjs: 113 % of the time without it, geomean; 10-25 % on the smallest
+   * requests, a few % where a request does real work).
+   */
+  context?: boolean;
 };
 
 export type InjectOptions = {
@@ -103,6 +137,8 @@ export type AdapterRequest = {
   stream?: AsyncIterable<Uint8Array>;
   /** The client's address; the inspector only answers a loopback one. Leave it out and the inspector stays shut. */
   remote?: string;
+  /** Whether the request came over TLS; `ctx.secure` and `ctx.protocol` say so. Default: no. */
+  secure?: boolean;
 };
 
 /** The answer `app.exchange` hands back for the adapter to write. */
@@ -165,7 +201,8 @@ const isLoopback = (addr?: string) =>
 
 export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, Deco> implements Root {
   options: AppOptions;
-  dev: boolean;
+  /** @internal */
+  _dev: boolean;
   private router = new Router<RouteRecord>();
   private global: Middleware[] = [];
   private log: LogEntry[] = [];
@@ -180,9 +217,12 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
   /** The app's own hooks, for requests no route matched. */
   private rootHooks: Hooks = NO_HOOKS;
 
+  /** @internal The overload sampler, when `pressure` is on. */
+  _gauge?: Gauge;
+
   constructor(options: AppOptions = {}) {
     super();
-    this.dev = options.dev ?? process.env.NODE_ENV !== "production";
+    this._dev = options.dev ?? process.env.NODE_ENV !== "production";
     this.options = {
       docs: "/docs",
       openapi: "/openapi.json",
@@ -193,6 +233,40 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
       requestId: "x-request-id",
       gracefulShutdown: true,
       ...options,
+    };
+    // before any plugin: every scope's context class extends this one
+    if (options.trustProxy) this._box.Ctx = trustingContext(this._box.Ctx, options.trustProxy);
+    if (options.pressure) this._gauge = new Gauge(options.pressure);
+    if (options.context) {
+      const als = contextStorage();
+      const handle = this.handle.bind(this);
+      // handle() puts the request's context into the cell, synchronously, the moment it has one
+      this.handle = (raw, url, matched) => {
+        const cell: Cell = { ctx: undefined };
+        this._cell = cell;
+        return als.run(cell, handle, raw, url, matched);
+      };
+    }
+  }
+  /** The store of the request being handled, with `context: true`, until its context is in it. */
+  private _cell?: Cell;
+
+  /** The last overload sample (see `pressure`), for a health route; undefined without `pressure`. */
+  pressure(): PressureSample | undefined {
+    return this._gauge && { ...this._gauge.sample };
+  }
+
+  /** The 503 for a request while the app is under pressure, or nothing for a path that answers anyway. */
+  private shed(path: string): RawResponse | undefined {
+    const gauge = this._gauge!;
+    if (gauge.exempt.has(path)) return;
+    const { docs, openapi, inspector } = this.options;
+    if (path === openapi || path === docs || (docs && path === docs + "/") || (inspector && (path === inspector || path.startsWith(inspector + "/")))) return;
+    const p = problem(503, "under-pressure", "The server is too busy right now; try again shortly");
+    return {
+      status: 503,
+      headers: { "content-type": "application/problem+json", "retry-after": gauge.retryAfter },
+      body: JSON.stringify({ ...p.toJSON(), instance: path }),
     };
   }
 
@@ -238,19 +312,27 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     return this.sealState;
   }
 
-  /** @internal A hook was added somewhere: the routes' joined hooks are out of date. */
+  /** @internal The app's background jobs; made by the first `job()`, so an app without any has none. */
+  _jobs?: JobHub;
+  /** @internal */
+  _jobHub(): JobHub {
+    return (this._jobs ??= new JobHub(this));
+  }
+
+  /** @internal A hook was added somewhere: the routes' joined hooks, and the document, are out of date. */
   _changed() {
     this.built = false;
+    this.spec = undefined;
   }
 
   /** @internal Runs a plugin now, or after the ones still loading, so they run in the order they were registered. */
-  _load(run: () => void | Promise<void>) {
+  _load(run: () => unknown) {
     if (!this.loading) {
       const r = run(); // a plugin that throws at once throws out of register()
       if (r instanceof Promise) this.loading = r.then(() => undefined);
       return;
     }
-    this.loading = this.loading.then(() => run());
+    this.loading = this.loading.then(() => run() as void | Promise<void>); // a plugin may hand back its scope; only waiting matters
   }
 
   /** Resolves once every plugin registered so far has loaded; rejects with the error of one that failed. */
@@ -274,7 +356,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
       r.plan = planOf(r);
       r.run = r.spec.cache ? cached(r.handler, r.spec.cache) : r.handler;
       r.timeout = r.spec.timeout ?? this.options.timeout;
-      r.info = Object.freeze({ method: r.method, path: r.path });
+      r.info = Object.freeze({ method: r.method, path: r.path, security: Object.freeze([...r.security!]), meta: r.spec.meta ?? NO_META });
     }
     const { requestId, docs } = this.options;
     this.idHeader = requestId ? requestId.toLowerCase() : undefined;
@@ -371,6 +453,10 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     const started = timed || this.timeAll ? performance.now() : 0;
     const own = this.builtin(raw, url);
     if (own) return own;
+    if (this._gauge?.under) {
+      const busy = this.shed(url.pathname);
+      if (busy) return busy;
+    }
 
     // Node already lower-cases header names; inject does the same. Nothing to copy.
     const headers = raw.headers as Record<string, string>;
@@ -392,6 +478,10 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     // A request no route takes never reads one on the plain path, so it gets none there.
     const ctx = (route || !plain ? new (route ? route.box! : this._box).Ctx(raw, url, id, headers, out) : undefined) as Context<any, any, any, any, any>;
     const x: Exchange = { raw, url, ctx, out, notes, headers, started, timed, id: idHeader ? id : undefined, route: undefined, hooks };
+    if (this._cell) {
+      this._cell.ctx = ctx;
+      this._cell = undefined;
+    }
 
     if (!plain) return this.full(x, m);
     let res: RawResponse;
@@ -418,7 +508,17 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
   private unmatched(m: Match<RouteRecord>, method: string, path: string, out: Exchange["out"]): HttpProblem | undefined {
     if (m.kind === "none") return problem(404, "not-found", `No route for ${method} ${path}`);
     if (m.kind !== "method") return;
-    const allow = [...m.allow, "OPTIONS"].join(", ");
+    let methods = m.allow;
+    if (methods.includes("WS")) {
+      // a WebSocket's path: a plain request is told to upgrade, and the Allow header names only HTTP methods
+      methods = methods.filter((a) => a !== "WS");
+      if (!methods.length && method !== "OPTIONS") {
+        const p = problem(426, "upgrade-required", `${path} is a WebSocket: open it with an upgrade to websocket`);
+        p.headers.upgrade = "websocket";
+        return p;
+      }
+    }
+    const allow = [...methods, "OPTIONS"].join(", ");
     if (method === "OPTIONS") {
       out.status = 204;
       out.headers.allow = allow;
@@ -433,25 +533,34 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
   private async later(x: Exchange, r: RouteRecord, reading: void | Promise<void>): Promise<RawResponse> {
     let res: RawResponse;
     try {
-      const work = async () => {
+      let result: unknown;
+      if (r.timeout) result = await this.deadline(x, this.work(x, r, reading));
+      else {
+        // the same as work(), in this frame: a route without a time limit needs no second one
         if (reading) await reading;
-        let result: unknown;
-        if (r.use.length) {
-          await chain(r.use, x.ctx, () => {
-            const y = r.run!(x.ctx);
-            return y instanceof Promise ? y.then((v) => void (result = v)) : void (result = y);
-          });
-        } else {
+        if (r.use.length) await chain(r.use, x.ctx, () => then(r.run!(x.ctx), (v) => void (result = v)));
+        else {
           const y = r.run!(x.ctx);
           result = y instanceof Promise ? await y : y;
         }
-        return result;
-      };
-      res = this.respond(await this.deadline(x, work()), x);
+      }
+      res = this.respond(result, x);
     } catch (err) {
       res = this.fail(err, x);
     }
     return this.finish(x, res);
+  }
+
+  /** What a request with a time limit races against the clock: its body, its middleware, its handler. */
+  private async work(x: Exchange, r: RouteRecord, reading: void | Promise<void>): Promise<unknown> {
+    if (reading) await reading;
+    let result: unknown;
+    if (r.use.length) await chain(r.use, x.ctx, () => then(r.run!(x.ctx), (v) => void (result = v)));
+    else {
+      const y = r.run!(x.ctx);
+      result = y instanceof Promise ? await y : y;
+    }
+    return result;
   }
 
   /**
@@ -622,6 +731,8 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
   }
 
   private respond(result: unknown, x: Exchange): RawResponse {
+    // a problem handed back instead of thrown, from a hook or a handler, is answered the same way
+    if (result instanceof HttpProblem) throw result;
     const { out, route, notes } = x;
     const plan = route?.plan;
     let status = out.status;
@@ -630,7 +741,12 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     if (result instanceof Reply) {
       status = result.status || status; // 0: whatever status() set, or the usual one
       body = result.body;
-      for (const [k, v] of Object.entries(result.headers)) headers[k.toLowerCase()] = v;
+      for (const [k, v] of Object.entries(result.headers)) {
+        const name = k.toLowerCase();
+        // set-cookie: one line per cookie, next to the ones setCookie() made
+        if (name === "set-cookie") (out.cookies ??= []).push(...(Array.isArray(v) ? v : [v]));
+        else headers[name] = Array.isArray(v) ? v.join(", ") : v;
+      }
     }
     if (body instanceof SafeHtml) {
       headers["content-type"] ??= "text/html; charset=utf-8"; // html`…` returned as it is
@@ -805,6 +921,140 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
   }
 
   /**
+   * A Node `upgrade` listener, for `server.on("upgrade", app.upgradeListener)` on a server
+   * made by hand; `listen` adds it by itself when the app has a WebSocket route. An upgrade
+   * to a path without one is a 404.
+   */
+  get upgradeListener() {
+    return (req: IncomingMessage, socket: Duplex, head: Buffer) => void this.upgrade(req, socket, head);
+  }
+
+  /** @internal The open WebSockets, made with the first one. */
+  _sockets?: Set<Connection>;
+  /** Sockets and handshakes per WebSocket route with `maxConnections`. */
+  private wsCount = new Map<RouteRecord, number>();
+
+  /**
+   * An upgrade request: routed among the WebSocket routes, checked for what costs nothing
+   * (`refuse`), then the same way as any request (hooks, security, input, middleware). An
+   * answer other than the 101 the route's acceptor gives is written onto the socket as it
+   * is, and the connection ends.
+   */
+  private upgrade(req: IncomingMessage, socket: Duplex, head: Buffer) {
+    socket.on("error", () => {}); // a client that goes away mid-handshake is no crash; the socket reports the rest
+    if (this.loading) return void this.ready().then(() => this.upgrade(req, socket, head), (err) => this.broken(req, socket, err));
+    if (!this.built) this.build();
+    const url = target(req.url ?? "/");
+    const m = this.router.match("WS", url.pathname);
+    const route = m.kind === "found" ? m.route : undefined;
+    // a handshake that never gets its answer (a hook that hangs) does not hold the socket forever
+    const limit = (route?.spec as WsSpec<unknown, unknown, unknown, unknown, unknown> | undefined)?.handshakeTimeout ?? HANDSHAKE_TIMEOUT;
+    const deadline = setTimeout(() => socket.destroy(), limit);
+    deadline.unref();
+    socket.once("close", () => clearTimeout(deadline));
+    let no: HttpProblem | undefined;
+    try {
+      no = this.refuse(req, url, route, socket);
+    } catch (err) {
+      clearTimeout(deadline);
+      return this.broken(req, socket, err); // an `origins` function that threw
+    }
+    if (no) {
+      clearTimeout(deadline);
+      const body = JSON.stringify({ ...no.toJSON(), instance: req.url });
+      return writeAnswer(socket, no.status, STATUS_CODES[no.status] ?? "", withProblemHeaders({}, no.headers), [], body);
+    }
+    const gone = new AbortController(); // ctx.signal: aborted once the socket closes, before the upgrade or after it
+    socket.once("close", () => gone.abort(new DOMException("The client went away", "AbortError")));
+    const state: Upgrading = {};
+    (req as unknown as Record<symbol, Upgrading>)[UPGRADING] = state;
+    const raw = { method: req.method ?? "GET", url: req.url ?? "/", headers: req.headers, req, signal: gone.signal };
+    let out: RawResponse | Promise<RawResponse>;
+    try {
+      out = this.handle(raw, url, route ? m : NO_ROUTE);
+    } catch (err) {
+      return this.broken(req, socket, err);
+    }
+    const go = (o: RawResponse) => {
+      clearTimeout(deadline);
+      if (o.status !== 101 || !state.ctx || !route) {
+        o.abort?.abort();
+        writeAnswer(socket, o.status, STATUS_CODES[o.status] ?? "", o.headers, o.cookies, o.body);
+        return void o.done?.();
+      }
+      if (socket.destroyed) return void o.done?.();
+      writeSwitch(socket, req.headers["sec-websocket-key"] as string, o.headers, o.cookies);
+      o.done?.();
+      this.accept(route, state.ctx, socket, head);
+    };
+    if (out instanceof Promise) out.then(go, (err) => this.broken(req, socket, err));
+    else go(out);
+  }
+
+  /**
+   * The checks that cost next to nothing, made before any hook, security or middleware: a
+   * handshake that cannot be one (not a GET, not HTTP/1.1, a body), a page from another
+   * origin, a route that holds as many sockets as it may. A problem to answer with, or none.
+   */
+  private refuse(req: IncomingMessage, url: Target, route: RouteRecord | undefined, socket: Duplex): HttpProblem | undefined {
+    if (req.method !== "GET") return problem(400, "bad-handshake", "A WebSocket handshake is a GET");
+    if (req.httpVersionMajor !== 1 || req.httpVersionMinor < 1) return problem(400, "bad-handshake", "A WebSocket handshake is HTTP/1.1");
+    const h = req.headers;
+    if ((h["content-length"] !== undefined && h["content-length"] !== "0") || h["transfer-encoding"] !== undefined) {
+      return problem(400, "bad-handshake", "A WebSocket handshake has no body");
+    }
+    if (!route) return;
+    const spec = route.spec as WsSpec<unknown, unknown, unknown, unknown, unknown>;
+    const rule = spec.origins ?? this.options.wsOrigins;
+    if (rule !== "*" && (h.origin !== undefined || typeof rule === "function")) {
+      let ctx: Context<any, any, any, any, any> | undefined;
+      const early = () => (ctx ??= new route.box!.Ctx({ method: "GET", url: req.url ?? "/", headers: h, req }, url, "", h as Record<string, string>, fresh()) as Context<any, any, any, any, any>);
+      const own = () => `${early().protocol}://${h.host ?? ""}`;
+      if (!originAllowed(rule, h.origin, own, early)) return problem(403, "origin-not-allowed", `This page may not open the WebSocket at ${url.pathname}`);
+    }
+    const max = spec.maxConnections;
+    if (max !== undefined) {
+      const n = this.wsCount.get(route) ?? 0;
+      if (n >= max) return problem(503, "too-many-connections", `The WebSocket at ${url.pathname} holds as many sockets as it may`);
+      this.wsCount.set(route, n + 1);
+      socket.once("close", () => this.wsCount.set(route, (this.wsCount.get(route) ?? 1) - 1));
+    }
+  }
+
+  /** The upgrade went through: the socket, and the route's handler with it. */
+  private accept(route: RouteRecord, ctx: Context<any, any, any, any, any>, socket: Duplex, head: Buffer) {
+    const spec = route.spec as WsSpec<unknown, unknown, unknown, unknown, unknown>;
+    const report = (err: unknown) => (this.options.onError ? this.options.onError(err, ctx) : console.error(err));
+    const ws = new Connection(socket, {
+      maxMessage: spec.maxMessage ?? 1024 * 1024,
+      heartbeat: spec.heartbeat ?? 30_000,
+      message: spec.message,
+      send: spec.send,
+      check: Boolean(this.options.validateResponses),
+      label: `WS ${route.path}`,
+      report,
+    });
+    const sockets = (this._sockets ??= new Set());
+    sockets.add(ws);
+    void ws.closed.then(() => sockets.delete(ws));
+    try {
+      const r = route.socket!(ws, ctx);
+      if (r instanceof Promise) r.catch((err) => ws.broke(err));
+    } catch (err) {
+      ws.broke(err);
+    }
+    ws.start(head);
+  }
+
+  /** Closes every open WebSocket with 1001 and resolves once they are gone: part of a shutdown. */
+  private closeSockets(): Promise<unknown> | undefined {
+    if (!this._sockets?.size) return;
+    const all = [...this._sockets];
+    for (const ws of all) ws.close(1001, "the server is shutting down");
+    return Promise.all(all.map((ws) => ws.closed));
+  }
+
+  /**
    * For adapters: how the body of a request to this method and target is to be read. `limit`
    * is the most bytes it may have, the route's own or the app's; with `stream` the adapter
    * hands the body over unread, as `AdapterRequest.stream`.
@@ -822,6 +1072,10 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
 
   // Synchronous for a request without a body whose handler is: no promise, no extra turn.
   private serve(req: IncomingMessage, res: ServerResponse) {
+    if (this._gauge?.under) {
+      const busy = this.shed(target(req.url ?? "/").pathname);
+      if (busy) return this.send(res, busy); // the body stays unread
+    }
     const hasBody = req.headers["content-length"] !== undefined || req.headers["transfer-encoding"] !== undefined;
     if (!hasBody) return this.pass(req, res, undefined);
     // the route says how much it takes, and whether it reads the body itself; routed once, here
@@ -876,16 +1130,27 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     if (body && body.byteLength > limit) return tooLargeAnswer(request.url, limit);
     const buf = body === undefined || body.byteLength === 0 ? undefined : Buffer.isBuffer(body) ? body : Buffer.from(body.buffer, body.byteOffset, body.byteLength);
     const stream = request.stream && asBuffers(request.stream);
-    return this.handle({ method: request.method, url: request.url, headers: request.headers, body: buf, stream, remote: request.remote });
+    return this.handle({ method: request.method, url: request.url, headers: request.headers, body: buf, stream, remote: request.remote, secure: request.secure });
   }
 
   /** For adapters: runs the onListen hooks, once the adapter's server listens. */
   async started(): Promise<void> {
     for (const hook of this._onListen) await hook();
+    this.schedule();
+  }
+
+  /** Starts the jobs' schedules (`every`): in one process only, the first worker of a cluster. */
+  private schedule() {
+    if (!this._jobs) return;
+    const slot = process.env.INKAN_WORKER;
+    if (cluster.isWorker && (slot ? slot !== "1" : cluster.worker?.id !== 1)) return;
+    this._jobs.schedule();
   }
 
   /** For adapters: runs the onClose hooks, once the adapter's server has stopped taking requests. */
   async stopped(): Promise<void> {
+    this._gauge?.stop();
+    await Promise.all([this._jobs?.stop(), this.closeSockets()]);
     for (const hook of this._onClose) await hook();
   }
 
@@ -902,6 +1167,10 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
   async fetch(request: Request, info: { remote?: string } = {}): Promise<Response> {
     if (this.loading) await this.ready();
     const url = new URL(request.url);
+    if (this._gauge?.under) {
+      const busy = this.shed(url.pathname);
+      if (busy) return toWebResponse(busy);
+    }
     const target = url.pathname + url.search;
     const headers: Record<string, string> = {};
     request.headers.forEach((value, name) => (headers[name] = value)); // names come lower-cased
@@ -917,14 +1186,18 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
         body = read;
       }
     }
-    const out = await this.handle({ method: request.method, url: target, headers, body, stream, remote: info.remote ?? "unknown", signal: request.signal });
+    const out = await this.handle({ method: request.method, url: target, headers, body, stream, remote: info.remote ?? "unknown", secure: url.protocol === "https:", signal: request.signal });
     return toWebResponse(out);
   }
 
   /** Something failed outside every handler (the socket, inkan itself): log it and answer 500. */
-  private broken(req: IncomingMessage, res: ServerResponse, err: unknown) {
+  private broken(req: IncomingMessage, res: ServerResponse | Duplex, err: unknown) {
     if (this.options.onError) this.options.onError(err, { req, res } as never);
     else console.error(err);
+    if (!(res instanceof ServerResponse)) {
+      const body = JSON.stringify({ type: "internal", title: "Internal Server Error", status: 500, instance: req.url });
+      return writeAnswer(res, 500, "Internal Server Error", { "content-type": "application/problem+json" }, [], body);
+    }
     if (res.headersSent) return void res.destroy();
     const body = JSON.stringify({ type: "internal", title: "Internal Server Error", status: 500, instance: req.url });
     this.send(res, { status: 500, headers: { "content-type": "application/problem+json" }, body });
@@ -974,8 +1247,12 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
    */
   listen(port?: number, host?: string): Promise<Server> {
     const { workers } = this.options;
+    const count = workers === "auto" ? availableParallelism() : (workers ?? 1);
+    if (count > 1 && this._jobs?.local() && !process.env.INKAN_NO_LISTEN) {
+      throw new Error(`inkan: background jobs keep their queue in this process, so they cannot run with workers: ${workers}. Run one process, or give app.job a store that processes share.`);
+    }
     // in a cluster the first process only looks after the workers; listen() there does not return
-    if (workers && cluster.isPrimary && !process.env.INKAN_NO_LISTEN) return this.supervise(workers === "auto" ? availableParallelism() : workers);
+    if (workers && cluster.isPrimary && !process.env.INKAN_NO_LISTEN) return this.supervise(count);
     // every plugin first: a route a plugin adds must be there for the first request, and one that fails stops the start
     return this.ready().then(() => this.open(port, host));
   }
@@ -989,7 +1266,10 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
       else if (log) console.log(`  ${c.seal("印")} ${msg}`);
     };
     say(`starting ${count} worker${count === 1 ? "" : "s"}`);
-    for (let i = 0; i < count; i++) cluster.fork();
+    // each worker has a slot, 1 to count, that its replacement takes over: slot 1 runs the schedules
+    const slots = new Map<number, string>();
+    const fork = (slot: string) => slots.set(cluster.fork({ INKAN_WORKER: slot }).id, slot);
+    for (let i = 1; i <= count; i++) fork(String(i));
     let stopping = false;
     const deaths: number[] = [];
     cluster.on("exit", (worker, code, signal) => {
@@ -1007,7 +1287,9 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
         process.exit(1);
       }
       console.error(`inkan: worker ${worker.id} stopped with ${signal ?? code}; starting another`);
-      cluster.fork();
+      const slot = slots.get(worker.id) ?? "0";
+      slots.delete(worker.id);
+      fork(slot);
     });
     const stop = () => {
       if (stopping) return;
@@ -1025,6 +1307,8 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
 
   private open(port?: number, host?: string): Promise<Server> {
     const server = createServer(this.listener);
+    // only an app with a WebSocket route listens for upgrades; one without answers them as plain requests
+    if (this._records.some((r) => r.method === "WS")) server.on("upgrade", this.upgradeListener);
     if (process.env.INKAN_NO_LISTEN) return Promise.resolve(server); // the CLI loads the app only to read it
     const p = port ?? (process.env.PORT ? Number(process.env.PORT) : 3000);
     const h = host ?? process.env.HOST;
@@ -1034,6 +1318,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
         server.off("error", reject);
         (async () => {
           for (const hook of this._onListen) await hook();
+          this.schedule();
           const { log, logger } = this.options;
           if (log && !logger) {
             if (log === "json") {
@@ -1042,7 +1327,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
               console.log(JSON.stringify({ time: new Date().toISOString(), msg: "listening", port, worker: WORKER }));
             } else this.banner(server);
           }
-          if (this.options.gracefulShutdown) shutdownOnSignal(server, this._onClose);
+          if (this.options.gracefulShutdown) shutdownOnSignal(server, this._onClose, [() => this._jobs?.stop(), () => this.closeSockets(), () => this._gauge?.stop()]);
           resolve(server);
         })().catch((err) => server.close(() => reject(err)));
       });
@@ -1067,6 +1352,15 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
 }
 
 export const inkan = (options?: AppOptions): App<{}, {}> => new App(options);
+
+/** Milliseconds an upgrade request has to get its answer, for a route without `handshakeTimeout`. */
+const HANDSHAKE_TIMEOUT = 10_000;
+
+/** The match an upgrade to a path without a WebSocket route gets: a 404, whatever HTTP routes the path has. */
+const NO_ROUTE: Match<RouteRecord> = { kind: "none" };
+
+/** `ctx.route.meta` of a route without `meta`. */
+const NO_META = Object.freeze({});
 
 /** What a route's contract says about every answer, worked out when the app is built instead of on each request. */
 function planOf(route: RouteRecord): NonNullable<RouteRecord["plan"]> {
@@ -1098,6 +1392,9 @@ export function contractFor(route: RouteRecord, status: number): Schema<any> | u
 // ---------- helpers ----------
 
 const RESOLVED: Promise<unknown> = Promise.resolve();
+
+/** `f` of a value, or of what a promise of one gives, as a promise then: no frame for a value. */
+const then = (y: unknown, f: (v: unknown) => unknown): unknown => (y instanceof Promise ? y.then(f) : f(y));
 
 /**
  * Runs middleware in order around `last`, each one's `next` the rest of the way. No async
@@ -1236,12 +1533,22 @@ function toWebResponse(out: RawResponse): Response {
 }
 
 let shuttingDown = false;
-function shutdownOnSignal(server: Server, onClose: (() => void | Promise<void>)[]) {
+/**
+ * `stopping` runs first, before the server waits for open connections: what ends there (event
+ * streams of jobs) does not hold the shutdown up. What it returns is waited for before onClose.
+ */
+function shutdownOnSignal(server: Server, onClose: (() => void | Promise<void>)[], stopping: (() => unknown)[] = []) {
   const stop = (signal: string) => {
     if (shuttingDown) process.exit(1); // a second ctrl+c means now
     shuttingDown = true;
     console.log(`\n  ${paint(useColor()).warn(signal)}: finishing open requests…`);
+    const pending = stopping.map((fn) => fn());
+    // a connection whose answer ends now (an event stream that was just closed) is idle
+    // afterwards; close it then, instead of waiting for the client to let it go
+    const idle = setInterval(() => server.closeIdleConnections(), 50).unref();
     server.close(async () => {
+      clearInterval(idle);
+      await Promise.allSettled(pending);
       for (const hook of onClose) await hook();
       process.exit(0);
     });
