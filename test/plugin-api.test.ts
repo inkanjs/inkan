@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { compress, inkan, parseCookies, plugin, rateLimit, serializeCookie, t, type Plugin } from "../src/index.ts";
+import { compress, inkan, parseCookies, plugin, problem, rateLimit, serializeCookie, t, type Plugin } from "../src/index.ts";
 
 // what a plugin would write to name the meta it reads
 declare module "../src/index.ts" {
@@ -55,6 +55,104 @@ test("decorateRequest stays inside its plugin, and refuses names the context has
   assert.throws(() => inkan(quiet).decorateRequest("ip", () => 1), /already has a ip/);
   assert.throws(() => inkan(quiet).decorate("db", 1).decorateRequest("db", () => 2), /already has a db/);
   assert.throws(() => inkan(quiet).decorateRequest("db", () => 2).decorate("db", 1), /already has a db/);
+});
+
+// ---------- async per-request decorations ----------
+
+const later = <T>(v: T) => new Promise<T>((r) => setTimeout(() => r(v), 2));
+
+test("an async decorateRequest is one promise per request: read twice, made once, never for a request that does not ask", async () => {
+  let made = 0;
+  const app = inkan(quiet)
+    .decorateRequest("user", async (ctx) => {
+      made++;
+      await later(0);
+      return { name: ctx.cookies.sid ?? "anon" };
+    })
+    .get("/me", async (ctx) => {
+      const [a, b] = await Promise.all([ctx.user, ctx.user]);
+      const name: string = (await ctx.user).name;
+      return { name, same: a === b };
+    })
+    .get("/free", () => ({ ok: 1 }));
+  // @ts-expect-error a promise until it is awaited
+  app.get("/typed", (ctx) => ({ name: ctx.user.name }));
+  assert.deepEqual((await app.inject({ url: "/me", headers: { cookie: "sid=ada" } })).body, { name: "ada", same: true });
+  assert.equal(made, 1, "read three times, made once");
+  await app.inject({ url: "/free" });
+  assert.equal(made, 1, "a request that never reads it never makes it");
+});
+
+test("an async decorateRequest that throws a problem: the problem is the answer", async () => {
+  const app = inkan(quiet)
+    .decorateRequest("user", async (ctx) => {
+      await later(0);
+      if (!ctx.cookies.sid) throw problem(401, "unauthorized", "Log in first");
+      return { id: ctx.cookies.sid };
+    })
+    .get("/me", async (ctx) => ({ id: (await ctx.user).id }));
+  const r = await app.inject({ url: "/me" });
+  assert.equal(r.status, 401);
+  assert.equal(r.body.detail, "Log in first");
+  assert.deepEqual((await app.inject({ url: "/me", headers: { cookie: "sid=7" } })).body, { id: "7" });
+});
+
+test("decorateRequest before the handler: awaited for the routes when() picks, plain in preHandler and handler", async () => {
+  let made = 0;
+  const seen: unknown[] = [];
+  const app = inkan({ ...quiet, onError: () => {} })
+    .decorateRequest(
+      "user",
+      async (ctx) => {
+        made++;
+        await later(0);
+        if (ctx.cookies.sid === "gone") throw problem(401, "session-gone", "The session is gone");
+        return { id: ctx.cookies.sid ?? "anon" };
+      },
+      { before: "handler", when: (route) => route.security.length > 0 },
+    )
+    .preHandler((ctx) => {
+      if (ctx.route?.security.length) seen.push(ctx.user.id);
+    })
+    .get("/me", { security: "bearer", query: t.object({ n: t.int() }) }, (ctx) => {
+      const id: string = ctx.user.id; // the value, typed without the promise
+      return { id };
+    })
+    .get("/open", () => ({ ok: 1 }))
+    .get("/peek", (ctx) => ({ id: ctx.user.id }));
+
+  const me = await app.inject({ url: "/me?n=1", headers: { authorization: "Bearer x", cookie: "sid=ada" } });
+  assert.deepEqual(me.body, { id: "ada" });
+  assert.deepEqual(seen, ["ada"], "preHandler hooks see the value too");
+  assert.equal(made, 1);
+
+  assert.equal((await app.inject({ url: "/me?n=nope", headers: { authorization: "Bearer x", cookie: "sid=ada" } })).status, 400);
+  assert.equal(made, 1, "awaited after the input is checked: a bad request never loads it");
+
+  const gone = await app.inject({ url: "/me?n=1", headers: { authorization: "Bearer x", cookie: "sid=gone" } });
+  assert.equal(gone.status, 401);
+  assert.equal(gone.body.type.endsWith("session-gone"), true);
+
+  made = 0;
+  assert.deepEqual((await app.inject({ url: "/open" })).body, { ok: 1 });
+  assert.equal(made, 0, "a route when() leaves out never loads it");
+  const peek = await app.inject({ url: "/peek" });
+  assert.equal(peek.status, 500, "and reading it there is an error, not a promise passed off as the value");
+  assert.equal(made, 0);
+});
+
+test("decorateRequest before the handler without when: every route of its scope, none outside", async () => {
+  let made = 0;
+  const app = inkan(quiet);
+  app.register((scope) => {
+    scope
+      .decorateRequest("tenant", async () => (made++, later("acme")), { before: "handler" })
+      .get("/inside", (ctx) => ({ tenant: ctx.tenant.toUpperCase() }));
+  });
+  app.get("/outside", () => ({ ok: 1 }));
+  assert.deepEqual((await app.inject({ url: "/inside" })).body, { tenant: "ACME" });
+  assert.deepEqual((await app.inject({ url: "/outside" })).body, { ok: 1 });
+  assert.equal(made, 1);
 });
 
 // ---------- types out of shared plugins ----------

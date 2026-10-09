@@ -14,13 +14,26 @@ import { folderOf, loadRoutes } from "./files.ts";
 import type { HttpProblem } from "./problem.ts";
 import { defineJob, type JobHub, type JobMethod } from "./jobs.ts";
 import type { JsonSchema, Schema } from "../schema/schema.ts";
-import { joinPath, Routes, type Context, type DecoOf, type OperationRoute, type RouteDefs, type RouteRecord, type WithDeco } from "./route.ts";
+import { joinPath, Routes, type Context, type DecoOf, type OperationRoute, type RouteDefs, type RouteInfo, type RouteRecord, type WithDeco } from "./route.ts";
 
 type Ctx<Deco> = Context<any, any, any, any, any> & Deco;
 /** `decorate` as a property, so its type can name the app or scope it returns. */
 export type DecorateMethod<Self> = <K extends string, V>(name: K, value: V) => WithDeco<Self, { [P in K]: V }>;
 /** `decorateRequest` as a property, for the same reason. */
-export type DecorateRequestMethod<Self> = <K extends string, V>(name: K, init: (ctx: Ctx<DecoOf<Self>>) => V) => WithDeco<Self, { [P in K]: V }>;
+export type DecorateRequestMethod<Self> = {
+  <K extends string, V>(name: K, init: (ctx: Ctx<DecoOf<Self>>) => V): WithDeco<Self, { [P in K]: V }>;
+  <K extends string, V>(name: K, init: (ctx: Ctx<DecoOf<Self>>) => V, options: ResolveOptions): WithDeco<Self, { [P in K]: Awaited<V> }>;
+};
+/** `decorateRequest(name, init, options)`: a value awaited before the handler, so the handler sees it without the promise. */
+export type ResolveOptions = {
+  /** Awaited after the input is checked, before the preHandler hooks and the handler. */
+  before: "handler";
+  /**
+   * The routes that need it, asked once per route: `(route) => route.security.length > 0`.
+   * Every route of the scope when left out. On a route it leaves out, reading it is an error.
+   */
+  when?: (route: RouteInfo) => boolean;
+};
 /** `register` as a property: the scope it returns knows what a shared plugin decorated. */
 export type RegisterMethod<Self> = <O extends object = {}, A = {}>(
   p: Plugin<O, DecoOf<Self>, A> | ((app: Scope<{}, DecoOf<Self>>, options: O) => unknown),
@@ -91,6 +104,8 @@ export class Box {
   hooks: Hooks = emptyHooks();
   /** onSend hooks that run after every other one: `onSend(fn, { last: true })`. */
   lastSend: SendHook<any>[] = [];
+  /** Steps that await a decoration before the handler (`decorateRequest(…, { before: "handler" })`); they come before every preHandler hook. */
+  resolvers: RequestHook<any>[] = [];
   /** What this scope adds to the OpenAPI operations of its routes: `describe(fn)`. */
   describers: OperationHook[] = [];
   Ctx: typeof RequestContext;
@@ -115,6 +130,7 @@ export class Box {
   flatten(): Hooks {
     const chain = this.chain();
     const out = emptyHooks();
+    for (const b of chain) out.preHandler.push(...b.resolvers);
     for (const b of chain) for (const k of KINDS) (out[k] as unknown[]).push(...b.hooks[k]);
     for (const b of chain) out.onSend.push(...b.lastSend);
     return KINDS.some((k) => out[k].length) ? out : NO_HOOKS;
@@ -283,13 +299,32 @@ export class Scope<Defs extends RouteDefs = any, Deco = any> extends Routes<Defs
    * context's prototype. Names are refused as with `decorate`.
    *
    *   app.decorateRequest("user", (ctx) => sessions.get(ctx.cookies.sid));
+   *
+   * An `init` that returns a promise makes `ctx.user` that promise, typed so: `await ctx.user`.
+   * It is made once however often it is read, and a problem it throws is the answer of the
+   * request that awaits it.
+   *
+   * With `{ before: "handler" }` it is awaited after the input is checked, before the
+   * preHandler hooks, so they and the handler see the value itself, typed without the
+   * promise. That loads it for every request of the routes it covers, read or not: `when`
+   * picks them, asked once per route. A route it leaves out has no value to show, so reading
+   * it there throws; onRequest hooks, which run before it is awaited, still get the promise.
+   *
+   *   app.decorateRequest("user", (ctx) => users.byId(ctx.cookies.sid), {
+   *     before: "handler",
+   *     when: (route) => route.security.length > 0,
+   *   });
    */
-  decorateRequest: DecorateRequestMethod<this> = ((name: string, init: (ctx: any) => unknown) => {
+  decorateRequest: DecorateRequestMethod<this> = ((name: string, init: (ctx: any) => unknown, options?: ResolveOptions) => {
     const proto = this._box.Ctx.prototype;
     if (RESERVED.has(name) || name in proto) throw new Error(`Cannot decorate ctx.${name}: the context already has a ${name}`);
     const keep = (ctx: object, value: unknown) => Object.defineProperty(ctx, name, { value, writable: true, enumerable: true, configurable: true });
+    const wants = options && wantedBy(options.when);
     Object.defineProperty(proto, name, {
-      get(this: object) {
+      get(this: { route?: RouteInfo }) {
+        if (wants && this.route && !wants(this.route)) {
+          throw new Error(`ctx.${name} is awaited before the handler only on the routes its when() picks, and ${this.route.method} ${this.route.path} is not one`);
+        }
         const value = init(this);
         keep(this, value); // an own property from now on: init runs once per request
         return value;
@@ -300,6 +335,11 @@ export class Scope<Defs extends RouteDefs = any, Deco = any> extends Routes<Defs
       enumerable: true,
       configurable: true,
     });
+    if (wants) {
+      const resolve = async (ctx: Record<string, unknown>) => void keep(ctx, await ctx[name]);
+      this._box.resolvers.push((ctx) => (ctx.route && wants(ctx.route) ? resolve(ctx as never) : undefined));
+      this._root._changed();
+    }
     return this;
   }) as never;
 
@@ -359,6 +399,17 @@ export class Scope<Defs extends RouteDefs = any, Deco = any> extends Routes<Defs
     this._root._load(() => p(scope, options ?? {}));
     return this;
   }) as never;
+}
+
+/** `when`, asked once per route: the answer is kept by the route's `ctx.route`, one frozen object per route. */
+function wantedBy(when: ((route: RouteInfo) => boolean) | undefined): (route: RouteInfo) => boolean {
+  if (!when) return () => true;
+  const asked = new WeakMap<RouteInfo, boolean>();
+  return (route) => {
+    let yes = asked.get(route);
+    if (yes === undefined) asked.set(route, (yes = Boolean(when(route))));
+    return yes;
+  };
 }
 
 /** Runs request hooks in order; the first one that returns something ends the run with that. */

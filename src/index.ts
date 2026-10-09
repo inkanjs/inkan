@@ -2,7 +2,7 @@ export { inkan, App } from "./core/app.ts";
 export { plugin, Scope } from "./core/scope.ts";
 export { route } from "./core/files.ts";
 export type { FileRoute } from "./core/files.ts";
-export type { OperationHook, Outgoing, Plugin, ProblemHook, RequestHook, ResponseHook, SendHook } from "./core/scope.ts";
+export type { OperationHook, Outgoing, Plugin, ProblemHook, RequestHook, ResolveOptions, ResponseHook, SendHook } from "./core/scope.ts";
 export type { AdapterRequest, AdapterResponse, AppOptions, InjectOptions, InjectResponse, LogEntry, RequestLog } from "./core/app.ts";
 export { Routes, routes, reply, Reply } from "./core/route.ts";
 export type { Context, Example, Handler, Middleware, OperationRoute, PathParams, Responses, RouteInfo, RouteMeta, RouteRecord, RouteSpec, Security } from "./core/route.ts";

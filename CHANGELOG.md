@@ -26,6 +26,14 @@
   the context that is made the first time a request reads it and kept for the rest of that
   request; a request that never asks never makes it. Typed like `decorate`, refused for the
   same names, and only the scopes that use it carry its getter.
+- **Async per-request decorations.** An `init` that returns a promise makes `ctx.user` that
+  promise, typed `Promise<User>`: made once however often it is read, never for a request
+  that does not read it, and a problem it throws is the answer. With
+  `decorateRequest(name, init, { before: "handler", when: (route) => route.security.length > 0 })`
+  it is awaited after the input is checked and before the preHandler hooks, so they and the
+  handler see the value itself, typed without the promise. `when` picks the routes, asked
+  once per route; reading it on a route it leaves out throws, instead of handing over a
+  promise typed as the value. Apps that do not use it pay nothing for it.
 - **Types out of shared plugins.** A plugin made with `shared: true` that returns its scope
   (`(app) => app.decorateRequest("user", …)`) hands its decorations on: after
   `app.register(auth)` the handlers see `ctx.user` typed. `Plugin` has a third type
