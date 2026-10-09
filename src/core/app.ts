@@ -23,6 +23,7 @@ import { jsonRows, SafeHtml } from "./helpers.ts";
 import { cached } from "./cache.ts";
 import { ArraySchema } from "../schema/schema.ts";
 import { readRequestBody, requestStream, TOO_LARGE, validateInput } from "./input.ts";
+import { Gauge, type PressureOptions, type PressureSample } from "./pressure.ts";
 import { Buffer } from "node:buffer"; // explicit, for runtimes without a global Buffer
 
 // ---------- the app ----------
@@ -75,6 +76,16 @@ export type AppOptions = OpenAPIInfo & {
    * Each one is used only while it matches its contract; the rest run as without a seal.
    */
   seal?: Seal;
+  /**
+   * Overload protection. A timer samples the process every second (unref'd): the event
+   * loop's delay (99th percentile, ms), the V8 heap in use (bytes, or `"90%"` of its limit),
+   * resident memory, and your own `check()`. While a limit is passed, every request is
+   * answered with a 503 `under-pressure` problem and `retry-after` before its body is read,
+   * and before hooks, the log and the inspector; the pages inkan serves itself and the
+   * `exempt` paths still answer. `app.pressure()` hands back the last sample, for a health
+   * route. Default off: no timer, and a request reads nothing for it.
+   */
+  pressure?: PressureOptions;
 };
 
 export type InjectOptions = {
@@ -191,6 +202,9 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
   /** The app's own hooks, for requests no route matched. */
   private rootHooks: Hooks = NO_HOOKS;
 
+  /** @internal The overload sampler, when `pressure` is on. */
+  _gauge?: Gauge;
+
   constructor(options: AppOptions = {}) {
     super();
     this._dev = options.dev ?? process.env.NODE_ENV !== "production";
@@ -207,6 +221,26 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     };
     // before any plugin: every scope's context class extends this one
     if (options.trustProxy) this._box.Ctx = trustingContext(this._box.Ctx, options.trustProxy);
+    if (options.pressure) this._gauge = new Gauge(options.pressure);
+  }
+
+  /** The last overload sample (see `pressure`), for a health route; undefined without `pressure`. */
+  pressure(): PressureSample | undefined {
+    return this._gauge && { ...this._gauge.sample };
+  }
+
+  /** The 503 for a request while the app is under pressure, or nothing for a path that answers anyway. */
+  private shed(path: string): RawResponse | undefined {
+    const gauge = this._gauge!;
+    if (gauge.exempt.has(path)) return;
+    const { docs, openapi, inspector } = this.options;
+    if (path === openapi || path === docs || (docs && path === docs + "/") || (inspector && (path === inspector || path.startsWith(inspector + "/")))) return;
+    const p = problem(503, "under-pressure", "The server is too busy right now; try again shortly");
+    return {
+      status: 503,
+      headers: { "content-type": "application/problem+json", "retry-after": gauge.retryAfter },
+      body: JSON.stringify({ ...p.toJSON(), instance: path }),
+    };
   }
 
   /** Middleware for every request, before routing. */
@@ -392,6 +426,10 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     const started = timed || this.timeAll ? performance.now() : 0;
     const own = this.builtin(raw, url);
     if (own) return own;
+    if (this._gauge?.under) {
+      const busy = this.shed(url.pathname);
+      if (busy) return busy;
+    }
 
     // Node already lower-cases header names; inject does the same. Nothing to copy.
     const headers = raw.headers as Record<string, string>;
@@ -852,6 +890,10 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
 
   // Synchronous for a request without a body whose handler is: no promise, no extra turn.
   private serve(req: IncomingMessage, res: ServerResponse) {
+    if (this._gauge?.under) {
+      const busy = this.shed(target(req.url ?? "/").pathname);
+      if (busy) return this.send(res, busy); // the body stays unread
+    }
     const hasBody = req.headers["content-length"] !== undefined || req.headers["transfer-encoding"] !== undefined;
     if (!hasBody) return this.pass(req, res, undefined);
     // the route says how much it takes, and whether it reads the body itself; routed once, here
@@ -916,6 +958,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
 
   /** For adapters: runs the onClose hooks, once the adapter's server has stopped taking requests. */
   async stopped(): Promise<void> {
+    this._gauge?.stop();
     await this._jobs?.stop();
     for (const hook of this._onClose) await hook();
   }
@@ -933,6 +976,10 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
   async fetch(request: Request, info: { remote?: string } = {}): Promise<Response> {
     if (this.loading) await this.ready();
     const url = new URL(request.url);
+    if (this._gauge?.under) {
+      const busy = this.shed(url.pathname);
+      if (busy) return toWebResponse(busy);
+    }
     const target = url.pathname + url.search;
     const headers: Record<string, string> = {};
     request.headers.forEach((value, name) => (headers[name] = value)); // names come lower-cased
@@ -1077,7 +1124,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
               console.log(JSON.stringify({ time: new Date().toISOString(), msg: "listening", port, worker: WORKER }));
             } else this.banner(server);
           }
-          if (this.options.gracefulShutdown) shutdownOnSignal(server, this._onClose, [() => this._jobs?.stop()]);
+          if (this.options.gracefulShutdown) shutdownOnSignal(server, this._onClose, [() => this._jobs?.stop(), () => this._gauge?.stop()]);
           resolve(server);
         })().catch((err) => server.close(() => reject(err)));
       });

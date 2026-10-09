@@ -70,6 +70,13 @@
   hands back the typed value, frozen. An empty variable counts as unset. It throws one error
   that lists every problem (`PORT must be an integer, got "abc"`, `DATABASE_URL is
   required`), never with the value of a name that looks secret (SECRET, TOKEN, KEY, PASSWORD).
+- **Overload protection: `pressure`** on the app, `{ eventLoopDelay, heapUsed, rss,
+  retryAfter, check, exempt, interval }`. A timer (unref'd, every second) samples the event
+  loop's delay, the heap (bytes or `"90%"` of its limit), resident memory and your own
+  `check()`, and sets one flag. While it is set every request gets a 503 `under-pressure`
+  problem with `retry-after`, before its body is read and before any hook; inkan's own pages
+  and the `exempt` paths still answer. `app.pressure()` hands back the last sample for a
+  health route. Off by default: no timer, and nothing to read per request.
 
 ### Faster
 
