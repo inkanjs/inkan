@@ -2,6 +2,9 @@
 
 **An API framework for Node where the docs can't lie.** It runs on `node:http`, and on Bun, Deno and serverless through `app.fetch`.
 
+**[Docs](https://inkan-dev.vercel.app/docs)** · [API](https://inkan-dev.vercel.app/docs/api/app) · [Benchmarks](https://inkan-dev.vercel.app/benchmarks) · [Changelog](CHANGELOG.md)
+
+[![docs](https://img.shields.io/badge/docs-inkan--dev.vercel.app-c4381f?labelColor=2b2420)](https://inkan-dev.vercel.app/docs)
 [![npm](https://img.shields.io/npm/v/@vxnsin/inkan?color=c4381f&labelColor=2b2420&label=npm)](https://www.npmjs.com/package/@vxnsin/inkan)
 [![CI](https://img.shields.io/github/actions/workflow/status/inkanjs/inkan/ci.yml?branch=main&color=3d7a4b&labelColor=2b2420&label=ci)](https://github.com/inkanjs/inkan/actions/workflows/ci.yml)
 [![dependencies](https://img.shields.io/badge/dependencies-0-ece1cf?labelColor=2b2420)](package.json)
