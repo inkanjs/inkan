@@ -99,3 +99,68 @@ test("keep and after travel into OpenAPI for the docs page", () => {
   const op = (app.openapi() as any).paths["/teas/{id}"].get;
   assert.equal(op["x-inkan-examples"][0].after, "POST /teas > add");
 });
+
+// A login that sets a session cookie, a /me that needs it, a logout that clears it.
+function sessions(examples: { login?: Example[]; me?: Example[]; logout?: Example[]; admin?: Example[] }) {
+  const Me = t.object({ name: t.string() });
+  return inkan(quiet)
+    .post("/login", { body: Me, response: { 200: Me }, examples: examples.login }, (ctx) => {
+      ctx.setCookie("sid", `s:${ctx.body.name}`);
+      ctx.setCookie("area", "admin", { path: "/admin" });
+      return { name: ctx.body.name };
+    })
+    .get("/me", { response: { 200: Me, 401: t.problem() }, examples: examples.me }, (ctx) => {
+      if (ctx.cookies.area) throw problem(400, "leak", "a cookie for /admin reached /me");
+      const sid = ctx.cookies.sid;
+      if (!sid) throw problem(401, "unauthorized", "Log in first");
+      return { name: sid.slice(2) };
+    })
+    .get("/admin/area", { response: { 200: t.object({ area: t.string() }), 401: t.problem() }, examples: examples.admin }, (ctx) => {
+      if (!ctx.cookies.area) throw problem(401, "unauthorized", "No area cookie");
+      return { area: ctx.cookies.area };
+    })
+    .post("/logout", { response: { 204: t.empty() }, examples: examples.logout }, (ctx) => void ctx.clearCookie("sid"));
+}
+
+test("cookies: a chain logs in, then calls /me with the session; keep reads cookies and headers", async () => {
+  const app = sessions({
+    login: [
+      { name: "ada", body: { name: "ada" }, keep: { sid: "cookies.sid", type: "headers.content-type" } },
+      { name: "bob", body: { name: "bob" } },
+    ],
+    me: [
+      { name: "as ada", after: "POST /login > ada", expect: { name: "ada" } },
+      { name: "as bob", after: "POST /login > bob", expect: { name: "bob" } },
+      { name: "a cookie given wins", after: "POST /login > ada", headers: { Cookie: "sid=s:eve" }, expect: { name: "eve" } },
+      { name: "kept values fill placeholders", after: "POST /login > ada", headers: { "x-sid": "{sid}", "x-type": "{type}" } },
+      { name: "nobody", status: 401 },
+      { name: "logged out", after: "POST /logout > after ada", status: 401 },
+    ],
+    logout: [{ name: "after ada", after: "POST /login > ada" }],
+    admin: [{ name: "its path", after: "POST /login > ada", expect: { area: "admin" } }],
+  });
+  const report = await app.check();
+  assert.deepEqual(report.results.filter((r) => !r.ok), []);
+  assert.equal(report.results.length, 10);
+});
+
+test("cookies: chains do not share a jar, and keep says when the answer sets no such cookie", async () => {
+  const app = sessions({
+    login: [{ name: "ada", body: { name: "ada" } }],
+    me: [
+      { name: "ada first", after: "POST /login > ada", expect: { name: "ada" } },
+      { name: "a chain of its own", status: 200 }, // runs after ada's chain, with an empty jar
+    ],
+    logout: [{ name: "keeps nothing", keep: { sid: "cookies.sid" } }],
+  });
+  const report = await app.check();
+  const failed = report.results.filter((r) => !r.ok);
+  assert.deepEqual(
+    failed.map((r) => [r.example, r.status]),
+    [
+      ["a chain of its own", 401],
+      ["keeps nothing", 204],
+    ],
+  );
+  assert.match(failed[1].problems.join("\n"), /keeps sid from cookies.sid/);
+});

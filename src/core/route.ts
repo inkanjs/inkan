@@ -22,11 +22,18 @@ export type Example = {
   status?: number;
   /** A part of the response body that has to be in the answer, compared deeply. */
   expect?: unknown;
-  /** Values to keep from this answer for examples that come after it: `{ id: "body.id" }`. */
+  /**
+   * Values to keep from this answer for examples that come after it, read from `body.<path>`,
+   * `headers.<name>`, `cookies.<name>` (a cookie the answer sets) or `status`:
+   * `{ id: "body.id", where: "headers.location", sid: "cookies.sid" }`.
+   */
   keep?: Record<string, string>;
   /**
    * Another example that runs first, as `"POST /teas > a new oolong"`. What it keeps fills
-   * `{name}` placeholders in this example's params, query, headers and body.
+   * `{name}` placeholders in this example's params, query, headers and body. The examples of
+   * one chain share a cookie jar, as a browser would: a cookie an answer sets is sent with the
+   * requests after it that its Path covers, until an answer clears it (Max-Age=0, or an Expires
+   * gone by). Every chain starts with an empty jar, so cookies never cross from one to another.
    */
   after?: string;
 };

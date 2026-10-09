@@ -174,3 +174,63 @@ test("events: a job followed through the client, every event narrowed by its nam
   };
   assert.equal(typeof typesOnly, "function");
 });
+
+test("routes a plugin defines reach the typed client, under the prefix it is registered with", async () => {
+  const { plugin, t: s } = await import("../src/index.ts");
+  const Login = s.object({ name: s.string() });
+  // shared: its decorations and its routes go to the app
+  const auth = plugin(
+    (app, o: { realm: string }) =>
+      app
+        .decorate("realm", o.realm)
+        .post("/login", { body: Login, response: { 200: s.object({ name: s.string(), realm: s.string() }), 401: s.problem() } }, (ctx) => ({
+          name: ctx.body.name,
+          realm: ctx.realm,
+        }))
+        .get("/users/:id", { params: s.object({ id: s.int() }), response: { 200: s.object({ id: s.int() }) } }, (ctx) => ({ id: ctx.params.id })),
+    { shared: true },
+  );
+  // not shared: a scope of its own, but its routes are the app's all the same
+  const health = plugin((app) => app.get("/health", { response: { 200: s.object({ up: s.boolean() }) } }, () => ({ up: true })));
+  // a plugin that registers another hands both its routes on
+  const v1 = plugin((app) => app.register(health, { prefix: "/v1" }).get("/", () => ({ root: true })));
+
+  const app = inkan(quiet)
+    .register(auth, { realm: "tea", prefix: "/auth" })
+    .register(health)
+    .register(v1, { prefix: "/api" })
+    .get("/me", (ctx) => ({ realm: ctx.realm }));
+  const api = client<typeof app>("http://auth.local", { fetch: viaInject(app) });
+
+  const login = await api.post("/auth/login", { body: { name: "ada" } });
+  assert.equal(login.status, 200);
+  if (login.ok) {
+    const realm: string = login.data.realm;
+    assert.equal(realm, "tea");
+  }
+  const user = await api.get("/auth/users/:id", { params: { id: 7 } });
+  if (user.ok) {
+    const id: number = user.data.id;
+    assert.equal(id, 7);
+  } else assert.fail("GET /auth/users/:id failed");
+  const up = await api.get("/health");
+  assert.equal(up.ok && up.data.up, true);
+  assert.equal((await api.get("/api/v1/health")).status, 200);
+  assert.equal((await api.get("/api")).status, 200);
+
+  const typesOnly = () => {
+    // @ts-expect-error registered under /auth: there is no /login
+    void api.post("/login", { body: { name: "ada" } });
+    // @ts-expect-error the body is the plugin's contract
+    void api.post("/auth/login", { body: { name: 1 } });
+    void (async () => {
+      const r = await api.get("/api/v1/health");
+      // @ts-expect-error up is a boolean, as the plugin's contract says
+      if (r.ok) void (r.data.up satisfies string);
+    });
+    // @ts-expect-error a plain function passed to register hands no types on
+    void client<typeof plain>("http://x").get("/plain");
+  };
+  const plain = inkan(quiet).register((scope) => scope.get("/plain", () => ({})));
+  assert.equal(typeof typesOnly, "function");
+});

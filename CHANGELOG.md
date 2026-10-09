@@ -64,14 +64,34 @@
   a GET of its own); the docs page shows them as `WS` with both contracts.
 - **`client.events(path, { params })`** reads a route that answers with `t.events(...)` as an
   async iterator, each event narrowed by its name; leaving the loop closes the stream.
+- **Cookies in `inkan check`.** The examples of one `after` chain share a cookie jar, as a
+  browser would: a cookie an answer sets goes with the requests after it that its `Path`
+  covers, until an answer clears it (`Max-Age=0` or an `Expires` gone by). Every chain
+  starts with an empty jar, so a login example and a `/me` example after it pass, and
+  nothing crosses into another chain. `keep` reads `cookies.<name>` (a cookie the answer
+  sets) besides `body.<path>`, `headers.<name>` and `status`.
 - **Per-request decorations.** `scope.decorateRequest("user", (ctx) => …)` puts a value on
   the context that is made the first time a request reads it and kept for the rest of that
   request; a request that never asks never makes it. Typed like `decorate`, refused for the
   same names, and only the scopes that use it carry its getter.
+- **Async per-request decorations.** An `init` that returns a promise makes `ctx.user` that
+  promise, typed `Promise<User>`: made once however often it is read, never for a request
+  that does not read it, and a problem it throws is the answer. With
+  `decorateRequest(name, init, { before: "handler", when: (route) => route.security.length > 0 })`
+  it is awaited after the input is checked and before the preHandler hooks, so they and the
+  handler see the value itself, typed without the promise. `when` picks the routes, asked
+  once per route; reading it on a route it leaves out throws, instead of handing over a
+  promise typed as the value. Apps that do not use it pay nothing for it.
 - **Types out of shared plugins.** A plugin made with `shared: true` that returns its scope
   (`(app) => app.decorateRequest("user", …)`) hands its decorations on: after
   `app.register(auth)` the handlers see `ctx.user` typed. `Plugin` has a third type
   parameter for what it adds.
+- **Routes out of plugins reach the typed client.** A plugin made with `plugin()`, shared or
+  not, that returns its scope hands on the routes it defined in that chain: after
+  `app.register(auth, { prefix: "/auth" })`, `client<typeof app>` knows `POST /auth/login`
+  with its params, body and answers. Prefixes add up through plugins that register others.
+  `Plugin` has a fourth type parameter for its routes; a plain function passed to
+  `register` hands no types on.
 - **`ctx.route.security` and `ctx.route.meta`.** Hooks see the credentials a route asks
   for, its own or its group's, and a free-form `meta` from its spec
   (`{ meta: { auth: { roles: ["admin"] } } }`). Plugins name what they read by extending
