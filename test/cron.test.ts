@@ -1,4 +1,4 @@
-import { test, mock } from "node:test";
+import { afterEach, test, mock } from "node:test";
 import assert from "node:assert/strict";
 import { Cron } from "../src/core/cron.ts";
 import { inkan, t, type Job } from "../src/index.ts";
@@ -93,13 +93,14 @@ const settle = async () => {
 };
 const DAY = 24 * 3600_000;
 
+// fake time for one test; afterEach puts the real clock back (no `using`: Node 22 has none)
 function timers(now = START) {
   mock.timers.enable({ apis: ["setTimeout", "Date"], now });
-  return { [Symbol.dispose]: () => mock.timers.reset() };
 }
+afterEach(() => mock.timers.reset());
 
 test("every: runs the job on its schedule once the app has started, and stops on shutdown", async () => {
-  using _ = timers();
+  timers();
   const runs: { at: string; input: unknown; method: string; path: string }[] = [];
   const app = inkan(quiet).job("/nightly", { every: "0 3 * * *", owner: (ctx) => ctx.headers["x-user"] as string }, async (job) => {
     runs.push({ at: new Date().toISOString(), input: job.input, method: job.ctx.method, path: job.ctx.path });
@@ -130,7 +131,7 @@ test("every: runs the job on its schedule once the app has started, and stops on
 });
 
 test("every: a run is skipped while the last scheduled one still runs", async () => {
-  using _ = timers(Date.UTC(2026, 0, 1, 0, 0, 0));
+  timers(Date.UTC(2026, 0, 1, 0, 0, 0));
   let open!: () => void;
   let started = 0;
   const app = inkan(quiet).job("/minutely", { every: "* * * * *" }, async (job: Job) => {
@@ -154,7 +155,7 @@ test("every: a run is skipped while the last scheduled one still runs", async ()
 });
 
 test("every: a job with a body needs input, checked against it; the run gets it as job.input and ctx.body", async () => {
-  using _ = timers(Date.UTC(2026, 0, 1, 0, 0, 0));
+  timers(Date.UTC(2026, 0, 1, 0, 0, 0));
   const Body = t.object({ rows: t.int(), format: t.enum(["csv", "json"]).default("csv") });
   assert.throws(() => inkan(quiet).job("/a", { body: Body, every: "* * * * *" }, () => 1), /needs \{ cron, input \}/);
   assert.throws(() => inkan(quiet).job("/b", { body: Body, every: { cron: "* * * * *", input: { rows: "x" } as never } }, () => 1), /every.input does not match the body: rows expected an integer/);
@@ -175,7 +176,7 @@ test("every: a job with a body needs input, checked against it; the run gets it 
 });
 
 test("every: a wait longer than a timer takes goes in hops and still lands on the minute", async () => {
-  using _ = timers(Date.UTC(2026, 2, 1, 0, 0, 0));
+  timers(Date.UTC(2026, 2, 1, 0, 0, 0));
   const at: string[] = [];
   const app = inkan(quiet).job("/leap", { every: "0 0 29 2 *" }, async () => void at.push(new Date().toISOString()));
   await app.started();
