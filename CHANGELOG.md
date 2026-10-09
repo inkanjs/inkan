@@ -20,6 +20,34 @@
   With `workers`, `listen` refuses jobs kept in memory; `JobStore` is the interface for a
   store the processes share, `memoryStore()` the one inkan has. The routes get examples made
   from the first start example, so `inkan check` covers them.
+- **WebSockets.** `app.ws(path, { params, query, headers, message, send, security, maxMessage, heartbeat }, (socket, ctx) => …)`,
+  RFC 6455 written on `node:http`'s upgrade event, no dependency. The upgrade request is
+  routed and goes through `onRequest`, the security, the params/query/headers checks,
+  middleware and `preHandler` like a GET; a no answers with its status (400, 401, 404, …)
+  and no socket. `message` is what the client sends: JSON, checked, typed in
+  `socket.on("message")` and `for await (const m of socket)`; one that is not JSON or breaks
+  the contract closes the socket with 1007 and the reason. `send` is what the server sends:
+  `socket.send(v)` writes it as JSON with only what the contract lists, and in development a
+  value that breaks it throws (reported, 1011). Without `message`, text arrives as a string
+  and binary as a Buffer. Frames: masking required (1002), fragments, UTF-8 checked (1007),
+  `maxMessage` (default 1 MiB, 1009), ping/pong with a `heartbeat` (default 30 s) that cuts
+  off a peer that stops answering, the closing handshake with its codes. `socket.send`
+  resolves once the socket takes more; `bufferedAmount` says how much waits. Messages that
+  come before the handler listens wait for it. `ctx.signal` aborts when the socket closes.
+  On SIGINT or SIGTERM every socket is closed with 1001. A plain request to a WebSocket
+  path is a 426. `listen` only listens for upgrades when the app has a WebSocket route;
+  a hand-made server takes `server.on("upgrade", app.upgradeListener)`. Not there:
+  permessage-deflate (no extension is negotiated), subprotocol choice (a hook may set
+  `sec-websocket-protocol`), and `app.fetch` (Bun and Deno have upgrade APIs of their own).
+  With `workers`, each process holds its own sockets: broadcast with a `Set` of sockets per
+  process, or through a shared bus.
+- **`client.ws(path, { params, query })`** opens a WebSocket route with the platform's
+  `WebSocket`: `send` takes what the route's `message` says, messages arrive parsed and
+  narrowed by the route's `send`, `ready` resolves once it is open, and leaving a
+  `for await` loop closes it. In Node, `headers` go with the upgrade.
+- **OpenAPI and the docs list WebSockets**: a GET with a 101 and an `x-inkan-websocket`
+  extension holding the `message` and `send` schemas (on the path item where the path has
+  a GET of its own); the docs page shows them as `WS` with both contracts.
 - **`client.events(path, { params })`** reads a route that answers with `t.events(...)` as an
   async iterator, each event narrowed by its name; leaving the loop closes the stream.
 - **Per-request decorations.** `scope.decorateRequest("user", (ctx) => …)` puts a value on

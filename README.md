@@ -138,6 +138,7 @@ gives a hint (then a clearer one) when you press `h`. It keeps your progress, so
 | **Serves the docs** | At `/docs`. Every example has a send button, and a route gets its seal 印 when all of its examples answer as promised. |
 | **Runs examples as tests** | `inkan check` or `app.check()`, in-process, no port. Routes without examples are listed, so nothing hides. |
 | **Shows what happened** | `/_inkan` is a live log of the last 200 requests and what broke the contract. Development only, loopback only, secret headers hidden. |
+| **Speaks WebSocket** | `app.ws(path, { message, send }, handler)`: the upgrade goes through the same hooks, security and checks as a GET, messages both ways are JSON checked against their contract, and `client.ws` is typed from it. No dependency, no permessage-deflate. |
 | **Errors in one shape** | `throw problem(404, "tea-not-found", "…")` gives an RFC 9457 document. Every built-in error has the same shape, with a stable `type` to switch on. |
 
 ## Learn more
