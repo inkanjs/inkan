@@ -245,7 +245,7 @@ export abstract class Schema<T = unknown> {
       // Most answers hold exactly what the contract lists, as plain objects: those go to the
       // native writer as they are, which is the fastest there is. Anything else is trimmed to
       // the contract first, so what it does not list can never go out.
-      this._ser = !trim || !fit ? json : (v) => (fit(v) ? json(v) : (JSON.stringify(trim(v)) ?? "null"));
+      this._ser = !trim || !fit ? json : (v) => (!borrowsKeys() && fit(v) ? json(v) : (JSON.stringify(trim(v)) ?? "null"));
     }
     return this._ser;
   }
@@ -308,23 +308,17 @@ const plainObject = (o: object) => {
   return p === Object.prototype || p === null;
 };
 
+/** Whether an object holds a key itself, where JSON.stringify sees it. */
+const isEnumerable = Object.prototype.propertyIsEnumerable;
+
 /**
- * Whether every key of `own` is one of `keys`. Rows mostly come in the order the contract
- * lists them, so that is tried first, a walk with one comparison per key; the set answers
- * for any other order.
+ * Whether Object.prototype has a key a for-in hands out, which only code that changes it can
+ * give it. A for-in over a plain object then hands out a borrowed key too, so the fit tests,
+ * which read keys by for-in, are not asked at all.
  */
-const allDeclared = (own: string[], keys: string[], declared: Set<string>) => {
-  let j = 0;
-  for (let i = 0; i < own.length; i++) {
-    const k = own[i]!;
-    while (j < keys.length && keys[j] !== k) j++;
-    if (j === keys.length) {
-      for (let m = i; m < own.length; m++) if (!declared.has(own[m]!)) return false;
-      return true;
-    }
-    j++;
-  }
-  return true;
+const borrowsKeys = () => {
+  for (const _ in Object.prototype) return true;
+  return false;
 };
 
 /** Sets a key on a copy; a key named __proto__ becomes a key, not the prototype. */
@@ -815,7 +809,7 @@ export class ObjectSchema<S extends Shape> extends Schema<InferShape<S>> {
   protected override fitter(): Fit | undefined {
     if (this.unknownKeys === "keep") return undefined;
     const keys = Object.keys(this.shape);
-    const declared = new Set(keys);
+    const position = new Map(keys.map((k, i) => [k, i]));
     const fits = keys.map((k) => this.shape[k]!._fitter());
     return (v) => {
       if (typeof v !== "object" || v === null || Array.isArray(v)) return true; // written as it is either way
@@ -823,23 +817,37 @@ export class ObjectSchema<S extends Shape> extends Schema<InferShape<S>> {
       // a class or a borrowed prototype can lend a field the object does not own, and
       // toJSON writes what it likes: both are trimmed instead
       if (!plainObject(o) || typeof o.toJSON === "function") return false;
-      // every key JSON.stringify would write has to be one the contract lists...
-      const own = Object.keys(o); // fast for objects of one shape: V8 caches their keys
-      if (own.length > keys.length) return false;
-      if (!allDeclared(own, keys, declared)) return false;
-      const count = own.length;
-      // ...and every declared value has to be one of them, written as its schema writes it
-      let present = 0;
-      for (let i = 0; i < keys.length; i++) {
-        const x = o[keys[i]!];
-        if (x === undefined) continue;
+      // Every key JSON.stringify would write has to be one the contract lists, with a value
+      // written as its schema writes it. A for-in hands out just those keys (the serializer
+      // made sure Object.prototype lends none), and a value read by its key is a plain load.
+      // Rows mostly come in the contract's order, so that is tried first; the map answers for
+      // any other order.
+      let j = 0;
+      let seen = 0;
+      for (const k in o) {
+        let i = j;
+        if (k === keys[j]) j++;
+        else {
+          const at = position.get(k);
+          if (at === undefined) return false;
+          i = at;
+        }
+        const x = o[k];
+        if (x === undefined) return false; // left out either way; the trim is sure of it
         const kind = typeof x;
         if (kind === "function" || kind === "symbol") return false;
         const fit = fits[i];
         if (fit !== undefined && !fit(x)) return false;
-        present++;
+        seen++;
       }
-      return count === present;
+      if (seen === keys.length) return true;
+      // a declared field the for-in did not hand out has to be one the trim leaves out too,
+      // not one the object holds where JSON.stringify does not look (not enumerable)
+      for (let i = 0; i < keys.length; i++) {
+        const key = keys[i]!;
+        if (!absent(o[key]) && !isEnumerable.call(o, key)) return false;
+      }
+      return true;
     };
   }
   protected json(ctx?: RefContext) {

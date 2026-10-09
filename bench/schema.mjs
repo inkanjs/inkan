@@ -37,6 +37,7 @@ function cases(t) {
     ["_into params {id}, coerced", ((s) => () => s._into({ id: "9" }, true, []))(t.object({ id: t.int() })), 1],
     ["fits {hello}", ((f) => () => f({ hello: "world" }))(Hello._fitter()), 1], // a new answer each time, as a handler makes it
     ["fits big answer (100)", ((f, v) => () => f(v))(List._fitter(), LIST), 0.01],
+    ["write {hello}", ((f) => () => f({ hello: "world" }))(Hello._serializer()), 1],
     ["write big answer (100)", ((f, v) => () => f(v))(List._serializer(), LIST), 0.005],
   ];
 }
