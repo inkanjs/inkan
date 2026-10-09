@@ -12,7 +12,10 @@
 //   GET  /async/:id                 a handler that waits one event-loop hop
 //   anything else                   404
 //
-//   node servers.mjs <node|express|fastify|hono|inkan|inkan-sealed|inkan-cluster|inkan-uws|inkan-dev|inkan-base> <port>
+//   node servers.mjs <node|express|fastify|hono|inkan|inkan-sealed|inkan-cluster|inkan-uws|inkan-dev|inkan-base|inkan-noid> <port>
+//
+// inkan-noid is a diagnostic: inkan without request ids (requestId: false), which no other
+// server makes. PIN=<mask> (Windows) keeps the server on those logical CPUs, for a noisy machine.
 
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -20,6 +23,10 @@ import http from "node:http";
 import { isBulk, isUser, LIST, ROUTE_COUNT, user } from "./data.mjs";
 
 const [name, port] = process.argv.slice(2);
+if (process.env.PIN && process.platform === "win32") {
+  const { execFileSync } = await import("node:child_process");
+  execFileSync("powershell", ["-NoProfile", "-Command", `(Get-Process -Id ${process.pid}).ProcessorAffinity = ${Number(process.env.PIN)}`]);
+}
 const ready = () => console.log("ready");
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 const int = (s) => (/^-?\d+$/.test(s) ? Number(s) : NaN);
@@ -238,7 +245,7 @@ if (name.startsWith("inkan")) {
     }
     await app(false, undefined, 2).listen(Number(port), "127.0.0.1");
   } else {
-    await app(name === "inkan-dev", seal).listen(Number(port), "127.0.0.1");
+    await app(name === "inkan-dev", seal, undefined, name === "inkan-noid" ? { requestId: false } : {}).listen(Number(port), "127.0.0.1");
     ready();
   }
 }
