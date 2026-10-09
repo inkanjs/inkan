@@ -64,6 +64,12 @@
   one throws where the plugin is made. Ranges read as npm reads them (`^`, `~`, `0.7.x`,
   `<`, `>=`, hyphens, spaces and `||`), prereleases included; no dependency for it.
   `PluginOptions` is exported.
+- **`inkan create plugin <name> [folder]`** writes a package for a plugin of your own:
+  `index.js` with its types in `index.d.ts` (no build step, like the official packages),
+  `test.ts` on `app.inject`, the `inkan-plugin` keyword, `@vxnsin/inkan` as a peer for
+  the minor that runs (the same range the plugin names), README, MIT license, and a CI
+  workflow for Node 22 and 24. It refuses names npm would not take, the `@inkanjs` scope,
+  and a folder that is there.
 - `RouteMeta` takes symbol keys as well, so a plugin can keep its key to itself.
 - The pages inkan serves itself (`/docs`, `/openapi.json`, `/_inkan`) are answered before
   any hook runs, so hooks such as secure headers do not apply to them. Turn a page off

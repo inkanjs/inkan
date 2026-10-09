@@ -14,6 +14,7 @@ import { diffOpenAPI, formatDiff } from "./openapi/diff.ts";
 import { copyExample, EXAMPLES, ExampleError } from "./cli/examples.ts";
 import { writeSeal } from "./seal/seal.ts";
 import { learn, LearnError, setupLearn } from "./cli/learn.ts";
+import { createPlugin, CreateError } from "./cli/create.ts";
 
 const version = (): string => JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 
@@ -72,6 +73,8 @@ const HELP = `
                 ${c.dim("an interactive tutorial: quests in a practice app, checked as you save")}
   ${c.bold("inkan examples")} ${c.dim("[name] [folder] [--list] [--force]")}
                 ${c.dim("copy an explained example project into a folder")}
+  ${c.bold("inkan create plugin")} ${c.dim("<name> [folder]")}
+                ${c.dim("a package for a plugin of your own: tests, types, CI, ready for npm")}
 
   ${c.dim("<entry>")} is the file that builds the app and exports it,
   as ${c.link("`export default app`")} or ${c.link("`export const app`")}.
@@ -193,6 +196,31 @@ switch (command) {
       process.exit(0);
     } catch (err) {
       if (err instanceof ExampleError) fail(err.message);
+      throw err;
+    }
+  }
+  case "create": {
+    const [kind, name, folder] = args;
+    if (kind !== "plugin") fail("Create what? inkan create plugin <name> is what there is, for example: inkan create plugin inkan-quota");
+    if (!name) fail("Which name will it have on npm? For example: inkan create plugin inkan-quota");
+    try {
+      const { dir, files, fn, range } = createPlugin(name, folder, { version: version() });
+      const rel = relative(process.cwd(), dir) || ".";
+      console.log(`
+  ${c.seal("印")} ${c.bold(name)} ${c.dim("→")} ${rel}  ${c.dim(`(${files.length} files, for inkan ${range})`)}
+`);
+      if (rel !== ".") console.log(`  cd ${rel}`);
+      console.log(`  npm install`);
+      console.log(`  npm test          ${c.dim("every case through app.inject")}`);
+      console.log(`  npm run typecheck ${c.dim("test.ts against index.d.ts")}
+`);
+      console.log(`  ${c.dim("Then make it yours:")} ${fn}() in index.js, its types in index.d.ts, README.md.`);
+      console.log(`  ${c.dim("Publish:")} npm publish ${c.dim("— the keyword inkan-plugin lists it on")} ${c.link("https://inkan-dev.vercel.app/hanko")}`);
+      console.log(`  ${c.dim("For a better line there, open a PR to inkanjs/inkan.dev: data/hanko.ts.")}
+`);
+      process.exit(0);
+    } catch (err) {
+      if (err instanceof CreateError) fail(err.message);
       throw err;
     }
   }
