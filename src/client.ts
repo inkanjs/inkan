@@ -12,7 +12,8 @@
 
 import type { Responses, RouteDef, Routes } from "./core/route.ts";
 import type { ProblemBody } from "./core/problem.ts";
-import type { Infer } from "./schema/schema.ts";
+import type { EventsSchema, Infer } from "./schema/schema.ts";
+import { parseEvents } from "./core/sse.ts";
 
 type DefsOf<A> = A extends Routes<infer D> ? D : never;
 
@@ -71,12 +72,48 @@ type Call<D, M extends string> = <P extends PathsOf<D, M>>(
   ...input: InputArgs<DefAt<D, `${M} ${P}`>>
 ) => Promise<Answer<ResponseOf<DefAt<D, `${M} ${P}`>>>>;
 
+/** One event of a stream the contract lists, after a trip through JSON; `event` narrows `data`. */
+export type EventOf<R> = R extends { 200: EventsSchema<infer E> }
+  ? { [K in keyof E & string]: { event: K; data: Jsonify<Infer<E[K]>>; id?: string } }[keyof E & string]
+  : never;
+type EventPaths<D> = {
+  [K in keyof D & string]: K extends `GET ${infer P}` ? (ResponseOf<D[K]> extends { 200: EventsSchema<any> } ? P : never) : never;
+}[keyof D & string];
+type EventInput<R> = ParamsInput<Field<R, "params">> & {
+  query?: Partial<Field<R, "query">>;
+  headers?: Record<string, string>;
+  /** Stops reading and closes the stream. Leaving the loop does too. */
+  signal?: AbortSignal;
+};
+type EventArgs<R> = {} extends EventInput<R> ? [input?: EventInput<R>] : [input: EventInput<R>];
+type Events<D> = <P extends EventPaths<D>>(path: P, ...input: EventArgs<DefAt<D, `GET ${P}`>>) => AsyncIterable<EventOf<ResponseOf<DefAt<D, `GET ${P}`>>>>;
+
+/** What `client.events` throws when the stream does not open: the status and its problem. */
+export class StreamError extends Error {
+  status: number;
+  problem: ProblemBody;
+  constructor(status: number, problem: ProblemBody) {
+    super(problem.detail ?? problem.title);
+    this.name = "StreamError";
+    this.status = status;
+    this.problem = problem;
+  }
+}
+
 export type Client<A> = {
   get: Call<DefsOf<A>, "GET">;
   post: Call<DefsOf<A>, "POST">;
   put: Call<DefsOf<A>, "PUT">;
   patch: Call<DefsOf<A>, "PATCH">;
   delete: Call<DefsOf<A>, "DELETE">;
+  /**
+   * The events of a route that answers with `t.events(...)`, as they come. A stream that does
+   * not open throws a StreamError with its problem.
+   *
+   *   for await (const e of api.events("/exports/:id/events", { params: { id } }))
+   *     if (e.event === "progress") e.data.done;
+   */
+  events: Events<DefsOf<A>>;
 };
 
 export type ClientOptions = {
@@ -112,9 +149,11 @@ function queryString(q: Record<string, unknown> = {}): string {
 
 /** A client for the app `A`, typed from its routes. Define the routes in a chain, so the type sees them. */
 export function client<A extends Routes<any>>(base: string, options: ClientOptions = {}): Client<A> {
+  const urlOf = (path: string, input: RawInput) => base.replace(/\/+$/, "") + fill(path, input.params) + queryString(input.query);
+  const sharedHeaders = async () => (typeof options.headers === "function" ? await options.headers() : options.headers);
   const call = async (method: string, path: string, input: RawInput = {}) => {
-    const url = base.replace(/\/+$/, "") + fill(path, input.params) + queryString(input.query);
-    const shared = typeof options.headers === "function" ? await options.headers() : options.headers;
+    const url = urlOf(path, input);
+    const shared = await sharedHeaders();
     const headers: Record<string, string> = { accept: "application/json", ...shared, ...input.headers };
     let body: RequestInit["body"];
     let duplex: "half" | undefined;
@@ -136,5 +175,46 @@ export function client<A extends Routes<any>>(base: string, options: ClientOptio
     return { ok: false, status: res.status, problem, headers: res.headers };
   };
   const method = (m: string) => (path: string, input?: RawInput) => call(m, path, input);
-  return { get: method("GET"), post: method("POST"), put: method("PUT"), patch: method("PATCH"), delete: method("DELETE") } as never;
+  const events = (path: string, input: RawInput & { signal?: AbortSignal } = {}): AsyncIterable<unknown> => ({
+    async *[Symbol.asyncIterator]() {
+      const stop = new AbortController();
+      const outer = input.signal;
+      if (outer?.aborted) return;
+      const forward = () => stop.abort(outer?.reason);
+      outer?.addEventListener("abort", forward);
+      try {
+        const headers: Record<string, string> = { accept: "text/event-stream", ...(await sharedHeaders()), ...input.headers };
+        const res = await (options.fetch ?? fetch)(urlOf(path, input), { method: "GET", headers, signal: stop.signal });
+        if (!res.ok || !res.body) {
+          const text = await res.text();
+          let problem: ProblemBody = { type: "about:blank", title: res.statusText, status: res.status, detail: text || undefined };
+          try {
+            if (text) problem = JSON.parse(text);
+          } catch {}
+          throw new StreamError(res.status, problem);
+        }
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffered = "";
+        try {
+          for (;;) {
+            const { done, value } = await reader.read();
+            buffered += (done ? decoder.decode() : decoder.decode(value, { stream: true })).replace(/\r\n/g, "\n");
+            // an event ends at an empty line; what comes after it waits for the rest
+            for (let end = buffered.indexOf("\n\n"); end >= 0; end = buffered.indexOf("\n\n")) {
+              yield* parseEvents(buffered.slice(0, end));
+              buffered = buffered.slice(end + 2);
+            }
+            if (done) return yield* parseEvents(buffered);
+          }
+        } finally {
+          reader.cancel().catch(() => {});
+        }
+      } finally {
+        outer?.removeEventListener("abort", forward);
+        stop.abort(); // a loop left early closes the stream
+      }
+    },
+  });
+  return { get: method("GET"), post: method("POST"), put: method("PUT"), patch: method("PATCH"), delete: method("DELETE"), events } as never;
 }

@@ -62,3 +62,13 @@ test("SIGTERM lets every worker finish and run onClose", { timeout: 30_000, skip
   assert.equal(await exited, 0);
   assert.equal(lines.filter((l) => l.msg === "closed").length, 2, "onClose ran in each worker");
 });
+
+test("jobs in memory and workers do not go together: listen says so before it starts any", async () => {
+  const { inkan, memoryStore } = await import("../src/index.ts");
+  const app = inkan({ log: false, workers: 2 }).job("/work", {}, () => null);
+  assert.throws(() => app.listen(0), /background jobs keep their queue in this process.*workers: 2/);
+  // a store the processes share is fine
+  const shared = { ...memoryStore(), shared: true };
+  const ok = inkan({ log: false, workers: 2 }).job("/work", { store: shared }, () => null);
+  assert.equal(ok._jobs?.local(), false);
+});
