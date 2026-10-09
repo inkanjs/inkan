@@ -433,25 +433,34 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
   private async later(x: Exchange, r: RouteRecord, reading: void | Promise<void>): Promise<RawResponse> {
     let res: RawResponse;
     try {
-      const work = async () => {
+      let result: unknown;
+      if (r.timeout) result = await this.deadline(x, this.work(x, r, reading));
+      else {
+        // the same as work(), in this frame: a route without a time limit needs no second one
         if (reading) await reading;
-        let result: unknown;
-        if (r.use.length) {
-          await chain(r.use, x.ctx, () => {
-            const y = r.run!(x.ctx);
-            return y instanceof Promise ? y.then((v) => void (result = v)) : void (result = y);
-          });
-        } else {
+        if (r.use.length) await chain(r.use, x.ctx, () => then(r.run!(x.ctx), (v) => void (result = v)));
+        else {
           const y = r.run!(x.ctx);
           result = y instanceof Promise ? await y : y;
         }
-        return result;
-      };
-      res = this.respond(await this.deadline(x, work()), x);
+      }
+      res = this.respond(result, x);
     } catch (err) {
       res = this.fail(err, x);
     }
     return this.finish(x, res);
+  }
+
+  /** What a request with a time limit races against the clock: its body, its middleware, its handler. */
+  private async work(x: Exchange, r: RouteRecord, reading: void | Promise<void>): Promise<unknown> {
+    if (reading) await reading;
+    let result: unknown;
+    if (r.use.length) await chain(r.use, x.ctx, () => then(r.run!(x.ctx), (v) => void (result = v)));
+    else {
+      const y = r.run!(x.ctx);
+      result = y instanceof Promise ? await y : y;
+    }
+    return result;
   }
 
   /**
@@ -1098,6 +1107,9 @@ export function contractFor(route: RouteRecord, status: number): Schema<any> | u
 // ---------- helpers ----------
 
 const RESOLVED: Promise<unknown> = Promise.resolve();
+
+/** `f` of a value, or of what a promise of one gives, as a promise then: no frame for a value. */
+const then = (y: unknown, f: (v: unknown) => unknown): unknown => (y instanceof Promise ? y.then(f) : f(y));
 
 /**
  * Runs middleware in order around `last`, each one's `next` the rest of the way. No async
