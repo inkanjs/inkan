@@ -14,6 +14,8 @@ import { folderOf, loadRoutes } from "./files.ts";
 import type { HttpProblem } from "./problem.ts";
 import { defineJob, type JobHub, type JobMethod } from "./jobs.ts";
 import type { JsonSchema, Schema } from "../schema/schema.ts";
+import { parseRange } from "./semver.ts";
+import { checkInkan } from "./version.ts";
 import { joinPath, Routes, type Context, type DecoOf, type OperationRoute, type RouteDefs, type RouteRecord, type WithDeco } from "./route.ts";
 
 type Ctx<Deco> = Context<any, any, any, any, any> & Deco;
@@ -143,7 +145,27 @@ declare const ADDS: unique symbol;
 export type Plugin<O = any, Deco = any, Adds = {}> = ((app: Scope<{}, Deco>, options: O) => unknown) & {
   readonly [SHARED]?: boolean;
   readonly pluginName?: string;
+  /** The inkan versions it works with, as `plugin()` was given them. */
+  readonly inkan?: string;
   readonly [ADDS]?: Adds;
+};
+
+/** What `plugin()` takes besides the function. */
+export type PluginOptions = {
+  /** Its name, for messages; the function's name by default. Name it like its npm package. */
+  name?: string;
+  /** Put its hooks and decorations into the scope it is registered in, not a scope of its own. */
+  shared?: boolean;
+  /**
+   * The inkan versions it works with, as an npm range: `">=0.7.0 <0.8.0"`, `"^0.7.0"`,
+   * `"0.7.x || 0.8.x"`. `register()` throws when the app runs a version outside it
+   * (`inkan-quota needs inkan >=0.7.0 <0.8.0, this app runs 0.9.1`), so a plugin built
+   * against one version does not half-work on another. A range that is not one throws
+   * right here. A prerelease of inkan is in the range only when the range names a
+   * prerelease of the same version (`>=0.8.0-rc.1`), as npm reads it. Keep it the same
+   * as the `peerDependencies` entry for `@vxnsin/inkan`.
+   */
+  inkan?: string;
 };
 
 /**
@@ -156,17 +178,31 @@ export type Plugin<O = any, Deco = any, Adds = {}> = ((app: Scope<{}, Deco>, opt
  * parameter, not as a type argument, or there is nothing left to infer them from.
  *
  *   const auth = plugin((app, o: AuthOptions) => app.decorateRequest("user", (ctx) => read(ctx, o)), { shared: true });
+ *
+ * A plugin published on its own names the inkan versions it works with, and `register()`
+ * refuses it on any other:
+ *
+ *   export const quota = plugin(setup, { name: "inkan-quota", inkan: ">=0.7.0 <0.8.0" });
  */
 export function plugin<O = {}, Deco = {}, R = void>(
   setup: (app: Scope<{}, Deco>, options: O) => R,
-  opts: { name?: string; shared: true },
+  opts: PluginOptions & { shared: true },
 ): Plugin<O, Deco, DecoOf<Awaited<R>>>;
-export function plugin<O = {}, Deco = {}>(setup: (app: Scope<{}, Deco>, options: O) => unknown, opts?: { name?: string; shared?: boolean }): Plugin<O, Deco>;
-export function plugin(setup: (app: Scope, options: unknown) => unknown, opts: { name?: string; shared?: boolean } = {}): Plugin {
+export function plugin<O = {}, Deco = {}>(setup: (app: Scope<{}, Deco>, options: O) => unknown, opts?: PluginOptions): Plugin<O, Deco>;
+export function plugin(setup: (app: Scope, options: unknown) => unknown, opts: PluginOptions = {}): Plugin {
   const p = (app: Scope, options: unknown) => setup(app, options);
+  const name = opts.name ?? setup.name;
+  if (opts.inkan !== undefined) {
+    try {
+      parseRange(opts.inkan);
+    } catch {
+      throw new TypeError(`${name || "A plugin"} names the inkan versions it works with as "${opts.inkan}", which is not a version range. Write it the way npm does: ">=0.7.0 <0.8.0", "^0.7.0".`);
+    }
+  }
   return Object.defineProperties(p, {
     [SHARED]: { value: Boolean(opts.shared) },
-    pluginName: { value: opts.name ?? setup.name },
+    pluginName: { value: name },
+    inkan: { value: opts.inkan },
   }) as Plugin;
 }
 
@@ -350,9 +386,11 @@ export class Scope<Defs extends RouteDefs = any, Deco = any> extends Routes<Defs
   /**
    * Runs a plugin with a scope of its own, under `prefix` if given. Plugins run in the order
    * they are registered; one that returns a promise holds back the ones after it, and
-   * `await app.ready()` (or `listen`) waits for all of them.
+   * `await app.ready()` (or `listen`) waits for all of them. Throws, before the plugin
+   * runs, when it was made for other versions of inkan (`plugin(fn, { inkan })`).
    */
   register: RegisterMethod<this> = ((p: Plugin, options?: { prefix?: string }) => {
+    if (p.inkan !== undefined) checkInkan(p.pluginName || "This plugin", p.inkan);
     const shared = p[SHARED] === true;
     const prefix = options?.prefix ? joinPath(this._prefix, options.prefix) : this._prefix;
     const scope = new Scope<{}, Deco>(this._root, shared ? this._box : new Box(this._box), prefix);
