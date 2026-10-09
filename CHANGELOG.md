@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.7.0 (unreleased)
+
+### New
+
+- **Per-request decorations.** `scope.decorateRequest("user", (ctx) => …)` puts a value on
+  the context that is made the first time a request reads it and kept for the rest of that
+  request; a request that never asks never makes it. Typed like `decorate`, refused for the
+  same names, and only the scopes that use it carry its getter.
+- **Types out of shared plugins.** A plugin made with `shared: true` that returns its scope
+  (`(app) => app.decorateRequest("user", …)`) hands its decorations on: after
+  `app.register(auth)` the handlers see `ctx.user` typed. `Plugin` has a third type
+  parameter for what it adds.
+- **`ctx.route.security` and `ctx.route.meta`.** Hooks see the credentials a route asks
+  for, its own or its group's, and a free-form `meta` from its spec
+  (`{ meta: { auth: { roles: ["admin"] } } }`). Plugins name what they read by extending
+  the exported `RouteMeta` interface. Worked out once per route, before the first request.
+- **`scope.describe((operation, route, components) => …)`** lets a plugin add to the
+  OpenAPI operation of every route in its scope: header parameters, answers, descriptions,
+  and details of a security scheme such as `bearerFormat: "JWT"`.
+- **`trustProxy`** on the app: `true`, a number of hops, or a function that names your
+  proxies. `ctx.ip`, and with it `rateLimit`, then reads `x-forwarded-for` or `forwarded`.
+  Off by default; an app without it pays nothing for it.
+- **`onSend(fn, { last: true })`** runs a hook after every other onSend hook of a route.
+  `compress` uses it, so a hook that reads the body (an ETag) sees it before it is packed,
+  wherever either was registered.
+- `serializeCookie` and `parseCookies` are exported, for plugins that read or write
+  cookies outside a context. So are the types `RouteInfo`, `RouteMeta`, `Security`,
+  `OperationHook` and `TrustProxy`.
+
+### Changed
+
+- `compress` runs after every other onSend hook instead of in the order it was registered.
+- `register()` returns the app or scope typed with what a shared plugin added, instead of
+  `this`; for any other plugin the type is the same as before.
+- A plugin may return a value (its scope); anything but a promise is ignored as before.
+
 ## 0.6.0
 
 ### New
