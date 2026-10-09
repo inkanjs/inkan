@@ -3,11 +3,11 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
 
-type Line = { msg?: string; port?: number; worker?: number; path?: string; status?: number; pid?: number; id?: string };
+type Line = { msg?: string; port?: number; worker?: number; path?: string; status?: number; pid?: number; id?: string | number; slot?: string; armed?: boolean };
 
-/** Starts the cluster fixture and hands back its JSON log lines as they come. */
-function start() {
-  const child = spawn(process.execPath, [join(import.meta.dirname, "fixtures/cluster-app.ts")], { stdio: ["ignore", "pipe", "pipe"] });
+/** Starts a cluster fixture and hands back its JSON log lines as they come. */
+function start(fixture = "cluster-app.ts", ...args: string[]) {
+  const child = spawn(process.execPath, [join(import.meta.dirname, "fixtures", fixture), ...args], { stdio: ["ignore", "pipe", "pipe"] });
   const lines: Line[] = [];
   let errors = "";
   let buffered = "";
@@ -43,7 +43,7 @@ test("workers share one port, say which of them answered, and one that dies is r
     const answered = () => lines.filter((l) => l.path === "/who");
     await until(() => answered().length === 44, "every request is logged");
     assert.equal(new Set(answered().map((l) => l.id)).size, 44, "no id twice");
-    for (const l of answered()) assert.match(l.id!, new RegExp(`w${l.worker!.toString(36)}-`), "the id names its worker");
+    for (const l of answered()) assert.match(String(l.id), new RegExp(`w${l.worker!.toString(36)}-`), "the id names its worker");
 
     await fetch(`${base}/crash`).catch(() => undefined); // the worker exits mid-answer
     await until(() => listening().length === 3, "a new worker takes its place");
@@ -71,4 +71,36 @@ test("jobs in memory and workers do not go together: listen says so before it st
   const shared = { ...memoryStore(), shared: true };
   const ok = inkan({ log: false, workers: 2 }).job("/work", { store: shared }, () => null);
   assert.equal(ok._jobs?.local(), false);
+});
+
+test("a job's schedule runs in worker slot 1 only, and the worker that replaces it takes it over", { timeout: 30_000 }, async () => {
+  const { child, lines, until } = start("cluster-cron-app.ts");
+  try {
+    const up = () => lines.filter((l) => l.msg === "up");
+    await until(() => up().length === 2, "two workers listen");
+    const [one, two] = [up().find((l) => l.slot === "1"), up().find((l) => l.slot === "2")];
+    assert.equal(one?.armed, true, "slot 1 arms the schedule");
+    assert.equal(two?.armed, false, "slot 2 does not");
+
+    // the fixture tells slot 1 to die once: its replacement has another cluster id, the same slot, and the schedule
+    await until(() => up().length === 3, "a new worker takes slot 1");
+    const next = up()[2];
+    assert.equal(next.slot, "1");
+    assert.notEqual(next.id, one!.id);
+    assert.equal(next.armed, true);
+  } finally {
+    child.kill("SIGKILL");
+  }
+});
+
+test("in a cluster made without inkan's workers, the schedule runs in the worker with id 1", { timeout: 30_000 }, async () => {
+  const { child, lines, until } = start("cluster-cron-app.ts", "own");
+  try {
+    const up = () => lines.filter((l) => l.msg === "up");
+    await until(() => up().length === 2, "two workers listen");
+    const seen = up().map((l) => [l.slot, l.id, l.armed]).sort((a, b) => Number(a[1]) - Number(b[1]));
+    assert.deepEqual(seen, [[undefined, 1, true], [undefined, 2, false]]);
+  } finally {
+    child.kill("SIGKILL");
+  }
 });
