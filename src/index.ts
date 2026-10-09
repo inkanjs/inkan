@@ -12,6 +12,7 @@ export { sse, fileExample, EventStream } from "./core/stream.ts";
 export type { SseEvent } from "./core/stream.ts";
 export { memoryStore } from "./core/jobs.ts";
 export { env } from "./core/env.ts";
+export { context } from "./core/request-context.ts";
 export type { PressureOptions, PressureSample } from "./core/pressure.ts";
 export type { Job, JobBody, JobOptions, JobRecord, JobState, JobStore } from "./core/jobs.ts";
 export { problem, HttpProblem } from "./core/problem.ts";

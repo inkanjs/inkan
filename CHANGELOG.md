@@ -77,6 +77,14 @@
   problem with `retry-after`, before its body is read and before any hook; inkan's own pages
   and the `exempt` paths still answer. `app.pressure()` hands back the last sample for a
   health route. Off by default: no timer, and nothing to read per request.
+- **Request context: `context: true` and `context()`.** Each request runs inside an
+  AsyncLocalStorage holding its context, so code far from the handler (a logger, a database
+  helper) reads `context()?.id` or `context()?.user` without having it passed. Outside a
+  request it is undefined; with no app in the process that turned it on it throws. A
+  background job runs with its own `job.ctx`, never inside the store of the request that
+  started it, and timers inkan makes during a request (the job sweeper) do not keep that
+  store either. Off by default; on, it costs about 0.5-1 µs a request (`bench/inproc.mjs`:
+  113 % of the time without it, geomean).
 
 ### Faster
 

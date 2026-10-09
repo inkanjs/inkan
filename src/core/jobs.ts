@@ -16,6 +16,7 @@ import { randomBytes } from "node:crypto";
 import { HttpProblem, problem, type ProblemBody } from "./problem.ts";
 import { EventsSchema, t, type Issue, type Schema } from "../schema/schema.ts";
 import { sse } from "./stream.ts";
+import { within as withContext } from "./request-context.ts";
 import { joinPath, reply, type Context, type DecoOf, type Example, type JoinPath, type PathParams, type RawHeaders, type RawQuery, type Security, type WithRoutes } from "./route.ts";
 
 export type JobState = "queued" | "running" | "done" | "failed" | "canceled";
@@ -249,7 +250,8 @@ export class JobHub {
     if (this.sweeper) return;
     const keep = Math.min(...this.kinds.map((k) => k.keep));
     const every = Math.max(1000, Math.min(60_000, keep));
-    this.sweeper = setInterval(() => {
+    // made while a request starts a job: outside its store, which the timer would keep forever
+    this.sweeper = withContext(undefined, () => setInterval(() => {
       const now = Date.now();
       for (const s of new Set(this.kinds.map((k) => k.store))) {
         try {
@@ -259,7 +261,7 @@ export class JobHub {
           this.report(err);
         }
       }
-    }, every);
+    }, every));
     this.sweeper.unref?.();
   }
 
@@ -501,7 +503,9 @@ export class JobKind {
       const l = this.live.get(this.queue.shift()!);
       if (!l) continue;
       this.running++;
-      l.settled = this.execute(l);
+      // the job's own context for context(), not the store of the request that started it
+      const ctx = jobContext(l.ctx);
+      l.settled = withContext(ctx, () => this.execute(l, ctx));
     }
     this.reposition();
   }
@@ -515,7 +519,7 @@ export class JobKind {
   }
 
   /** Runs one job to its end. Never rejects. */
-  private async execute(l: Live): Promise<void> {
+  private async execute(l: Live, ctx: Context<any, any, any, any, any>): Promise<void> {
     const ctl = (l.ctl = new AbortController());
     const id = l.rec.id;
     const off = this.store.watch(id, (r) => {
@@ -531,7 +535,7 @@ export class JobKind {
       id,
       input: l.rec.input,
       signal: ctl.signal,
-      ctx: jobContext(l.ctx),
+      ctx,
       progress: (p) => {
         if (this.live.get(id) !== l || ctl.signal.aborted) return; // over or stopping: late progress is dropped
         if (progressSchema && this.checks) {

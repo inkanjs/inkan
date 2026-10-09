@@ -24,6 +24,7 @@ import { cached } from "./cache.ts";
 import { ArraySchema } from "../schema/schema.ts";
 import { readRequestBody, requestStream, TOO_LARGE, validateInput } from "./input.ts";
 import { Gauge, type PressureOptions, type PressureSample } from "./pressure.ts";
+import { contextStorage, type Cell } from "./request-context.ts";
 import { Buffer } from "node:buffer"; // explicit, for runtimes without a global Buffer
 
 // ---------- the app ----------
@@ -86,6 +87,16 @@ export type AppOptions = OpenAPIInfo & {
    * route. Default off: no timer, and a request reads nothing for it.
    */
   pressure?: PressureOptions;
+  /**
+   * Answers every request inside an AsyncLocalStorage that holds its context, so code far
+   * from the handler reads it with `context()`: `context()?.id` in a logger, `context()?.user`
+   * in a database helper. Background jobs run with their own (`job.ctx`), not the store of
+   * the request that started them. Default off: a request pays nothing, and `context()` throws
+   * unless another app in the process turned it on. On, it costs about 0.5-1 µs a request
+   * (bench/inproc.mjs: 113 % of the time without it, geomean; 10-25 % on the smallest
+   * requests, a few % where a request does real work).
+   */
+  context?: boolean;
 };
 
 export type InjectOptions = {
@@ -222,7 +233,19 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     // before any plugin: every scope's context class extends this one
     if (options.trustProxy) this._box.Ctx = trustingContext(this._box.Ctx, options.trustProxy);
     if (options.pressure) this._gauge = new Gauge(options.pressure);
+    if (options.context) {
+      const als = contextStorage();
+      const handle = this.handle.bind(this);
+      // handle() puts the request's context into the cell, synchronously, the moment it has one
+      this.handle = (raw, url, matched) => {
+        const cell: Cell = { ctx: undefined };
+        this._cell = cell;
+        return als.run(cell, handle, raw, url, matched);
+      };
+    }
   }
+  /** The store of the request being handled, with `context: true`, until its context is in it. */
+  private _cell?: Cell;
 
   /** The last overload sample (see `pressure`), for a health route; undefined without `pressure`. */
   pressure(): PressureSample | undefined {
@@ -451,6 +474,10 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     // A request no route takes never reads one on the plain path, so it gets none there.
     const ctx = (route || !plain ? new (route ? route.box! : this._box).Ctx(raw, url, id, headers, out) : undefined) as Context<any, any, any, any, any>;
     const x: Exchange = { raw, url, ctx, out, notes, headers, started, timed, id: idHeader ? id : undefined, route: undefined, hooks };
+    if (this._cell) {
+      this._cell.ctx = ctx;
+      this._cell = undefined;
+    }
 
     if (!plain) return this.full(x, m);
     let res: RawResponse;
