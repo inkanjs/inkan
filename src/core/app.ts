@@ -25,6 +25,8 @@ import { cached } from "./cache.ts";
 import { ArraySchema } from "../schema/schema.ts";
 import { readRequestBody, requestStream, TOO_LARGE, validateInput } from "./input.ts";
 import { Connection, originAllowed, UPGRADING, writeAnswer, writeSwitch, type Upgrading, type WsOrigins, type WsSpec } from "./ws.ts";
+import { Gauge, type PressureOptions, type PressureSample } from "./pressure.ts";
+import { contextStorage, type Cell } from "./request-context.ts";
 import { Buffer } from "node:buffer"; // explicit, for runtimes without a global Buffer
 
 // ---------- the app ----------
@@ -79,6 +81,26 @@ export type AppOptions = OpenAPIInfo & {
    * Each one is used only while it matches its contract; the rest run as without a seal.
    */
   seal?: Seal;
+  /**
+   * Overload protection. A timer samples the process every second (unref'd): the event
+   * loop's delay (99th percentile, ms), the V8 heap in use (bytes, or `"90%"` of its limit),
+   * resident memory, and your own `check()`. While a limit is passed, every request is
+   * answered with a 503 `under-pressure` problem and `retry-after` before its body is read,
+   * and before hooks, the log and the inspector; the pages inkan serves itself and the
+   * `exempt` paths still answer. `app.pressure()` hands back the last sample, for a health
+   * route. Default off: no timer, and a request reads nothing for it.
+   */
+  pressure?: PressureOptions;
+  /**
+   * Answers every request inside an AsyncLocalStorage that holds its context, so code far
+   * from the handler reads it with `context()`: `context()?.id` in a logger, `context()?.user`
+   * in a database helper. Background jobs run with their own (`job.ctx`), not the store of
+   * the request that started them. Default off: a request pays nothing, and `context()` throws
+   * unless another app in the process turned it on. On, it costs about 0.5-1 µs a request
+   * (bench/inproc.mjs: 113 % of the time without it, geomean; 10-25 % on the smallest
+   * requests, a few % where a request does real work).
+   */
+  context?: boolean;
 };
 
 export type InjectOptions = {
@@ -195,6 +217,9 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
   /** The app's own hooks, for requests no route matched. */
   private rootHooks: Hooks = NO_HOOKS;
 
+  /** @internal The overload sampler, when `pressure` is on. */
+  _gauge?: Gauge;
+
   constructor(options: AppOptions = {}) {
     super();
     this._dev = options.dev ?? process.env.NODE_ENV !== "production";
@@ -211,6 +236,38 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     };
     // before any plugin: every scope's context class extends this one
     if (options.trustProxy) this._box.Ctx = trustingContext(this._box.Ctx, options.trustProxy);
+    if (options.pressure) this._gauge = new Gauge(options.pressure);
+    if (options.context) {
+      const als = contextStorage();
+      const handle = this.handle.bind(this);
+      // handle() puts the request's context into the cell, synchronously, the moment it has one
+      this.handle = (raw, url, matched) => {
+        const cell: Cell = { ctx: undefined };
+        this._cell = cell;
+        return als.run(cell, handle, raw, url, matched);
+      };
+    }
+  }
+  /** The store of the request being handled, with `context: true`, until its context is in it. */
+  private _cell?: Cell;
+
+  /** The last overload sample (see `pressure`), for a health route; undefined without `pressure`. */
+  pressure(): PressureSample | undefined {
+    return this._gauge && { ...this._gauge.sample };
+  }
+
+  /** The 503 for a request while the app is under pressure, or nothing for a path that answers anyway. */
+  private shed(path: string): RawResponse | undefined {
+    const gauge = this._gauge!;
+    if (gauge.exempt.has(path)) return;
+    const { docs, openapi, inspector } = this.options;
+    if (path === openapi || path === docs || (docs && path === docs + "/") || (inspector && (path === inspector || path.startsWith(inspector + "/")))) return;
+    const p = problem(503, "under-pressure", "The server is too busy right now; try again shortly");
+    return {
+      status: 503,
+      headers: { "content-type": "application/problem+json", "retry-after": gauge.retryAfter },
+      body: JSON.stringify({ ...p.toJSON(), instance: path }),
+    };
   }
 
   /** Middleware for every request, before routing. */
@@ -396,6 +453,10 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     const started = timed || this.timeAll ? performance.now() : 0;
     const own = this.builtin(raw, url);
     if (own) return own;
+    if (this._gauge?.under) {
+      const busy = this.shed(url.pathname);
+      if (busy) return busy;
+    }
 
     // Node already lower-cases header names; inject does the same. Nothing to copy.
     const headers = raw.headers as Record<string, string>;
@@ -417,6 +478,10 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     // A request no route takes never reads one on the plain path, so it gets none there.
     const ctx = (route || !plain ? new (route ? route.box! : this._box).Ctx(raw, url, id, headers, out) : undefined) as Context<any, any, any, any, any>;
     const x: Exchange = { raw, url, ctx, out, notes, headers, started, timed, id: idHeader ? id : undefined, route: undefined, hooks };
+    if (this._cell) {
+      this._cell.ctx = ctx;
+      this._cell = undefined;
+    }
 
     if (!plain) return this.full(x, m);
     let res: RawResponse;
@@ -1000,6 +1065,10 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
 
   // Synchronous for a request without a body whose handler is: no promise, no extra turn.
   private serve(req: IncomingMessage, res: ServerResponse) {
+    if (this._gauge?.under) {
+      const busy = this.shed(target(req.url ?? "/").pathname);
+      if (busy) return this.send(res, busy); // the body stays unread
+    }
     const hasBody = req.headers["content-length"] !== undefined || req.headers["transfer-encoding"] !== undefined;
     if (!hasBody) return this.pass(req, res, undefined);
     // the route says how much it takes, and whether it reads the body itself; routed once, here
@@ -1060,10 +1129,20 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
   /** For adapters: runs the onListen hooks, once the adapter's server listens. */
   async started(): Promise<void> {
     for (const hook of this._onListen) await hook();
+    this.schedule();
+  }
+
+  /** Starts the jobs' schedules (`every`): in one process only, the first worker of a cluster. */
+  private schedule() {
+    if (!this._jobs) return;
+    const slot = process.env.INKAN_WORKER;
+    if (cluster.isWorker && (slot ? slot !== "1" : cluster.worker?.id !== 1)) return;
+    this._jobs.schedule();
   }
 
   /** For adapters: runs the onClose hooks, once the adapter's server has stopped taking requests. */
   async stopped(): Promise<void> {
+    this._gauge?.stop();
     await Promise.all([this._jobs?.stop(), this.closeSockets()]);
     for (const hook of this._onClose) await hook();
   }
@@ -1081,6 +1160,10 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
   async fetch(request: Request, info: { remote?: string } = {}): Promise<Response> {
     if (this.loading) await this.ready();
     const url = new URL(request.url);
+    if (this._gauge?.under) {
+      const busy = this.shed(url.pathname);
+      if (busy) return toWebResponse(busy);
+    }
     const target = url.pathname + url.search;
     const headers: Record<string, string> = {};
     request.headers.forEach((value, name) => (headers[name] = value)); // names come lower-cased
@@ -1176,7 +1259,10 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
       else if (log) console.log(`  ${c.seal("印")} ${msg}`);
     };
     say(`starting ${count} worker${count === 1 ? "" : "s"}`);
-    for (let i = 0; i < count; i++) cluster.fork();
+    // each worker has a slot, 1 to count, that its replacement takes over: slot 1 runs the schedules
+    const slots = new Map<number, string>();
+    const fork = (slot: string) => slots.set(cluster.fork({ INKAN_WORKER: slot }).id, slot);
+    for (let i = 1; i <= count; i++) fork(String(i));
     let stopping = false;
     const deaths: number[] = [];
     cluster.on("exit", (worker, code, signal) => {
@@ -1194,7 +1280,9 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
         process.exit(1);
       }
       console.error(`inkan: worker ${worker.id} stopped with ${signal ?? code}; starting another`);
-      cluster.fork();
+      const slot = slots.get(worker.id) ?? "0";
+      slots.delete(worker.id);
+      fork(slot);
     });
     const stop = () => {
       if (stopping) return;
@@ -1223,6 +1311,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
         server.off("error", reject);
         (async () => {
           for (const hook of this._onListen) await hook();
+          this.schedule();
           const { log, logger } = this.options;
           if (log && !logger) {
             if (log === "json") {
@@ -1231,7 +1320,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
               console.log(JSON.stringify({ time: new Date().toISOString(), msg: "listening", port, worker: WORKER }));
             } else this.banner(server);
           }
-          if (this.options.gracefulShutdown) shutdownOnSignal(server, this._onClose, [() => this._jobs?.stop(), () => this.closeSockets()]);
+          if (this.options.gracefulShutdown) shutdownOnSignal(server, this._onClose, [() => this._jobs?.stop(), () => this.closeSockets(), () => this._gauge?.stop()]);
           resolve(server);
         })().catch((err) => server.close(() => reject(err)));
       });

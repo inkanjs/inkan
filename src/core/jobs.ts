@@ -16,6 +16,8 @@ import { randomBytes } from "node:crypto";
 import { HttpProblem, problem, type ProblemBody } from "./problem.ts";
 import { EventsSchema, t, type Issue, type Schema } from "../schema/schema.ts";
 import { sse } from "./stream.ts";
+import { within as withContext } from "./request-context.ts";
+import { Cron, type CronZone } from "./cron.ts";
 import { joinPath, reply, type Context, type DecoOf, type Example, type JoinPath, type PathParams, type RawHeaders, type RawQuery, type Security, type WithRoutes } from "./route.ts";
 
 export type JobState = "queued" | "running" | "done" | "failed" | "canceled";
@@ -171,6 +173,18 @@ export type JobOptions<B, P, R, Deco = {}> = {
   store?: JobStore;
   /** Examples for starting one. The routes around it get examples that build on the first. */
   examples?: Example[];
+  /**
+   * Starts the job on a schedule as well, as a POST would: the same queue, concurrency and
+   * store, without an owner. A five-field cron expression (`"0 3 * * *"`, in UTC), or
+   * `{ cron, input, timezone }` with the input to start it with (needed when the job has a
+   * `body`, and checked against it) and `"local"` for the process's own time zone. A run
+   * is skipped while the one this schedule started before is still waiting or running.
+   * Schedules start once the app listens (`listen`, or `app.started()` for an adapter),
+   * stop on shutdown, and with `workers` run in worker 1 only. `job.ctx` of a scheduled
+   * run is a context of no real request: a POST to the job's path, no headers, its input as
+   * the body.
+   */
+  every?: string | { cron: string; input?: B; timezone?: CronZone };
 };
 
 type ProblemSchema = Schema<ProblemBody>;
@@ -231,6 +245,7 @@ export class JobHub {
   closing = false;
   private store?: JobStore;
   private sweeper?: ReturnType<typeof setInterval>;
+  private scheduling = false;
   constructor(host: JobHost) {
     this.host = host;
   }
@@ -249,7 +264,8 @@ export class JobHub {
     if (this.sweeper) return;
     const keep = Math.min(...this.kinds.map((k) => k.keep));
     const every = Math.max(1000, Math.min(60_000, keep));
-    this.sweeper = setInterval(() => {
+    // made while a request starts a job: outside its store, which the timer would keep forever
+    this.sweeper = withContext(undefined, () => setInterval(() => {
       const now = Date.now();
       for (const s of new Set(this.kinds.map((k) => k.store))) {
         try {
@@ -259,8 +275,15 @@ export class JobHub {
           this.report(err);
         }
       }
-    }, every);
+    }, every));
     this.sweeper.unref?.();
+  }
+
+  /** Arms every kind's schedule, once. */
+  schedule() {
+    if (this.scheduling || this.closing) return;
+    this.scheduling = true;
+    for (const k of this.kinds) k.arm();
   }
 
   report(err: unknown, ctx?: Context<any, any, any, any, any>) {
@@ -276,6 +299,7 @@ export class JobHub {
     if (this.closing) return;
     this.closing = true;
     if (this.sweeper) clearInterval(this.sweeper);
+    for (const k of this.kinds) k.unschedule();
     for (const k of this.kinds) k.closeDown();
     const running = this.kinds.flatMap((k) => k.runs());
     if (!running.length) return;
@@ -308,6 +332,22 @@ type Live = {
 const notFound = (id: string) => problem(404, "job-not-found", `No job ${id}`);
 const later = (status: number, type: string, detail: string, seconds: number) => new HttpProblem(status, type, detail, {}, { "retry-after": String(seconds) });
 const TIMEOUT = Symbol("timeout");
+/** The longest delay a timer takes: 2^31 - 1 ms, almost 25 days. Longer waits go in hops. */
+const LONGEST = 2 ** 31 - 1;
+
+/** A kind's schedule, from `every`. */
+type Schedule = {
+  cron: Cron;
+  zone: CronZone;
+  input: unknown;
+  /** A context for a run that no request started. */
+  ctx: () => Context<any, any, any, any, any>;
+  timer?: ReturnType<typeof setTimeout>;
+  /** The minute the timer is for. */
+  at?: number;
+  /** The job the schedule started last, so the next run waits for it. */
+  last?: string;
+};
 
 /** One kind of job: its queue, its slots, and the routes' work. */
 export class JobKind {
@@ -324,6 +364,8 @@ export class JobKind {
   private running = 0;
   /** Wakes every open event stream, so it can see the server is stopping. */
   private streams = new Set<() => void>();
+  /** @internal */
+  schedule?: Schedule;
 
   constructor(hub: JobHub, path: string, opts: JobOptions<any, any, any, any>, run: (job: Job<any, any, any>) => unknown) {
     this.hub = hub;
@@ -367,20 +409,69 @@ export class JobKind {
   // ----- the routes -----
 
   async start(ctx: Context<any, any, any, any, any>) {
-    if (this.hub.closing) throw later(503, "shutting-down", "The server is shutting down", 5);
-    if (this.queue.length >= this.limit) throw later(503, "job-queue-full", `${this.queue.length} jobs are waiting already`, 5);
-    const rec: JobRecord = { id: newId(), kind: this.path, state: "queued", input: ctx.body, position: this.queue.length + 1, createdAt: new Date() };
-    if (this.opts.owner) {
-      const owner = this.opts.owner(ctx);
-      if (owner !== undefined) rec.owner = owner;
-    }
-    const l: Live = { rec, ctx };
-    this.live.set(rec.id, l);
-    this.queue.push(rec.id);
-    this.hub.sweepSoon();
+    const owner = this.opts.owner?.(ctx);
+    const rec = this.admit(ctx, ctx.body, owner);
     await this.store.set(rec);
     this.pump();
-    return reply(202, view(l.rec), { location: `${ctx.path.replace(/\/+$/, "")}/${rec.id}` });
+    return reply(202, view(this.live.get(rec.id)?.rec ?? rec), { location: `${ctx.path.replace(/\/+$/, "")}/${rec.id}` });
+  }
+
+  /** A new job in the queue, or a 503 when the server stops or the queue is full. */
+  private admit(ctx: Context<any, any, any, any, any>, input: unknown, owner: string | undefined): JobRecord {
+    if (this.hub.closing) throw later(503, "shutting-down", "The server is shutting down", 5);
+    if (this.queue.length >= this.limit) throw later(503, "job-queue-full", `${this.queue.length} jobs are waiting already`, 5);
+    const rec: JobRecord = { id: newId(), kind: this.path, state: "queued", input, position: this.queue.length + 1, createdAt: new Date() };
+    if (owner !== undefined) rec.owner = owner;
+    this.live.set(rec.id, { rec, ctx });
+    this.queue.push(rec.id);
+    this.hub.sweepSoon();
+    return rec;
+  }
+
+  // ----- the schedule -----
+
+  /** Sets the timer for the next run after `from`. A wait longer than a timer takes goes in hops. */
+  arm(from = Date.now()) {
+    const s = this.schedule;
+    if (!s || this.hub.closing) return;
+    const next = s.cron.next(Math.max(from, Date.now()), s.zone);
+    if (!next) return;
+    s.at = next.getTime();
+    this.wait(s);
+  }
+
+  private wait(s: Schedule) {
+    const left = s.at! - Date.now();
+    const hop = left > LONGEST;
+    // made outside any request's store, which the timer would otherwise keep
+    s.timer = withContext(undefined, () => setTimeout(() => (hop ? this.wait(s) : this.fire(s)), hop ? LONGEST : Math.max(0, left)));
+    s.timer.unref?.();
+  }
+
+  /** A scheduled run: started as a POST would be, unless the last one is still waiting or running. */
+  private fire(s: Schedule) {
+    const at = s.at!;
+    s.timer = undefined;
+    if (this.hub.closing) return;
+    if (!(s.last && this.live.has(s.last))) {
+      try {
+        const ctx = s.ctx();
+        ctx.body = s.input;
+        const rec = this.admit(ctx, s.input, undefined);
+        s.last = rec.id;
+        Promise.resolve(this.store.set(rec)).then(
+          () => this.pump(),
+          (err) => this.hub.report(err),
+        );
+      } catch (err) {
+        this.hub.report(err); // a full queue: this run is lost, the next one comes as planned
+      }
+    }
+    this.arm(at); // the next minute after this one, not after now: no drift, and none twice
+  }
+
+  unschedule() {
+    if (this.schedule?.timer) clearTimeout(this.schedule.timer);
   }
 
   async status(ctx: Context<any, any, any, any, any>) {
@@ -501,7 +592,9 @@ export class JobKind {
       const l = this.live.get(this.queue.shift()!);
       if (!l) continue;
       this.running++;
-      l.settled = this.execute(l);
+      // the job's own context for context(), not the store of the request that started it
+      const ctx = jobContext(l.ctx);
+      l.settled = withContext(ctx, () => this.execute(l, ctx));
     }
     this.reposition();
   }
@@ -515,7 +608,7 @@ export class JobKind {
   }
 
   /** Runs one job to its end. Never rejects. */
-  private async execute(l: Live): Promise<void> {
+  private async execute(l: Live, ctx: Context<any, any, any, any, any>): Promise<void> {
     const ctl = (l.ctl = new AbortController());
     const id = l.rec.id;
     const off = this.store.watch(id, (r) => {
@@ -531,7 +624,7 @@ export class JobKind {
       id,
       input: l.rec.input,
       signal: ctl.signal,
-      ctx: jobContext(l.ctx),
+      ctx,
       progress: (p) => {
         if (this.live.get(id) !== l || ctl.signal.aborted) return; // over or stopping: late progress is dropped
         if (progressSchema && this.checks) {
@@ -666,11 +759,43 @@ function paramsOf(path: string) {
 
 type Define = (method: string, path: string, spec: object, handler: (ctx: any) => unknown) => void;
 
+/** A job's `every`, read and checked when the job is defined, so a wrong one stops the start. */
+function scheduleOf(path: string, full: string, opts: JobOptions<any, any, any, any>, ctxFor: (path: string) => Context<any, any, any, any, any>): Schedule {
+  const every = typeof opts.every === "string" ? { cron: opts.every } : opts.every!;
+  const where = `app.job("${path}")`;
+  if (/:\w/.test(full)) throw new Error(`${where}: every needs a path without parameters, since no request names them`);
+  let cron: Cron;
+  try {
+    cron = new Cron(every.cron);
+  } catch (err) {
+    throw new Error(`${where}: ${(err as Error).message}`);
+  }
+  const zone = every.timezone ?? "UTC";
+  if (zone !== "UTC" && zone !== "local") throw new Error(`${where}: every.timezone is "UTC" or "local", not "${zone}"`);
+  if (!cron.next(Date.now(), zone)) throw new Error(`${where}: the cron "${every.cron}" never matches`);
+  let input = every.input;
+  if (opts.body) {
+    if (!("input" in every)) throw new Error(`${where}: the job takes a body, so every needs { cron, input } with the input to start it with`);
+    const r = opts.body.safeParse(input);
+    if (!r.ok) throw new Error(`${where}: every.input does not match the body: ${r.issues.map((i) => `${i.path || "(body)"} ${i.message}`).join("; ")}`);
+    input = r.value;
+  }
+  return { cron, zone, input, ctx: () => ctxFor(full) };
+}
+
 /**
  * Defines a job's five routes on a scope. `prefix` is the scope's, `path` the job's own; the
  * routes go through `define`, so they are routes like any other.
  */
-export function defineJob(hub: JobHub, define: Define, prefix: string, path: string, opts: JobOptions<any, any, any, any>, run: (job: Job<any, any, any>) => unknown) {
+export function defineJob(
+  hub: JobHub,
+  define: Define,
+  prefix: string,
+  path: string,
+  opts: JobOptions<any, any, any, any>,
+  run: (job: Job<any, any, any>) => unknown,
+  ctxFor: (path: string) => Context<any, any, any, any, any>,
+) {
   const full = prefix ? joinPath(prefix, path) : joinPath("/", path);
   if (/(^|\/):id(\/|$)/.test(full)) throw new Error(`app.job("${path}"): the path has an :id already, and the job routes add their own`);
   if (hub.host.dev && !warnedServerless && (process.env.AWS_LAMBDA_FUNCTION_NAME || process.env.VERCEL || process.env.NETLIFY)) {
@@ -678,6 +803,7 @@ export function defineJob(hub: JobHub, define: Define, prefix: string, path: str
     console.warn("inkan: background jobs run in the process that started them; on a serverless platform it may be frozen or gone before they finish.");
   }
   const kind = new JobKind(hub, full, opts, run);
+  if (opts.every !== undefined) kind.schedule = scheduleOf(path, full, opts, ctxFor);
   hub.kinds.push(kind);
 
   const name = opts.name ?? nameOf(full);

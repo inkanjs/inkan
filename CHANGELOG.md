@@ -107,6 +107,38 @@
 - `serializeCookie` and `parseCookies` are exported, for plugins that read or write
   cookies outside a context. So are the types `RouteInfo`, `RouteMeta`, `Security`,
   `OperationHook`, `OperationRoute` and `TrustProxy`.
+- **`env(schema, source = process.env)`** checks environment variables with a `t.object`
+  schema, coerced like a query string (numbers, booleans, enums, defaults, optional), and
+  hands back the typed value, frozen. An empty variable counts as unset. It throws one error
+  that lists every problem (`PORT must be an integer, got "abc"`, `DATABASE_URL is
+  required`), never with the value of a name that looks secret (SECRET, TOKEN, KEY, PASSWORD).
+- **Overload protection: `pressure`** on the app, `{ eventLoopDelay, heapUsed, rss,
+  retryAfter, check, exempt, interval }`. A timer (unref'd, every second) samples the event
+  loop's delay, the heap (bytes or `"90%"` of its limit), resident memory and your own
+  `check()`, and sets one flag. While it is set every request gets a 503 `under-pressure`
+  problem with `retry-after`, before its body is read and before any hook; inkan's own pages
+  and the `exempt` paths still answer. `app.pressure()` hands back the last sample for a
+  health route. Off by default: no timer, and nothing to read per request.
+- **Request context: `context: true` and `context()`.** Each request runs inside an
+  AsyncLocalStorage holding its context, so code far from the handler (a logger, a database
+  helper) reads `context()?.id` or `context()?.user` without having it passed. Outside a
+  request it is undefined; with no app in the process that turned it on it throws. A
+  background job runs with its own `job.ctx`, never inside the store of the request that
+  started it, and timers inkan makes during a request (the job sweeper) do not keep that
+  store either. Off by default; on, it costs about 0.5-1 µs a request (`bench/inproc.mjs`:
+  113 % of the time without it, geomean).
+- **Scheduled jobs: `every`.** `app.job(path, { every: "0 3 * * *" }, run)`, or
+  `every: { cron, input, timezone: "UTC" | "local" }` (UTC by default), starts the job on a
+  schedule as a POST would: the same queue, concurrency and store, without an owner, and
+  `job.ctx` a context of no real request. A five-field cron with `*`, lists, ranges, steps
+  and names (`mon-fri`, `jan`), Vixie's rule for day of month and day of week (either one
+  when both are restricted) and `@daily` and friends; no dependency. A job with a `body`
+  needs `input`, checked against it when the job is defined, as are the expression and the
+  zone. A run is skipped while the last one the schedule started still waits or runs.
+  Timers are unref'd and set for the next minute each time, so they do not drift, and
+  waits past 24.8 days go in hops. Schedules start once the app listens (or on
+  `app.started()` for an adapter) and stop on shutdown; with `workers` only worker 1
+  runs them, and a worker that replaces it takes its place.
 
 ### Faster
 
