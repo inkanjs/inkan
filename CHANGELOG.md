@@ -4,6 +4,24 @@
 
 ### New
 
+- **Background jobs.** `app.job(path, { body, progress, result, concurrency, queue, keep, timeout, owner }, run)`
+  defines five ordinary routes around a queue, so the docs, OpenAPI, hooks, security, the
+  typed client and `inkan check` see them like any other: `POST path` starts a job (202,
+  with its `location`; 503 when the queue is full or the server stops), `GET path/:id` tells
+  how it stands, `GET path/:id/events` follows it as server-sent events (its status, the
+  latest progress only, then the end, and the stream closes), `GET path/:id/result?wait=10`
+  waits for what it made, and `DELETE path/:id` cancels it or forgets it once it is over.
+  The work gets `job.input`, `job.signal` and `job.progress(p)`; ids are random, a job of
+  someone else is a 404 with `owner`, a thrown problem is the job's `error`, and in
+  development a progress or result that breaks its contract fails the job. Finished jobs are
+  kept for `keep` seconds. On SIGINT or SIGTERM waiting jobs are canceled, event streams
+  end at once, and running jobs get a few seconds before their signal is aborted.
+  **Jobs run in the process that started them: one still running when it ends is lost.**
+  With `workers`, `listen` refuses jobs kept in memory; `JobStore` is the interface for a
+  store the processes share, `memoryStore()` the one inkan has. The routes get examples made
+  from the first start example, so `inkan check` covers them.
+- **`client.events(path, { params })`** reads a route that answers with `t.events(...)` as an
+  async iterator, each event narrowed by its name; leaving the loop closes the stream.
 - **Per-request decorations.** `scope.decorateRequest("user", (ctx) => …)` puts a value on
   the context that is made the first time a request reads it and kept for the rest of that
   request; a request that never asks never makes it. Typed like `decorate`, refused for the
@@ -35,6 +53,8 @@
 - `register()` returns the app or scope typed with what a shared plugin added, instead of
   `this`; for any other plugin the type is the same as before.
 - A plugin may return a value (its scope); anything but a promise is ignored as before.
+- On SIGINT or SIGTERM a connection whose answer ends during the shutdown is closed right
+  after it, instead of when the client lets it go.
 
 ## 0.6.0
 

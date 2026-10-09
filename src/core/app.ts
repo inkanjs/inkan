@@ -18,6 +18,7 @@ import { Reply, type Context, type Example, type Middleware, type RawQuery, type
 import { target, queryObject, trustingContext, type Exchange, type RawRequest, type RawResponse, type Target, type TrustProxy } from "./context.ts";
 import { NO_HOOKS, runHooks, Scope, type Hooks, type Root } from "./scope.ts";
 import { nextId } from "./request-id.ts";
+import { JobHub } from "./jobs.ts";
 import { jsonRows, SafeHtml } from "./helpers.ts";
 import { cached } from "./cache.ts";
 import { ArraySchema } from "../schema/schema.ts";
@@ -245,6 +246,13 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
       }
     }
     return this.sealState;
+  }
+
+  /** @internal The app's background jobs; made by the first `job()`, so an app without any has none. */
+  _jobs?: JobHub;
+  /** @internal */
+  _jobHub(): JobHub {
+    return (this._jobs ??= new JobHub(this));
   }
 
   /** @internal A hook was added somewhere: the routes' joined hooks, and the document, are out of date. */
@@ -896,6 +904,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
 
   /** For adapters: runs the onClose hooks, once the adapter's server has stopped taking requests. */
   async stopped(): Promise<void> {
+    await this._jobs?.stop();
     for (const hook of this._onClose) await hook();
   }
 
@@ -984,8 +993,12 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
    */
   listen(port?: number, host?: string): Promise<Server> {
     const { workers } = this.options;
+    const count = workers === "auto" ? availableParallelism() : (workers ?? 1);
+    if (count > 1 && this._jobs?.local() && !process.env.INKAN_NO_LISTEN) {
+      throw new Error(`inkan: background jobs keep their queue in this process, so they cannot run with workers: ${workers}. Run one process, or give app.job a store that processes share.`);
+    }
     // in a cluster the first process only looks after the workers; listen() there does not return
-    if (workers && cluster.isPrimary && !process.env.INKAN_NO_LISTEN) return this.supervise(workers === "auto" ? availableParallelism() : workers);
+    if (workers && cluster.isPrimary && !process.env.INKAN_NO_LISTEN) return this.supervise(count);
     // every plugin first: a route a plugin adds must be there for the first request, and one that fails stops the start
     return this.ready().then(() => this.open(port, host));
   }
@@ -1052,7 +1065,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
               console.log(JSON.stringify({ time: new Date().toISOString(), msg: "listening", port, worker: WORKER }));
             } else this.banner(server);
           }
-          if (this.options.gracefulShutdown) shutdownOnSignal(server, this._onClose);
+          if (this.options.gracefulShutdown) shutdownOnSignal(server, this._onClose, [() => this._jobs?.stop()]);
           resolve(server);
         })().catch((err) => server.close(() => reject(err)));
       });
@@ -1249,12 +1262,22 @@ function toWebResponse(out: RawResponse): Response {
 }
 
 let shuttingDown = false;
-function shutdownOnSignal(server: Server, onClose: (() => void | Promise<void>)[]) {
+/**
+ * `stopping` runs first, before the server waits for open connections: what ends there (event
+ * streams of jobs) does not hold the shutdown up. What it returns is waited for before onClose.
+ */
+function shutdownOnSignal(server: Server, onClose: (() => void | Promise<void>)[], stopping: (() => unknown)[] = []) {
   const stop = (signal: string) => {
     if (shuttingDown) process.exit(1); // a second ctrl+c means now
     shuttingDown = true;
     console.log(`\n  ${paint(useColor()).warn(signal)}: finishing open requests…`);
+    const pending = stopping.map((fn) => fn());
+    // a connection whose answer ends now (an event stream that was just closed) is idle
+    // afterwards; close it then, instead of waiting for the client to let it go
+    const idle = setInterval(() => server.closeIdleConnections(), 50).unref();
     server.close(async () => {
+      clearInterval(idle);
+      await Promise.allSettled(pending);
       for (const hook of onClose) await hook();
       process.exit(0);
     });

@@ -12,6 +12,7 @@ import type { RequestLog } from "./app.ts";
 import { RequestContext, type Layout } from "./context.ts";
 import { folderOf, loadRoutes } from "./files.ts";
 import type { HttpProblem } from "./problem.ts";
+import { defineJob, type JobHub, type JobMethod } from "./jobs.ts";
 import { joinPath, Routes, type Context, type DecoOf, type RouteDefs, type RouteRecord, type WithDeco } from "./route.ts";
 
 type Ctx<Deco> = Context<any, any, any, any, any> & Deco;
@@ -116,6 +117,7 @@ export interface Root {
   _addRoute(r: RouteRecord): void;
   _load(run: () => unknown): void;
   _changed(): void;
+  _jobHub(): JobHub;
 }
 
 const SHARED = Symbol("inkan.shared");
@@ -271,6 +273,22 @@ export class Scope<Defs extends RouteDefs = any, Deco = any> extends Routes<Defs
       enumerable: true,
       configurable: true,
     });
+    return this;
+  }) as never;
+
+  /**
+   * Work that takes longer than a request: five routes around a queue. `POST path` starts a
+   * job (202, with its location), `GET path/:id` tells how it stands, `GET path/:id/events`
+   * follows it as server-sent events, `GET path/:id/result?wait=10` hands over what it made,
+   * `DELETE path/:id` cancels it. Jobs run in this process: one still running when it ends is lost.
+   *
+   *   app.job("/exports", { body, progress, result }, async (job) => {
+   *     job.progress({ done: 1, total: 2 });
+   *     return { url: "/x.csv", rows: 2 };
+   *   });
+   */
+  job: JobMethod<this> = ((path: string, options: object, run: (job: never) => unknown) => {
+    defineJob(this._root._jobHub(), (m, p, spec, h) => void this.define(m, p, spec, h), this._prefix, path, options, run as never);
     return this;
   }) as never;
 
