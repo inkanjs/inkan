@@ -731,6 +731,8 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
   }
 
   private respond(result: unknown, x: Exchange): RawResponse {
+    // a problem handed back instead of thrown, from a hook or a handler, is answered the same way
+    if (result instanceof HttpProblem) throw result;
     const { out, route, notes } = x;
     const plan = route?.plan;
     let status = out.status;
@@ -739,7 +741,12 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     if (result instanceof Reply) {
       status = result.status || status; // 0: whatever status() set, or the usual one
       body = result.body;
-      for (const [k, v] of Object.entries(result.headers)) headers[k.toLowerCase()] = v;
+      for (const [k, v] of Object.entries(result.headers)) {
+        const name = k.toLowerCase();
+        // set-cookie: one line per cookie, next to the ones setCookie() made
+        if (name === "set-cookie") (out.cookies ??= []).push(...(Array.isArray(v) ? v : [v]));
+        else headers[name] = Array.isArray(v) ? v.join(", ") : v;
+      }
     }
     if (body instanceof SafeHtml) {
       headers["content-type"] ??= "text/html; charset=utf-8"; // html`…` returned as it is

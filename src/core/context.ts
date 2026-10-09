@@ -2,7 +2,7 @@
 // with it from routing to the answer.
 
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { Reply, type Context, type RouteInfo, type RouteRecord } from "./route.ts";
+import { Reply, type Context, type ReplyHeaders, type RouteInfo, type RouteRecord } from "./route.ts";
 import type { Hooks } from "./scope.ts";
 import type { RawQuery } from "./route.ts";
 import { NO_PARAMS } from "./router.ts";
@@ -176,7 +176,7 @@ export class RequestContext {
     u.search = this.target.search;
     return u;
   }
-  reply(status: number, body: unknown, headers?: Record<string, string>) {
+  reply(status: number, body: unknown, headers?: ReplyHeaders) {
     return new Reply(status, body, headers);
   }
 

@@ -137,11 +137,14 @@ export type SuccessBody<R> = {} extends R
   ? unknown
   : { [K in keyof R]: K extends SuccessStatus ? Infer<R[K]> : never }[keyof R];
 
+/** Headers of an answer. A list goes out as one line per entry for `set-cookie`, joined with ", " for any other. */
+export type ReplyHeaders = Record<string, string | string[]>;
+
 export class Reply<S extends number = number, Body = unknown> {
   status: S;
   body: Body;
-  headers: Record<string, string>;
-  constructor(status: S, body: Body, headers: Record<string, string> = {}) {
+  headers: ReplyHeaders;
+  constructor(status: S, body: Body, headers: ReplyHeaders = {}) {
     this.status = status;
     this.body = body;
     this.headers = headers;
@@ -149,7 +152,7 @@ export class Reply<S extends number = number, Body = unknown> {
 }
 
 /** Answers with a status that is not the default one, or with extra headers. */
-export const reply = <S extends number, B>(status: S, body?: B, headers?: Record<string, string>) =>
+export const reply = <S extends number, B>(status: S, body?: B, headers?: ReplyHeaders) =>
   new Reply(status, body, headers);
 
 export type Context<P = Record<string, string>, Q = RawQuery, B = unknown, H = RawHeaders, R extends Responses = {}> = {
@@ -183,7 +186,7 @@ export type Context<P = Record<string, string>, Q = RawQuery, B = unknown, H = R
   /** Sets the status used when the handler returns a plain value. */
   status(code: number): void;
   header(name: string, value: string): void;
-  reply<S extends keyof R & number>(status: S, body: Infer<R[S]>, headers?: Record<string, string>): Reply<S>;
+  reply<S extends keyof R & number>(status: S, body: Infer<R[S]>, headers?: ReplyHeaders): Reply<S>;
   /** Plain text. The status is the one `status()` set, or the usual one, unless given here. */
   text(body: string, status?: number): Reply;
   /** HTML. Write it with the `html` tag, which escapes every value put into it. */

@@ -5,6 +5,7 @@ export type { FileRoute } from "./core/files.ts";
 export type { OperationHook, Outgoing, Plugin, PluginOptions, ProblemHook, RequestHook, ResolveOptions, ResponseHook, SendHook } from "./core/scope.ts";
 export type { AdapterRequest, AdapterResponse, AppOptions, InjectOptions, InjectResponse, LogEntry, RequestLog } from "./core/app.ts";
 export { Routes, routes, reply, Reply } from "./core/route.ts";
+export type { ReplyHeaders } from "./core/route.ts";
 export type { Context, Example, Handler, Middleware, OperationRoute, PathParams, Responses, RouteInfo, RouteMeta, RouteRecord, RouteSpec, Security } from "./core/route.ts";
 export type { WsHandler, WsOrigins, WsSocket, WsSpec } from "./core/ws.ts";
 export { t, Schema, ValidationError } from "./schema/schema.ts";

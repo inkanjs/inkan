@@ -171,6 +171,9 @@
   waits past 24.8 days go in hops. Schedules start once the app listens (or on
   `app.started()` for an adapter) and stop on shutdown; with `workers` only worker 1
   runs them, and a worker that replaces it takes its place.
+- **`reply()` takes a list for `set-cookie`**: each entry goes out as a line of its own,
+  next to the cookies `ctx.setCookie()` made, so a proxy can pass an upstream's cookies on
+  as they came. A list for any other header is joined with `", "`. `ReplyHeaders` is exported.
 
 ### Faster
 
@@ -193,6 +196,12 @@
 - `app.dev` is read-only, like `scope.dev`; set development mode with the `dev` option.
 - On SIGINT or SIGTERM a connection whose answer ends during the shutdown is closed right
   after it, instead of when the client lets it go.
+
+### Fixed
+
+- A problem a hook or a handler returns instead of throwing is answered with its own status
+  and shape, as a thrown one is. It used to go out as a 200 with the problem as its body.
+
 
 ## 0.6.0
 

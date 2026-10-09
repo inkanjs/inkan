@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { HttpProblem, inkan, plugin, problem, rateLimit, t, type Outgoing } from "../src/index.ts";
+import { HttpProblem, inkan, plugin, problem, rateLimit, reply, t, type Outgoing } from "../src/index.ts";
 
 const quiet = { log: false as const };
 
@@ -185,4 +185,28 @@ test("an app with no hooks keeps the plain path, and a hook added later still ap
   assert.equal((await app.inject({ url: "/x" })).headers["x-late"], undefined);
   app.onSend((_ctx, a) => void (a.headers["x-late"] = "1"));
   assert.equal((await app.inject({ url: "/x" })).headers["x-late"], "1");
+});
+
+test("a problem returned instead of thrown answers with its own status, from a hook and from a handler", async () => {
+  const app = inkan({ log: false })
+    .onRequest((ctx) => (ctx.headers["x-block"] ? problem(403, "blocked", "No") : undefined))
+    .get("/a", () => ({ ok: true }))
+    .get("/b", () => problem(409, "taken", "Already there"));
+  const blocked = await app.inject({ url: "/a", headers: { "x-block": "1" } });
+  assert.equal(blocked.status, 403);
+  assert.equal(blocked.body.type.endsWith("blocked"), true);
+  assert.equal((await app.inject({ url: "/a" })).status, 200);
+  const taken = await app.inject({ url: "/b" });
+  assert.equal(taken.status, 409);
+});
+
+test("reply() takes a list of set-cookie lines and sends each on its own, next to setCookie()", async () => {
+  const app = inkan({ log: false }).get("/c", (ctx) => {
+    ctx.setCookie("a", "1");
+    return reply(200, { ok: true }, { "set-cookie": ["b=2; Path=/", "c=3; HttpOnly"], "x-one": "1" });
+  });
+  const res = await app.inject({ url: "/c" });
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.cookies.map((c: string) => c.split("=")[0]).sort(), ["a", "b", "c"]);
+  assert.equal(res.headers["x-one"], "1");
 });
