@@ -70,6 +70,11 @@ export abstract class Schema<T = unknown> {
     return (this._check ??= this.runner())(value, path, coerce, issues);
   }
 
+  /** @internal The whole check as one function, for a parent to call directly. */
+  _checker(): Check<T> {
+    return (this._check ??= this.runner());
+  }
+
   /** The stamp, with what every schema does first: a missing value, a default, null. */
   protected runner(): Check<T> {
     const check = this.stamp();
@@ -413,6 +418,14 @@ function under(issues: Issue[], from: number, at: string) {
   }
 }
 
+/** One field of an object, as the contract lists it: checked, its issues put under its name, its value copied. */
+function field(checks: Check<unknown>[], keys: string[], j: number, x: unknown, path: string, coerce: boolean, issues: Issue[], out: Record<string, unknown>) {
+  const start = issues.length;
+  const r = checks[j]!(x, "", coerce, issues);
+  if (issues.length > start) under(issues, start, path ? `${path}.${keys[j]}` : keys[j]!);
+  if (r !== FAIL && r !== undefined) out[keys[j]!] = r;
+}
+
 // ---------- primitives ----------
 
 export const FORMATS: Record<string, RegExp> = {
@@ -642,10 +655,11 @@ export class ArraySchema<S extends Schema<any>> extends Schema<Infer<S>[]> {
       if (min !== undefined && list.length < min) issues.push({ path, message: `must have at least ${min} items` });
       if (max !== undefined && list.length > max) issues.push({ path, message: `must have at most ${max} items` });
       const out: Infer<S>[] = [];
+      const check = item._checker();
       for (let i = 0; i < list.length; i++) {
         if (!(i in list)) continue; // a hole, skipped as forEach skips it
         const start = issues.length;
-        const r = item._run(list[i], "", coerce, issues);
+        const r = check(list[i], "", coerce, issues);
         if (issues.length > start) under(issues, start, `${path}[${i}]`);
         if (r !== FAIL) out.push(r);
       }
@@ -724,21 +738,32 @@ export class ObjectSchema<S extends Shape> extends Schema<InferShape<S>> {
   protected stamp(): Check<InferShape<S>> {
     const { shape, unknownKeys } = this;
     const keys = Object.keys(shape);
-    const schemas = keys.map((k) => shape[k]!);
+    const n = keys.length;
+    const position = new Map(keys.map((k, i) => [k, i]));
+    let checks: Check<unknown>[] | undefined; // the fields' checks, made on first use: a shape may hold itself through t.lazy
     return (v, path, coerce, issues) => {
       if (typeof v !== "object" || v === null || Array.isArray(v)) {
         issues.push({ path, message: `expected an object, got ${typeOf(v)}` });
         return FAIL;
       }
+      checks ??= keys.map((k) => shape[k]!._checker());
       const input = v as Record<string, unknown>;
       const out: Record<string, unknown> = unknownKeys === "keep" ? { ...input } : {};
-      for (let i = 0; i < keys.length; i++) {
-        const key = keys[i]!;
-        const start = issues.length;
-        const r = schemas[i]!._run(input[key], "", coerce, issues);
-        if (issues.length > start) under(issues, start, path ? `${path}.${key}` : key);
-        if (r !== FAIL && r !== undefined) out[key] = r;
+      // Every field is checked once, in the order the contract lists them, with input[key], as
+      // always. The value's own keys only make that quicker: a body mostly comes in the
+      // contract's order, and a value read by the key a for-in hands out is a plain load. A
+      // field the value does not have in that order is read by its name instead.
+      let j = 0;
+      for (const k in input) {
+        if (j === n) break;
+        if (k !== keys[j]) {
+          const at = position.get(k);
+          if (at === undefined || at < j) continue; // not in the contract, or checked already
+          for (; j < at; j++) field(checks, keys, j, input[keys[j]!], path, coerce, issues, out);
+        }
+        field(checks, keys, j++, input[k], path, coerce, issues, out);
       }
+      for (; j < n; j++) field(checks, keys, j, input[keys[j]!], path, coerce, issues, out);
       if (unknownKeys === "strict") {
         for (const key of Object.keys(input)) {
           if (!(key in shape)) issues.push({ path: path ? `${path}.${key}` : key, message: "is not allowed" });
