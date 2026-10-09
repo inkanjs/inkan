@@ -22,6 +22,12 @@
   from the first start example, so `inkan check` covers them.
 - **`client.events(path, { params })`** reads a route that answers with `t.events(...)` as an
   async iterator, each event narrowed by its name; leaving the loop closes the stream.
+- **Cookies in `inkan check`.** The examples of one `after` chain share a cookie jar, as a
+  browser would: a cookie an answer sets goes with the requests after it that its `Path`
+  covers, until an answer clears it (`Max-Age=0` or an `Expires` gone by). Every chain
+  starts with an empty jar, so a login example and a `/me` example after it pass, and
+  nothing crosses into another chain. `keep` reads `cookies.<name>` (a cookie the answer
+  sets) besides `body.<path>`, `headers.<name>` and `status`.
 - **Per-request decorations.** `scope.decorateRequest("user", (ctx) => …)` puts a value on
   the context that is made the first time a request reads it and kept for the rest of that
   request; a request that never asks never makes it. Typed like `decorate`, refused for the

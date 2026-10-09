@@ -106,10 +106,79 @@ export function substitute<T>(value: T, kept: Kept): T {
   return value;
 }
 
-/** Reads `body.id`, `headers.location` or `status` out of an answer. */
+// ---------- cookies ----------
+
+type Cookie = { name: string; value: string; path: string };
+
+/** The directory of a request path, the path a cookie without its own gets (RFC 6265, 5.1.4). */
+const defaultPath = (path: string) => {
+  const at = path.lastIndexOf("/");
+  return at <= 0 ? "/" : path.slice(0, at);
+};
+const pathMatches = (cookiePath: string, path: string) =>
+  path === cookiePath || (path.startsWith(cookiePath) && (cookiePath.endsWith("/") || path[cookiePath.length] === "/"));
+
+/** One Set-Cookie header: its name, value and path, and whether it tells the client to forget the cookie. */
+function parseSetCookie(header: string, requestPath: string): Cookie & { gone: boolean } {
+  const [pair, ...attrs] = header.split(";");
+  const eq = pair.indexOf("=");
+  const cookie = { name: eq < 0 ? "" : pair.slice(0, eq).trim(), value: pair.slice(eq + 1).trim(), path: defaultPath(requestPath), gone: false };
+  let maxAge: number | undefined;
+  let expires: number | undefined;
+  for (const attr of attrs) {
+    const i = attr.indexOf("=");
+    const key = (i < 0 ? attr : attr.slice(0, i)).trim().toLowerCase();
+    const value = i < 0 ? "" : attr.slice(i + 1).trim();
+    if (key === "path" && value.startsWith("/")) cookie.path = value;
+    else if (key === "max-age" && /^-?\d+$/.test(value)) maxAge = Number(value);
+    else if (key === "expires") expires = Date.parse(value);
+  }
+  // Max-Age wins over Expires, as in browsers
+  cookie.gone = maxAge !== undefined ? maxAge <= 0 : expires !== undefined && expires <= Date.now();
+  return cookie;
+}
+
+/**
+ * The cookies of one chain of examples: what an answer sets, the requests after it in the
+ * same chain send, as a browser would for one host. Every chain starts with an empty jar.
+ */
+class CookieJar {
+  private cookies: Cookie[] = [];
+  take(setCookies: string[], requestPath: string) {
+    for (const header of setCookies) {
+      const c = parseSetCookie(header, requestPath);
+      if (!c.name) continue;
+      this.cookies = this.cookies.filter((x) => x.name !== c.name || x.path !== c.path);
+      if (!c.gone) this.cookies.push({ name: c.name, value: c.value, path: c.path });
+    }
+  }
+  /** The Cookie header for a request to `path`, longer paths first; undefined when none matches. */
+  header(path: string): string | undefined {
+    const list = this.cookies.filter((c) => pathMatches(c.path, path)).sort((a, b) => b.path.length - a.path.length);
+    return list.length ? list.map((c) => `${c.name}=${c.value}`).join("; ") : undefined;
+  }
+}
+
+/** The cookies an answer sets, by name, their values decoded. */
+function cookiesOf(res: InjectResponse): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const header of res.cookies) {
+    const c = parseSetCookie(header, "/");
+    if (!c.name || c.gone) continue;
+    try {
+      out[c.name] = decodeURIComponent(c.value);
+    } catch {
+      out[c.name] = c.value;
+    }
+  }
+  return out;
+}
+
+/** Reads `body.id`, `headers.location`, `cookies.sid` or `status` out of an answer. */
 function pick(res: InjectResponse, path: string): unknown {
   const [root, ...rest] = path.split(".");
-  let v: unknown = root === "body" ? res.body : root === "headers" ? res.headers : root === "status" ? res.status : undefined;
+  let v: unknown =
+    root === "body" ? res.body : root === "headers" ? res.headers : root === "cookies" ? cookiesOf(res) : root === "status" ? res.status : undefined;
   for (const k of rest) v = v !== null && typeof v === "object" ? (v as Record<string, unknown>)[root === "headers" ? k.toLowerCase() : k] : undefined;
   return v;
 }
@@ -150,10 +219,10 @@ function chainOf(index: Map<string, Step>, start: Step): Step[] {
   return chain;
 }
 
-async function runChain(app: App, chain: Step[]): Promise<Kept> {
+async function runChain(app: App, chain: Step[], jar: CookieJar): Promise<Kept> {
   let kept: Kept = {};
   for (const step of chain) {
-    const res = await send(app, step.r, substitute(step.ex, kept));
+    const res = await send(app, step.r, substitute(step.ex, kept), jar);
     const want = expectedStatus(step.r, step.ex);
     if (want !== undefined ? res.status !== want : res.status >= 300) {
       throw new Error(`needs "${step.label}" first, which answered ${res.status}, expected ${want ?? "a 2xx"}`);
@@ -169,8 +238,23 @@ async function runChain(app: App, chain: Step[]): Promise<Kept> {
 const eventsFor = (r: RouteRecord, ex: Example) =>
   contractFor(r, expectedStatus(r, ex) ?? 200) instanceof EventsSchema ? (Array.isArray(ex.expect) ? ex.expect.length : 5) : undefined;
 
-const send = (app: App, r: RouteRecord, ex: Example) =>
-  app.inject({ method: r.method, url: fill(r.path, ex.params) + queryString(ex.query), headers: ex.headers, body: ex.body, events: eventsFor(r, ex) });
+/** An example's request, with the chain's cookies; what the answer sets goes into the jar. */
+async function send(app: App, r: RouteRecord, ex: Example, jar: CookieJar) {
+  const path = fill(r.path, ex.params);
+  const cookie = jar.header(path);
+  let headers = ex.headers;
+  if (cookie) {
+    headers = { ...ex.headers };
+    const own = Object.keys(headers).find((k) => k.toLowerCase() === "cookie");
+    const mine = own === undefined ? undefined : headers[own];
+    if (own !== undefined) delete headers[own];
+    // the example's own cookies first: of a cookie named twice, the app reads the first
+    headers.cookie = mine ? `${mine}; ${cookie}` : cookie;
+  }
+  const res = await app.inject({ method: r.method, url: path + queryString(ex.query), headers, body: ex.body, events: eventsFor(r, ex) });
+  jar.take(res.cookies, path);
+  return res;
+}
 
 async function runOne(app: App, r: RouteRecord, raw: Example, i: number, index: Map<string, Step>, beforeEach?: () => unknown): Promise<CheckResult> {
   const name = raw.name ?? `example ${i + 1}`;
@@ -179,9 +263,10 @@ async function runOne(app: App, r: RouteRecord, raw: Example, i: number, index: 
   let status = 0;
   try {
     await beforeEach?.(); // once per chain, so the examples in it see each other's data
-    const kept = await runChain(app, chainOf(index, { r, ex: raw, label: stepLabel(r, raw, i) }));
+    const jar = new CookieJar(); // one per chain: cookies never cross from one to another
+    const kept = await runChain(app, chainOf(index, { r, ex: raw, label: stepLabel(r, raw, i) }), jar);
     const ex = substitute(raw, kept);
-    const res = await send(app, r, ex);
+    const res = await send(app, r, ex, jar);
     status = res.status;
     const want = expectedStatus(r, ex);
     if (want !== undefined ? status !== want : status >= 300) {
