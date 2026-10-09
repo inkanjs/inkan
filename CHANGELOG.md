@@ -85,6 +85,18 @@
   started it, and timers inkan makes during a request (the job sweeper) do not keep that
   store either. Off by default; on, it costs about 0.5-1 µs a request (`bench/inproc.mjs`:
   113 % of the time without it, geomean).
+- **Scheduled jobs: `every`.** `app.job(path, { every: "0 3 * * *" }, run)`, or
+  `every: { cron, input, timezone: "UTC" | "local" }` (UTC by default), starts the job on a
+  schedule as a POST would: the same queue, concurrency and store, without an owner, and
+  `job.ctx` a context of no real request. A five-field cron with `*`, lists, ranges, steps
+  and names (`mon-fri`, `jan`), Vixie's rule for day of month and day of week (either one
+  when both are restricted) and `@daily` and friends; no dependency. A job with a `body`
+  needs `input`, checked against it when the job is defined, as are the expression and the
+  zone. A run is skipped while the last one the schedule started still waits or runs.
+  Timers are unref'd and set for the next minute each time, so they do not drift, and
+  waits past 24.8 days go in hops. Schedules start once the app listens (or on
+  `app.started()` for an adapter) and stop on shutdown; with `workers` only worker 1
+  runs them, and a worker that replaces it takes its place.
 
 ### Faster
 

@@ -981,6 +981,15 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
   /** For adapters: runs the onListen hooks, once the adapter's server listens. */
   async started(): Promise<void> {
     for (const hook of this._onListen) await hook();
+    this.schedule();
+  }
+
+  /** Starts the jobs' schedules (`every`): in one process only, the first worker of a cluster. */
+  private schedule() {
+    if (!this._jobs) return;
+    const slot = process.env.INKAN_WORKER;
+    if (cluster.isWorker && (slot ? slot !== "1" : cluster.worker?.id !== 1)) return;
+    this._jobs.schedule();
   }
 
   /** For adapters: runs the onClose hooks, once the adapter's server has stopped taking requests. */
@@ -1098,7 +1107,10 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
       else if (log) console.log(`  ${c.seal("印")} ${msg}`);
     };
     say(`starting ${count} worker${count === 1 ? "" : "s"}`);
-    for (let i = 0; i < count; i++) cluster.fork();
+    // each worker has a slot, 1 to count, that its replacement takes over: slot 1 runs the schedules
+    const slots = new Map<number, string>();
+    const fork = (slot: string) => slots.set(cluster.fork({ INKAN_WORKER: slot }).id, slot);
+    for (let i = 1; i <= count; i++) fork(String(i));
     let stopping = false;
     const deaths: number[] = [];
     cluster.on("exit", (worker, code, signal) => {
@@ -1116,7 +1128,9 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
         process.exit(1);
       }
       console.error(`inkan: worker ${worker.id} stopped with ${signal ?? code}; starting another`);
-      cluster.fork();
+      const slot = slots.get(worker.id) ?? "0";
+      slots.delete(worker.id);
+      fork(slot);
     });
     const stop = () => {
       if (stopping) return;
@@ -1143,6 +1157,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
         server.off("error", reject);
         (async () => {
           for (const hook of this._onListen) await hook();
+          this.schedule();
           const { log, logger } = this.options;
           if (log && !logger) {
             if (log === "json") {
