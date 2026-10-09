@@ -65,6 +65,11 @@
 - `serializeCookie` and `parseCookies` are exported, for plugins that read or write
   cookies outside a context. So are the types `RouteInfo`, `RouteMeta`, `Security`,
   `OperationHook`, `OperationRoute` and `TrustProxy`.
+- **`env(schema, source = process.env)`** checks environment variables with a `t.object`
+  schema, coerced like a query string (numbers, booleans, enums, defaults, optional), and
+  hands back the typed value, frozen. An empty variable counts as unset. It throws one error
+  that lists every problem (`PORT must be an integer, got "abc"`, `DATABASE_URL is
+  required`), never with the value of a name that looks secret (SECRET, TOKEN, KEY, PASSWORD).
 
 ### Faster
 
