@@ -13,6 +13,7 @@ import { RequestContext, type Layout } from "./context.ts";
 import { folderOf, loadRoutes } from "./files.ts";
 import type { HttpProblem } from "./problem.ts";
 import { defineJob, type JobHub, type JobMethod } from "./jobs.ts";
+import type { JsonSchema, Schema } from "../schema/schema.ts";
 import { joinPath, Routes, type Context, type DecoOf, type RouteDefs, type RouteRecord, type WithDeco } from "./route.ts";
 
 type Ctx<Deco> = Context<any, any, any, any, any> & Deco;
@@ -47,8 +48,15 @@ export type ProblemHook<Deco = {}> = (ctx: Ctx<Deco>, problem: HttpProblem) => v
  * Adds to the OpenAPI operation of a route. `components` is the document's components
  * object: its `securitySchemes` already hold the schemes the routes ask for, so a hook can
  * fill in details such as `bearerFormat`, or add sections of its own (`responses`, `parameters`).
+ * `ref(schema, name?)` lists a `t.*` schema once under `components.schemas` and returns
+ * `{ $ref }` to it, as a route's named schemas are; an unnamed schema needs `name`.
  */
-export type OperationHook = (operation: Record<string, any>, route: RouteRecord, components: Record<string, Record<string, any>>) => void;
+export type OperationHook = (
+  operation: Record<string, any>,
+  route: RouteRecord,
+  components: Record<string, Record<string, any>>,
+  ref: (schema: Schema<any>, name?: string) => JsonSchema,
+) => void;
 
 export type Hooks = {
   onRequest: RequestHook<any>[];
@@ -70,7 +78,7 @@ export const NO_HOOKS: Hooks = Object.freeze({
 });
 
 /** Names a context has by itself; `decorate` will not cover them. */
-const RESERVED = new Set(["method", "path", "id", "ip", "remote", "params", "query", "headers", "body", "state", "route", "req", "res", "status", "header", "target", "host", "out", "_query", "_state", "_status", "_header", "text", "html", "redirect", "notFound", "render", "cookies", "setCookie", "clearCookie", "rawCookie", "_cookies", "_setCookie", "_clearCookie", "_render", "_layout", "_forwarded"]);
+const RESERVED = new Set(["method", "path", "id", "ip", "remote", "params", "query", "headers", "body", "state", "route", "req", "res", "status", "header", "target", "host", "out", "_query", "_state", "_status", "_header", "text", "html", "redirect", "notFound", "render", "cookies", "setCookie", "clearCookie", "rawCookie", "_cookies", "_setCookie", "_clearCookie", "_render", "_layout", "_forwarded", "raw", "rawHeaders", "secure", "protocol"]);
 
 /**
  * What a scope holds. Its context class extends the one of the scope around it, so a
@@ -195,7 +203,11 @@ export class Scope<Defs extends RouteDefs = any, Deco = any> extends Routes<Defs
     return this;
   }
 
-  /** Runs once a route is found, before the body is read: auth, rate limits. Return a value to answer at once. */
+  /**
+   * Runs once a route is found, before the body is read: auth, rate limits. Return a value to
+   * answer at once. The pages inkan serves itself (`/docs`, `/openapi.json`, `/_inkan`) are
+   * answered before any hook runs, so no hook sees them.
+   */
   onRequest(fn: RequestHook<Deco>): this {
     return this.hook("onRequest", fn);
   }
@@ -209,6 +221,8 @@ export class Scope<Defs extends RouteDefs = any, Deco = any> extends Routes<Defs
    * `{ last: true }` runs a hook after every other onSend hook of the route instead, for one
    * that changes the body's bytes: `compress` is one, so a hook that reads the body (an
    * ETag, a signature) always sees it before it is packed, wherever either was registered.
+   * The pages inkan serves itself (`/docs`, `/openapi.json`, `/_inkan`) are answered before
+   * any hook runs: headers set here (secure headers, CORS) do not reach them.
    */
   onSend(fn: SendHook<Deco>, options?: { last?: boolean }): this {
     if (!options?.last) return this.hook("onSend", fn);
@@ -297,9 +311,10 @@ export class Scope<Defs extends RouteDefs = any, Deco = any> extends Routes<Defs
    * header parameters, answers, descriptions, details of a security scheme. Runs when the
    * document is written, never per request. Outer scopes' hooks run first.
    *
-   *   app.describe((op, route, components) => {
+   *   app.describe((op, route, components, ref) => {
    *     if (components.securitySchemes?.bearer) components.securitySchemes.bearer.bearerFormat = "JWT";
    *     if (route.security?.length) op.responses["403"] ??= { description: "Not allowed for these credentials" };
+   *     op.responses["409"] ??= { description: "Replayed", content: { "application/json": { schema: ref(Conflict, "Conflict") } } };
    *   });
    */
   describe(fn: OperationHook): this {

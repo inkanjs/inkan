@@ -43,6 +43,19 @@
 - **`onSend(fn, { last: true })`** runs a hook after every other onSend hook of a route.
   `compress` uses it, so a hook that reads the body (an ETag) sees it before it is packed,
   wherever either was registered.
+- **`ctx.rawHeaders`**: the request's headers as they arrived, names in lower case, even
+  where a route's header schema cut `ctx.headers` down to its contract. The request's own
+  object, not a copy: read it, do not change it.
+- **`ctx.secure` and `ctx.protocol`** (`"http"` or `"https"`): the TLS socket under
+  `listen`, the URL's scheme under `app.fetch`, `secure` on an adapter's request, and with
+  `trustProxy` what the trusted proxies forward in `x-forwarded-proto` or forwarded's
+  `proto=`. `ctx.url` takes its scheme from it.
+- **`ref(schema, name?)` for `describe` hooks**, their fourth argument: lists a `t.*`
+  schema once under `components.schemas` and returns `{ $ref }` to it, as a route's named
+  schemas are. An unnamed schema needs `name`.
+- The pages inkan serves itself (`/docs`, `/openapi.json`, `/_inkan`) are answered before
+  any hook runs, so hooks such as secure headers do not apply to them. Turn a page off
+  (`docs: false`, …) or serve it from a route of your own to put hooks on it.
 - `serializeCookie` and `parseCookies` are exported, for plugins that read or write
   cookies outside a context. So are the types `RouteInfo`, `RouteMeta`, `Security`,
   `OperationHook` and `TrustProxy`.

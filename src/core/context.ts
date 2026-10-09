@@ -17,6 +17,8 @@ export type RawRequest = {
   /** The body, unread, for a route that takes it as a stream; `body` stays undefined then. */
   stream?: AsyncIterable<Buffer>;
   remote?: string;
+  /** Whether the request came over TLS, where the platform says so (`fetch`: the URL's scheme). Otherwise the socket tells. */
+  secure?: boolean;
   req?: IncomingMessage;
   res?: ServerResponse;
   /** Aborted when the client goes away, where the platform says so (`fetch`). */
@@ -90,13 +92,10 @@ export class RequestContext {
   req?: IncomingMessage;
   res?: ServerResponse;
   private target: Target;
-  private host?: string;
-  private rawCookie?: string;
-  private rawAuth?: string;
-  private rawSignal?: AbortSignal;
+  /** The request as it arrived: its headers stay whole however a header schema cuts `ctx.headers`. */
+  private raw: RawRequest;
   private _abort: AbortController | undefined = undefined;
   private _gone: unknown = undefined;
-  private remote?: string;
   private out: RawResponse;
   private _query: unknown = undefined;
   private _state: Record<string, unknown> | undefined = undefined;
@@ -109,7 +108,7 @@ export class RequestContext {
   /** The layout of the scope this context belongs to; set on the prototype by `layout()`. */
   declare _layout?: Layout;
   constructor(raw: RawRequest, target: Target, id: string, headers: Record<string, string>, out: RawResponse) {
-    this.remote = raw.remote;
+    this.raw = raw;
     this.method = raw.method;
     this.path = target.pathname;
     this.id = id;
@@ -117,10 +116,6 @@ export class RequestContext {
     this.req = raw.req;
     this.res = raw.res;
     this.target = target;
-    this.host = headers.host; // kept here: a header schema may later strip it from ctx.headers
-    this.rawCookie = headers.cookie; // so are these
-    this.rawAuth = headers.authorization;
-    this.rawSignal = raw.signal;
     this.out = out;
     // Made here, not on first use: filled lazily, these fields cost more under load than
     // they save (measured: about 10 % fewer requests per second over HTTP).
@@ -151,12 +146,32 @@ export class RequestContext {
   }
   /** The client's address: the platform's word for it, or the socket's. */
   get ip(): string | undefined {
-    const r = this.remote ?? this.req?.socket.remoteAddress;
+    const r = this.raw.remote ?? this.req?.socket.remoteAddress;
     return r === "unknown" ? undefined : r;
+  }
+  /**
+   * The request's headers as they arrived, names in lower case, even where the route's
+   * header schema cut `ctx.headers` down to its contract. The request's own object, not a
+   * copy: read it, do not change it.
+   */
+  get rawHeaders(): Readonly<Record<string, string | string[] | undefined>> {
+    return this.raw.headers;
+  }
+  /**
+   * Whether the request came over TLS: the socket's word, or the platform's (`fetch`: the
+   * URL's scheme). With `trustProxy`, what the trusted proxies forward (x-forwarded-proto,
+   * or forwarded's `proto=`).
+   */
+  get secure(): boolean {
+    return this.raw.secure ?? (this.req?.socket as { encrypted?: boolean } | undefined)?.encrypted === true;
+  }
+  /** "https" when the request came over TLS (see `secure`), otherwise "http". */
+  get protocol(): "http" | "https" {
+    return this.secure ? "https" : "http";
   }
   /** Built only when a handler asks for it; most never do. */
   get url(): URL {
-    const u = new URL("http://" + (this.host || "localhost"));
+    const u = new URL(this.protocol + "://" + (this.head("host") || "localhost"));
     u.pathname = this.target.pathname;
     u.search = this.target.search;
     return u;
@@ -199,7 +214,7 @@ export class RequestContext {
       const res = this.res;
       // "close" also comes after an answer that went out whole; only before that is it the client leaving
       if (res) res.once("close", () => res.writableFinished || ctl.abort(new DOMException("The client went away", "AbortError")));
-      const given = this.rawSignal;
+      const given = this.raw.signal;
       if (given) given.aborted ? ctl.abort(given.reason) : given.addEventListener("abort", () => ctl.abort(given.reason), { once: true });
     }
     return this._abort.signal;
@@ -211,7 +226,11 @@ export class RequestContext {
   }
   /** @internal Who is asking, for a cache kept per caller. */
   _caller(): string {
-    return `${this.rawAuth ?? ""}\n${this.rawCookie ?? ""}`;
+    return `${this.head("authorization") ?? ""}\n${this.head("cookie") ?? ""}`;
+  }
+  /** One header as it arrived. */
+  private head(name: string): string | undefined {
+    return this.raw.headers[name] as string | undefined;
   }
   /** @internal The answer as it stands, for a cache that replays a status and headers. */
   _out(): RawResponse {
@@ -230,7 +249,7 @@ export class RequestContext {
 
   /** The request's cookies, by name, read on first use. */
   get cookies(): Record<string, string> {
-    return (this._cookies ??= parseCookies(this.rawCookie));
+    return (this._cookies ??= parseCookies(this.head("cookie")));
   }
   /** Sets a cookie on the answer: HttpOnly and SameSite=Lax unless told otherwise. */
   get setCookie(): (name: string, value: string, options?: CookieOptions) => void {
@@ -260,19 +279,17 @@ export type TrustProxy = boolean | number | ((ip: string) => boolean);
 
 /**
  * The context class of an app with `trustProxy`: `ctx.ip` reads x-forwarded-for, or
- * forwarded when there is none. It keeps the request's own headers, since a header schema
- * may strip them from `ctx.headers`. An app without `trustProxy` never uses it, so it pays
- * nothing for it.
+ * forwarded when there is none, and `ctx.secure` x-forwarded-proto, or forwarded's
+ * `proto=`. Both read the request's own headers, since a header schema may strip them from
+ * `ctx.headers`. An app without `trustProxy` never uses it, so it pays nothing for it.
  */
 export function trustingContext(Base: typeof RequestContext, trust: TrustProxy): typeof RequestContext {
   return class extends Base {
-    _forwarded: Record<string, string | undefined>;
-    constructor(raw: RawRequest, target: Target, id: string, headers: Record<string, string>, out: RawResponse) {
-      super(raw, target, id, headers, out);
-      this._forwarded = headers;
-    }
     override get ip(): string | undefined {
-      return clientIp(super.ip, this._forwarded, trust);
+      return clientIp(super.ip, this.rawHeaders as Record<string, string | undefined>, trust);
+    }
+    override get secure(): boolean {
+      return clientSecure(super.secure, super.ip, this.rawHeaders as Record<string, string | undefined>, trust);
     }
   };
 }
@@ -287,6 +304,41 @@ export function clientIp(socket: string | undefined, headers: Record<string, str
   if (typeof trust === "number") i = Math.max(0, i - trust);
   else while (i > 0 && trust(chain[i]!)) i--;
   return chain[i] || undefined;
+}
+
+/**
+ * Whether the client's own connection was TLS, as the proxies `trust` names tell it,
+ * counted back from the socket as `clientIp` walks. `secure` is the socket's word, kept
+ * when no believed proxy says anything.
+ */
+export function clientSecure(secure: boolean, socket: string | undefined, headers: Record<string, string | undefined>, trust: TrustProxy): boolean {
+  const protos = forwardedProtos(headers);
+  if (!protos.length || trust === false) return secure;
+  const list = forwardedFor(headers);
+  const chain = [...list, socket ?? ""]; // the socket is the nearest hop
+  let hops: number; // how many proxies, counted back from the socket, are believed
+  if (trust === true) hops = chain.length;
+  else if (typeof trust === "number") hops = trust;
+  else for (hops = 0; hops < chain.length && trust(chain[chain.length - 1 - hops]!); hops++);
+  if (hops < 1) return secure;
+  // each proxy appends the scheme it was reached over, so the schemes line up with the
+  // addresses from the end; a proxy that overwrites the header leaves only its own
+  const i = Math.max(0, list.length - hops) - (list.length - protos.length);
+  return protos[Math.min(Math.max(i, 0), protos.length - 1)] === "https";
+}
+
+/** The schemes a request was forwarded over, in lower case, the client's first. */
+function forwardedProtos(headers: Record<string, string | undefined>): string[] {
+  const xfp = headers["x-forwarded-proto"];
+  if (xfp) return xfp.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+  const fwd = headers.forwarded;
+  if (!fwd) return [];
+  const out: string[] = [];
+  for (const element of fwd.split(",")) {
+    const m = /(?:^|;)\s*proto\s*=\s*(?:"([^"]*)"|([^;\s]*))/i.exec(element);
+    if (m) out.push((m[1] ?? m[2] ?? "").trim().toLowerCase());
+  }
+  return out.filter(Boolean);
 }
 
 /** The addresses a request was forwarded for, the client's first. */

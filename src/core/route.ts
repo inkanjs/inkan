@@ -141,9 +141,18 @@ export type Context<P = Record<string, string>, Q = RawQuery, B = unknown, H = R
    * proxy, unless the app's `trustProxy` says to believe what it forwards.
    */
   ip: string | undefined;
+  /** Whether the request came over TLS: the socket, the URL `fetch` got, or with `trustProxy` x-forwarded-proto. */
+  secure: boolean;
+  /** "https" when `secure`, otherwise "http". */
+  protocol: "http" | "https";
   params: P;
   query: Q;
   headers: H;
+  /**
+   * The headers as they arrived, names in lower case, even where the route's header schema
+   * cut `headers` down to its contract. The request's own object: read it, do not change it.
+   */
+  rawHeaders: Readonly<Record<string, string | string[] | undefined>>;
   body: B;
   /** Free space for middleware to hand things to the handler. */
   state: Record<string, unknown>;

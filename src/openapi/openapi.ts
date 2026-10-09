@@ -74,6 +74,12 @@ export function buildOpenAPI(records: RouteRecord[], info: OpenAPIInfo = {}) {
   // what describe() hooks see and may add to; schemas join it at the end
   const components: Record<string, Record<string, any>> = { securitySchemes: {} };
   const schemes = components.securitySchemes!;
+  // for describe() hooks: a schema listed once under components.schemas, the way a route's named ones are
+  const ref = (schema: Schema<any>, name?: string): JsonSchema => {
+    const named = name ? schema.named(name) : schema;
+    if (!named.meta.name) throw new TypeError(`Name the schema to refer to it: ref(schema, "Name") or schema.named("Name")`);
+    return named._schema(ctx);
+  };
 
   for (const r of records) {
     const { spec } = r;
@@ -144,7 +150,7 @@ export function buildOpenAPI(records: RouteRecord[], info: OpenAPIInfo = {}) {
     op.responses = responses;
     if (spec.examples?.length) op["x-inkan-examples"] = spec.examples;
     // what the scopes around the route add: outermost first, as with hooks
-    if (r.box) for (const b of r.box.chain()) for (const d of b.describers) d(op, r, components);
+    if (r.box) for (const b of r.box.chain()) for (const d of b.describers) d(op, r, components, ref);
 
     (paths[toOpenAPIPath(r.path)] ??= {})[r.method.toLowerCase()] = op;
   }

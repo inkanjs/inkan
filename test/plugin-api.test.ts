@@ -269,3 +269,72 @@ test("the cookie helpers are exported for plugins", () => {
   assert.equal(set, "sid=a%20b; Path=/; Max-Age=60; Secure; HttpOnly; SameSite=Lax");
   assert.deepEqual({ ...parseCookies("sid=a%20b; x=1") }, { sid: "a b", x: "1" });
 });
+
+// ---------- raw headers, secure, protocol ----------
+
+test("ctx.rawHeaders keeps every header a header schema strips from ctx.headers", async () => {
+  const app = inkan(quiet).get("/h", { headers: t.object({ "x-keep": t.string() }) }, (ctx) => ({
+    headers: ctx.headers,
+    raw: { keep: ctx.rawHeaders["x-keep"], other: ctx.rawHeaders["x-other"] },
+  }));
+  const r = await app.inject({ url: "/h", headers: { "X-Keep": "1", "x-other": "2" } });
+  assert.deepEqual(r.body, { headers: { "x-keep": "1" }, raw: { keep: "1", other: "2" } });
+  const hooked = inkan(quiet)
+    .onRequest((ctx) => void ctx.header("x-seen", String(ctx.rawHeaders["x-other"])))
+    .get("/h", { headers: t.object({}) }, () => ({ ok: 1 }));
+  assert.equal((await hooked.inject({ url: "/h", headers: { "x-other": "yes" } })).headers["x-seen"], "yes");
+});
+
+const whereFrom = (options: Parameters<typeof inkan>[0] = {}) =>
+  inkan({ ...quiet, ...options }).get("/p", { headers: t.object({}) }, (ctx) => ({ secure: ctx.secure, protocol: ctx.protocol, url: ctx.url.origin }));
+const protoOf = async (app: ReturnType<typeof whereFrom>, url: string, headers: Record<string, string> = {}, remote = "10.0.0.2") =>
+  (await (await app.fetch(new Request(url, { headers }), { remote })).json()) as { secure: boolean; protocol: string; url: string };
+
+test("ctx.secure and ctx.protocol: false over a plain socket, the URL's scheme through fetch", async () => {
+  const app = whereFrom();
+  const server = await app.listen(0, "127.0.0.1");
+  try {
+    const { port } = server.address() as { port: number };
+    assert.deepEqual(await (await fetch(`http://127.0.0.1:${port}/p`)).json(), { secure: false, protocol: "http", url: `http://127.0.0.1:${port}` });
+  } finally {
+    server.closeAllConnections();
+    server.close();
+  }
+  assert.deepEqual(await protoOf(app, "https://api.example/p"), { secure: true, protocol: "https", url: "https://localhost" });
+  assert.deepEqual(await protoOf(app, "http://api.example/p"), { secure: false, protocol: "http", url: "http://localhost" });
+  assert.equal((await app.inject({ url: "/p" })).body.secure, false);
+});
+
+test("ctx.secure believes x-forwarded-proto and forwarded proto= only from trusted proxies", async () => {
+  const https = { "x-forwarded-proto": "https" };
+  assert.equal((await protoOf(whereFrom(), "http://x/p", https)).secure, false, "not without trustProxy");
+  assert.equal((await protoOf(whereFrom({ trustProxy: true }), "http://x/p", https)).protocol, "https");
+  assert.equal((await protoOf(whereFrom({ trustProxy: true }), "https://x/p", { "x-forwarded-proto": "http" })).secure, false, "the proxy's word over the hop's");
+  assert.equal((await protoOf(whereFrom({ trustProxy: true }), "https://x/p")).secure, true, "nothing forwarded: the connection's own");
+  assert.equal((await protoOf(whereFrom({ trustProxy: true }), "http://x/p", { forwarded: "for=1.1.1.1;proto=https" })).secure, true);
+  const ours = (ip: string) => ip.startsWith("10.");
+  assert.equal((await protoOf(whereFrom({ trustProxy: ours }), "http://x/p", https)).secure, true);
+  assert.equal((await protoOf(whereFrom({ trustProxy: ours }), "http://x/p", https, "8.8.8.8")).secure, false, "a socket that is not ours");
+  // two proxies, each appending the scheme it was reached over: the client came in over https
+  const chain = { "x-forwarded-for": "1.1.1.1, 10.0.0.1", "x-forwarded-proto": "https, http" };
+  assert.equal((await protoOf(whereFrom({ trustProxy: 2 }), "http://x/p", chain)).secure, true);
+  assert.equal((await protoOf(whereFrom({ trustProxy: 1 }), "http://x/p", chain)).secure, false, "one hop: how 10.0.0.1 reached the nearest proxy");
+});
+
+test("describe(): ref() lists a schema under components.schemas and refers to it", () => {
+  const Conflict = t.object({ key: t.string() });
+  const Named = t.object({ n: t.number() }).named("Named");
+  const app = inkan(quiet)
+    .describe((op, _route, _components, ref) => {
+      op.responses["409"] = { description: "Replayed", content: { "application/json": { schema: ref(Conflict, "Conflict") } } };
+      op["x-named"] = ref(Named);
+      assert.throws(() => ref(Conflict), /Name the schema/);
+    })
+    .get("/a", () => ({ ok: 1 }))
+    .get("/b", () => ({ ok: 1 }));
+  const doc = app.openapi() as any;
+  assert.deepEqual(doc.paths["/a"].get.responses["409"].content["application/json"].schema, { $ref: "#/components/schemas/Conflict" });
+  assert.deepEqual(doc.paths["/b"].get["x-named"], { $ref: "#/components/schemas/Named" });
+  assert.deepEqual(doc.components.schemas.Conflict, { type: "object", properties: { key: { type: "string" } }, required: ["key"] });
+  assert.deepEqual(Object.keys(doc.components.schemas).sort(), ["Conflict", "Named"]);
+});
