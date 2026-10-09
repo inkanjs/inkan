@@ -14,7 +14,7 @@ import { folderOf, loadRoutes } from "./files.ts";
 import type { HttpProblem } from "./problem.ts";
 import { defineJob, type JobHub, type JobMethod } from "./jobs.ts";
 import type { JsonSchema, Schema } from "../schema/schema.ts";
-import { joinPath, Routes, type Context, type DecoOf, type RouteDefs, type RouteRecord, type WithDeco } from "./route.ts";
+import { joinPath, Routes, type Context, type DecoOf, type OperationRoute, type RouteDefs, type RouteRecord, type WithDeco } from "./route.ts";
 
 type Ctx<Deco> = Context<any, any, any, any, any> & Deco;
 /** `decorate` as a property, so its type can name the app or scope it returns. */
@@ -50,10 +50,11 @@ export type ProblemHook<Deco = {}> = (ctx: Ctx<Deco>, problem: HttpProblem) => v
  * fill in details such as `bearerFormat`, or add sections of its own (`responses`, `parameters`).
  * `ref(schema, name?)` lists a `t.*` schema once under `components.schemas` and returns
  * `{ $ref }` to it, as a route's named schemas are; an unnamed schema needs `name`.
+ * `route` is the route as written: `method`, `path`, `security`, `meta` and its `spec`.
  */
 export type OperationHook = (
   operation: Record<string, any>,
-  route: RouteRecord,
+  route: OperationRoute,
   components: Record<string, Record<string, any>>,
   ref: (schema: Schema<any>, name?: string) => JsonSchema,
 ) => void;
@@ -122,6 +123,8 @@ export class Box {
 
 /** What the app does for every scope inside it. */
 export interface Root {
+  /** @internal */
+  _dev: boolean;
   _addRoute(r: RouteRecord): void;
   _load(run: () => unknown): void;
   _changed(): void;
@@ -184,6 +187,16 @@ export class Scope<Defs extends RouteDefs = any, Deco = any> extends Routes<Defs
     this._root = root ?? (this as unknown as Root);
     this._box = box ?? new Box();
     this._prefix = prefix;
+  }
+
+  /** Whether the app runs in development: its `dev` option, by default NODE_ENV is not "production". */
+  get dev(): boolean {
+    return this._root._dev;
+  }
+
+  /** This scope's path prefix: "" for the app, "/v1" for a plugin registered with `{ prefix: "/v1" }`. */
+  get prefix(): string {
+    return this._prefix;
   }
 
   /** @internal A route of this scope: under its prefix, with its middleware, its hooks and its decorations. */

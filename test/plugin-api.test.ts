@@ -338,3 +338,53 @@ test("describe(): ref() lists a schema under components.schemas and refers to it
   assert.deepEqual(doc.components.schemas.Conflict, { type: "object", properties: { key: { type: "string" } }, required: ["key"] });
   assert.deepEqual(Object.keys(doc.components.schemas).sort(), ["Conflict", "Named"]);
 });
+
+// ---------- what a plugin can read ----------
+
+test("describe(): the route is ctx.route's view plus its spec, frozen", async () => {
+  const AUTH = Symbol("auth");
+  const seen: any[] = [];
+  const app = inkan(quiet)
+    .describe((op, route) => {
+      seen.push(route);
+      if (route.security.length && route.meta.auth) op["x-roles"] = route.meta.auth.roles;
+    })
+    .get("/me", { security: "bearer", summary: "Who am I", tags: ["users"], meta: { auth: { roles: ["admin"] }, [AUTH]: true } }, (ctx) => ({ sym: ctx.route?.meta[AUTH] === true }));
+  const doc = app.openapi() as any;
+  assert.deepEqual(doc.paths["/me"].get["x-roles"], ["admin"]);
+  const [r] = seen;
+  assert.equal(r.method, "GET");
+  assert.equal(r.path, "/me");
+  assert.deepEqual(r.security, ["bearer"]);
+  assert.equal(r.meta[AUTH], true, "symbol keys are kept");
+  assert.equal(r.spec.summary, "Who am I");
+  assert.deepEqual(r.spec.tags, ["users"]);
+  assert.ok(Object.isFrozen(r) && Object.isFrozen(r.security));
+  assert.equal(r.box, undefined, "internals stay out");
+  assert.deepEqual((await app.inject({ url: "/me", headers: { authorization: "Bearer x" } })).body, { sym: true });
+
+  seen.length = 0;
+  app.describe(() => {});
+  app.openapi();
+  assert.deepEqual(seen[0].security, ["bearer"], "the same view after the first request");
+});
+
+test("scope.dev and scope.prefix: the app's mode and each scope's prefix, read-only", async () => {
+  const got: Record<string, unknown>[] = [];
+  const inner = plugin((app) => void got.push({ dev: app.dev, prefix: app.prefix }));
+  const outer = plugin((app) => {
+    got.push({ dev: app.dev, prefix: app.prefix });
+    app.register(inner, { prefix: "/admin" });
+  });
+  const app = inkan({ ...quiet, dev: false }).register(outer, { prefix: "/v1" }).register(inner);
+  await app.ready();
+  assert.equal(app.dev, false);
+  assert.equal(app.prefix, "");
+  assert.deepEqual(got, [
+    { dev: false, prefix: "/v1" },
+    { dev: false, prefix: "/v1/admin" },
+    { dev: false, prefix: "" },
+  ]);
+  assert.equal(inkan({ ...quiet, dev: true }).dev, true);
+  assert.throws(() => ((app as any).prefix = "/x"), TypeError);
+});

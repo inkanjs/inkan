@@ -37,15 +37,21 @@ export type Example = {
 export type Security = "bearer" | "basic" | { apiKey: string; in?: "header" | "query" | "cookie" };
 
 /**
- * Free-form facts about a route for plugins to read in their hooks, as `ctx.route.meta`.
- * A plugin names what it reads by adding to this interface:
+ * Free-form facts about a route for plugins to read in their hooks, as `ctx.route.meta`
+ * (and as `route.meta` in `describe`). A plugin names what it reads by adding to this interface:
  *
  *   declare module "@vxnsin/inkan" {
  *     interface RouteMeta { auth?: { roles: string[] } }
  *   }
+ *
+ * Keys may be symbols too: a plugin that keeps its key to itself cannot clash with another.
+ *
+ *   const AUTH = Symbol("auth");
+ *   app.get("/me", { meta: { [AUTH]: { roles: ["admin"] } } }, handler);
  */
 export interface RouteMeta {
   [key: string]: unknown;
+  [key: symbol]: unknown;
 }
 
 /** `ctx.route`: the route that matched, as it was written. One object per route, made before the first request. */
@@ -56,6 +62,14 @@ export type RouteInfo = {
   security: readonly Security[];
   /** Its `meta`, or an empty object. */
   meta: Readonly<RouteMeta>;
+};
+
+/**
+ * The route a `describe` hook adds to: what `ctx.route` holds, plus the spec it was
+ * written with (summary, tags, schemas, examples, ...). Read-only: change the operation instead.
+ */
+export type OperationRoute = Readonly<RouteInfo> & {
+  readonly spec: Readonly<RouteSpec<any, any, any, any, Responses>>;
 };
 
 export type RouteSpec<P, Q, B, H, R extends Responses> = {

@@ -5,7 +5,7 @@ export type { FileRoute } from "./core/files.ts";
 export type { OperationHook, Outgoing, Plugin, ProblemHook, RequestHook, ResponseHook, SendHook } from "./core/scope.ts";
 export type { AdapterRequest, AdapterResponse, AppOptions, InjectOptions, InjectResponse, LogEntry, RequestLog } from "./core/app.ts";
 export { Routes, routes, reply, Reply } from "./core/route.ts";
-export type { Context, Example, Handler, Middleware, PathParams, Responses, RouteInfo, RouteMeta, RouteRecord, RouteSpec, Security } from "./core/route.ts";
+export type { Context, Example, Handler, Middleware, OperationRoute, PathParams, Responses, RouteInfo, RouteMeta, RouteRecord, RouteSpec, Security } from "./core/route.ts";
 export { t, Schema, ValidationError } from "./schema/schema.ts";
 export type { Infer, Issue, JsonSchema, SafeResult, ServerEvent, UploadedFile } from "./schema/schema.ts";
 export { sse, fileExample, EventStream } from "./core/stream.ts";

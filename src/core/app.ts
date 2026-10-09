@@ -175,7 +175,8 @@ const isLoopback = (addr?: string) =>
 
 export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, Deco> implements Root {
   options: AppOptions;
-  dev: boolean;
+  /** @internal */
+  _dev: boolean;
   private router = new Router<RouteRecord>();
   private global: Middleware[] = [];
   private log: LogEntry[] = [];
@@ -192,7 +193,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
 
   constructor(options: AppOptions = {}) {
     super();
-    this.dev = options.dev ?? process.env.NODE_ENV !== "production";
+    this._dev = options.dev ?? process.env.NODE_ENV !== "production";
     this.options = {
       docs: "/docs",
       openapi: "/openapi.json",

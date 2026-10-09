@@ -53,12 +53,18 @@
 - **`ref(schema, name?)` for `describe` hooks**, their fourth argument: lists a `t.*`
   schema once under `components.schemas` and returns `{ $ref }` to it, as a route's named
   schemas are. An unnamed schema needs `name`.
+- **The route a `describe` hook gets is public**: the frozen `ctx.route` view (`method`,
+  `path`, `security`, `meta`) plus the `spec` it was written with, typed `OperationRoute`;
+  no internal fields of the route record.
+- **`scope.dev` and `scope.prefix`**, read-only: whether the app runs in development, and
+  the path prefix of the scope a plugin was given (`""` for the app).
+- `RouteMeta` takes symbol keys as well, so a plugin can keep its key to itself.
 - The pages inkan serves itself (`/docs`, `/openapi.json`, `/_inkan`) are answered before
   any hook runs, so hooks such as secure headers do not apply to them. Turn a page off
   (`docs: false`, …) or serve it from a route of your own to put hooks on it.
 - `serializeCookie` and `parseCookies` are exported, for plugins that read or write
   cookies outside a context. So are the types `RouteInfo`, `RouteMeta`, `Security`,
-  `OperationHook` and `TrustProxy`.
+  `OperationHook`, `OperationRoute` and `TrustProxy`.
 
 ### Changed
 
@@ -66,6 +72,7 @@
 - `register()` returns the app or scope typed with what a shared plugin added, instead of
   `this`; for any other plugin the type is the same as before.
 - A plugin may return a value (its scope); anything but a promise is ignored as before.
+- `app.dev` is read-only, like `scope.dev`; set development mode with the `dev` option.
 - On SIGINT or SIGTERM a connection whose answer ends during the shutdown is closed right
   after it, instead of when the client lets it go.
 

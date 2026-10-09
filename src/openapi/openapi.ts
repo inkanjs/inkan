@@ -2,8 +2,13 @@
 // the schemas that validate a request are the ones that describe it.
 
 import { STATUS_CODES } from "node:http";
-import type { RouteRecord, Security } from "../core/route.ts";
+import type { OperationRoute, RouteRecord, Security } from "../core/route.ts";
 import { ArraySchema, EventsSchema, FileSchema, ObjectSchema, RawBodySchema, t, type JsonSchema, type RefContext, type Schema } from "../schema/schema.ts";
+
+const NO_META = Object.freeze({});
+/** What a describe hook sees of a route: `ctx.route`'s fields and the spec, read-only. */
+const routeView = (r: RouteRecord): OperationRoute =>
+  Object.freeze({ ...(r.info ?? { method: r.method, path: r.path, security: Object.freeze([...(r.security ?? [])]), meta: r.spec.meta ?? NO_META }), spec: r.spec });
 
 /** A body with a file anywhere at its top level goes as multipart/form-data. */
 const carriesFiles = (s: Schema<any>) =>
@@ -150,7 +155,10 @@ export function buildOpenAPI(records: RouteRecord[], info: OpenAPIInfo = {}) {
     op.responses = responses;
     if (spec.examples?.length) op["x-inkan-examples"] = spec.examples;
     // what the scopes around the route add: outermost first, as with hooks
-    if (r.box) for (const b of r.box.chain()) for (const d of b.describers) d(op, r, components, ref);
+    if (r.box) {
+      let view: OperationRoute | undefined;
+      for (const b of r.box.chain()) for (const d of b.describers) d(op, (view ??= routeView(r)), components, ref);
+    }
 
     (paths[toOpenAPIPath(r.path)] ??= {})[r.method.toLowerCase()] = op;
   }
