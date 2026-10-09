@@ -36,6 +36,28 @@ export type Example = {
  */
 export type Security = "bearer" | "basic" | { apiKey: string; in?: "header" | "query" | "cookie" };
 
+/**
+ * Free-form facts about a route for plugins to read in their hooks, as `ctx.route.meta`.
+ * A plugin names what it reads by adding to this interface:
+ *
+ *   declare module "@vxnsin/inkan" {
+ *     interface RouteMeta { auth?: { roles: string[] } }
+ *   }
+ */
+export interface RouteMeta {
+  [key: string]: unknown;
+}
+
+/** `ctx.route`: the route that matched, as it was written. One object per route, made before the first request. */
+export type RouteInfo = {
+  method: string;
+  path: string;
+  /** The credentials it asks for, its own or its group's; empty for none. */
+  security: readonly Security[];
+  /** Its `meta`, or an empty object. */
+  meta: Readonly<RouteMeta>;
+};
+
 export type RouteSpec<P, Q, B, H, R extends Responses> = {
   summary?: string;
   description?: string;
@@ -71,6 +93,8 @@ export type RouteSpec<P, Q, B, H, R extends Responses> = {
   timeout?: number;
   /** Keeps the handler's answers for a while: the same input gets the same answer without asking again. */
   cache?: CacheRule;
+  /** Facts for plugins, read in hooks as `ctx.route.meta`: `{ auth: { roles: ["admin"] } }`. */
+  meta?: RouteMeta;
 };
 
 export type Simplify<T> = { [K in keyof T]: T[K] } & {};
@@ -114,7 +138,7 @@ export type Context<P = Record<string, string>, Q = RawQuery, B = unknown, H = R
   id: string;
   /**
    * The client's address, as the socket or the platform says it. Behind a proxy that is the
-   * proxy; read its `x-forwarded-for` yourself when you trust it.
+   * proxy, unless the app's `trustProxy` says to believe what it forwards.
    */
   ip: string | undefined;
   params: P;
@@ -123,8 +147,8 @@ export type Context<P = Record<string, string>, Q = RawQuery, B = unknown, H = R
   body: B;
   /** Free space for middleware to hand things to the handler. */
   state: Record<string, unknown>;
-  /** The route that matched, as it was written. Undefined when no route matched. */
-  route?: { method: string; path: string };
+  /** The route that matched, as it was written, with its security and meta. Undefined when no route matched. */
+  route?: RouteInfo;
   /** Sets the status used when the handler returns a plain value. */
   status(code: number): void;
   header(name: string, value: string): void;
@@ -186,7 +210,7 @@ export type RouteRecord = {
   /** @internal Whether its contract lists answers, and the status a plain value answers with. */
   plan?: { hasContract: boolean; defaultStatus: number };
   /** @internal `ctx.route` for it: one object, shared by its requests. */
-  info?: Readonly<{ method: string; path: string }>;
+  info?: Readonly<RouteInfo>;
 };
 
 /** What the type of an app remembers about one route, for the typed client. */

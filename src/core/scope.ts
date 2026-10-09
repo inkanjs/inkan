@@ -12,11 +12,18 @@ import type { RequestLog } from "./app.ts";
 import { RequestContext, type Layout } from "./context.ts";
 import { folderOf, loadRoutes } from "./files.ts";
 import type { HttpProblem } from "./problem.ts";
-import { joinPath, Routes, type Context, type RouteDefs, type RouteRecord, type WithDeco } from "./route.ts";
+import { joinPath, Routes, type Context, type DecoOf, type RouteDefs, type RouteRecord, type WithDeco } from "./route.ts";
 
 type Ctx<Deco> = Context<any, any, any, any, any> & Deco;
 /** `decorate` as a property, so its type can name the app or scope it returns. */
 export type DecorateMethod<Self> = <K extends string, V>(name: K, value: V) => WithDeco<Self, { [P in K]: V }>;
+/** `decorateRequest` as a property, for the same reason. */
+export type DecorateRequestMethod<Self> = <K extends string, V>(name: K, init: (ctx: Ctx<DecoOf<Self>>) => V) => WithDeco<Self, { [P in K]: V }>;
+/** `register` as a property: the scope it returns knows what a shared plugin decorated. */
+export type RegisterMethod<Self> = <O extends object = {}, A = {}>(
+  p: Plugin<O, DecoOf<Self>, A> | ((app: Scope<{}, DecoOf<Self>>, options: O) => unknown),
+  options?: O & { prefix?: string },
+) => WithDeco<Self, A>;
 
 /** An answer on its way out, as onSend sees it. A hook may change it, or return another. */
 export type Outgoing = {
@@ -35,6 +42,12 @@ export type RequestHook<Deco = {}> = (ctx: Ctx<Deco>) => unknown;
 export type SendHook<Deco = {}> = (ctx: Ctx<Deco>, answer: Outgoing) => void | Outgoing | Promise<void | Outgoing>;
 export type ResponseHook<Deco = {}> = (ctx: Ctx<Deco>, done: RequestLog) => unknown;
 export type ProblemHook<Deco = {}> = (ctx: Ctx<Deco>, problem: HttpProblem) => void | HttpProblem | Promise<void | HttpProblem>;
+/**
+ * Adds to the OpenAPI operation of a route. `components` is the document's components
+ * object: its `securitySchemes` already hold the schemes the routes ask for, so a hook can
+ * fill in details such as `bearerFormat`, or add sections of its own (`responses`, `parameters`).
+ */
+export type OperationHook = (operation: Record<string, any>, route: RouteRecord, components: Record<string, Record<string, any>>) => void;
 
 export type Hooks = {
   onRequest: RequestHook<any>[];
@@ -56,7 +69,7 @@ export const NO_HOOKS: Hooks = Object.freeze({
 });
 
 /** Names a context has by itself; `decorate` will not cover them. */
-const RESERVED = new Set(["method", "path", "id", "ip", "remote", "params", "query", "headers", "body", "state", "route", "req", "res", "status", "header", "target", "host", "out", "_query", "_state", "_status", "_header", "text", "html", "redirect", "notFound", "render", "cookies", "setCookie", "clearCookie", "rawCookie", "_cookies", "_setCookie", "_clearCookie", "_render", "_layout"]);
+const RESERVED = new Set(["method", "path", "id", "ip", "remote", "params", "query", "headers", "body", "state", "route", "req", "res", "status", "header", "target", "host", "out", "_query", "_state", "_status", "_header", "text", "html", "redirect", "notFound", "render", "cookies", "setCookie", "clearCookie", "rawCookie", "_cookies", "_setCookie", "_clearCookie", "_render", "_layout", "_forwarded"]);
 
 /**
  * What a scope holds. Its context class extends the one of the scope around it, so a
@@ -66,18 +79,34 @@ const RESERVED = new Set(["method", "path", "id", "ip", "remote", "params", "que
 export class Box {
   parent?: Box;
   hooks: Hooks = emptyHooks();
+  /** onSend hooks that run after every other one: `onSend(fn, { last: true })`. */
+  lastSend: SendHook<any>[] = [];
+  /** What this scope adds to the OpenAPI operations of its routes: `describe(fn)`. */
+  describers: OperationHook[] = [];
   Ctx: typeof RequestContext;
   constructor(parent?: Box) {
     this.parent = parent;
     this.Ctx = class extends (parent?.Ctx ?? RequestContext) {};
   }
 
-  /** Every hook from the app down to here, outermost first; NO_HOOKS when there is none. */
-  flatten(): Hooks {
+  /** The boxes from the app down to here, the app's first. */
+  chain(): Box[] {
     const chain: Box[] = [];
     for (let b: Box | undefined = this; b; b = b.parent) chain.unshift(b);
+    return chain;
+  }
+
+  /**
+   * Every hook from the app down to here, outermost first; NO_HOOKS when there is none.
+   * onSend hooks marked `last` come after all the others, again outermost first: that is
+   * where `compress` sits, so a hook that reads the body (an ETag) sees it unpacked,
+   * wherever it was registered.
+   */
+  flatten(): Hooks {
+    const chain = this.chain();
     const out = emptyHooks();
     for (const b of chain) for (const k of KINDS) (out[k] as unknown[]).push(...b.hooks[k]);
+    for (const b of chain) out.onSend.push(...b.lastSend);
     return KINDS.some((k) => out[k].length) ? out : NO_HOOKS;
   }
 }
@@ -85,35 +114,47 @@ export class Box {
 /** What the app does for every scope inside it. */
 export interface Root {
   _addRoute(r: RouteRecord): void;
-  _load(run: () => void | Promise<void>): void;
+  _load(run: () => unknown): void;
   _changed(): void;
 }
 
 const SHARED = Symbol("inkan.shared");
+/** Only a type: what a shared plugin puts on the context of the scope it is registered in. */
+declare const ADDS: unique symbol;
 
 /**
  * A plugin: a function that gets a scope of its own and the options it was registered with.
  * Make one with `plugin()` to name it or to share what it adds with the scope around it.
+ * `Deco` is what it needs on the context, `Adds` what a shared one puts there.
  */
-export type Plugin<O = any, Deco = any> = ((app: Scope<{}, Deco>, options: O) => void | Promise<void>) & {
+export type Plugin<O = any, Deco = any, Adds = {}> = ((app: Scope<{}, Deco>, options: O) => unknown) & {
   readonly [SHARED]?: boolean;
   readonly pluginName?: string;
+  readonly [ADDS]?: Adds;
 };
 
 /**
  * Makes a plugin. `shared: true` puts its hooks and decorations into the scope it is
  * registered in instead of a scope of its own: right for a plugin whose whole point is to
  * act on the routes around it, like a rate limit or CORS.
+ *
+ * A shared plugin that returns its scope hands on the types of its decorations: after
+ * `app.register(auth)` the handlers see `ctx.user` typed. Type the options on the
+ * parameter, not as a type argument, or there is nothing left to infer them from.
+ *
+ *   const auth = plugin((app, o: AuthOptions) => app.decorateRequest("user", (ctx) => read(ctx, o)), { shared: true });
  */
-export function plugin<O = {}, Deco = {}>(
-  setup: (app: Scope<{}, Deco>, options: O) => void | Promise<void>,
-  opts: { name?: string; shared?: boolean } = {},
-): Plugin<O, Deco> {
-  const p = (app: Scope<{}, Deco>, options: O) => setup(app, options);
+export function plugin<O = {}, Deco = {}, R = void>(
+  setup: (app: Scope<{}, Deco>, options: O) => R,
+  opts: { name?: string; shared: true },
+): Plugin<O, Deco, DecoOf<Awaited<R>>>;
+export function plugin<O = {}, Deco = {}>(setup: (app: Scope<{}, Deco>, options: O) => unknown, opts?: { name?: string; shared?: boolean }): Plugin<O, Deco>;
+export function plugin(setup: (app: Scope, options: unknown) => unknown, opts: { name?: string; shared?: boolean } = {}): Plugin {
+  const p = (app: Scope, options: unknown) => setup(app, options);
   return Object.defineProperties(p, {
     [SHARED]: { value: Boolean(opts.shared) },
     pluginName: { value: opts.name ?? setup.name },
-  }) as Plugin<O, Deco>;
+  }) as Plugin;
 }
 
 /**
@@ -160,9 +201,18 @@ export class Scope<Defs extends RouteDefs = any, Deco = any> extends Routes<Defs
   preHandler(fn: RequestHook<Deco>): this {
     return this.hook("preHandler", fn);
   }
-  /** Sees every answer before it is written, problems too, and may change it: headers, compression, envelopes. */
-  onSend(fn: SendHook<Deco>): this {
-    return this.hook("onSend", fn);
+  /**
+   * Sees every answer before it is written, problems too, and may change it: headers,
+   * compression, envelopes. Hooks run outermost scope first, in the order they were added.
+   * `{ last: true }` runs a hook after every other onSend hook of the route instead, for one
+   * that changes the body's bytes: `compress` is one, so a hook that reads the body (an
+   * ETag, a signature) always sees it before it is packed, wherever either was registered.
+   */
+  onSend(fn: SendHook<Deco>, options?: { last?: boolean }): this {
+    if (!options?.last) return this.hook("onSend", fn);
+    this._box.lastSend.push(fn);
+    this._root._changed();
+    return this;
   }
   /** Runs after the answer is written: metrics, audit logs. It cannot change the answer any more. */
   onResponse(fn: ResponseHook<Deco>): this {
@@ -197,6 +247,50 @@ export class Scope<Defs extends RouteDefs = any, Deco = any> extends Routes<Defs
   }) as never;
 
   /**
+   * Puts a value on the context of every handler and hook in this scope that is made anew
+   * for each request: `ctx.user`. `init` runs the first time a request reads it and the
+   * value is kept on that context, so it runs at most once per request, and not at all for
+   * one that never asks. Only the scopes that use it pay for it: a getter on their
+   * context's prototype. Names are refused as with `decorate`.
+   *
+   *   app.decorateRequest("user", (ctx) => sessions.get(ctx.cookies.sid));
+   */
+  decorateRequest: DecorateRequestMethod<this> = ((name: string, init: (ctx: any) => unknown) => {
+    const proto = this._box.Ctx.prototype;
+    if (RESERVED.has(name) || name in proto) throw new Error(`Cannot decorate ctx.${name}: the context already has a ${name}`);
+    const keep = (ctx: object, value: unknown) => Object.defineProperty(ctx, name, { value, writable: true, enumerable: true, configurable: true });
+    Object.defineProperty(proto, name, {
+      get(this: object) {
+        const value = init(this);
+        keep(this, value); // an own property from now on: init runs once per request
+        return value;
+      },
+      set(this: object, value: unknown) {
+        keep(this, value);
+      },
+      enumerable: true,
+      configurable: true,
+    });
+    return this;
+  }) as never;
+
+  /**
+   * Adds to the OpenAPI operation of every route in this scope and the scopes inside it:
+   * header parameters, answers, descriptions, details of a security scheme. Runs when the
+   * document is written, never per request. Outer scopes' hooks run first.
+   *
+   *   app.describe((op, route, components) => {
+   *     if (components.securitySchemes?.bearer) components.securitySchemes.bearer.bearerFormat = "JWT";
+   *     if (route.security?.length) op.responses["403"] ??= { description: "Not allowed for these credentials" };
+   *   });
+   */
+  describe(fn: OperationHook): this {
+    this._box.describers.push(fn);
+    this._root._changed();
+    return this;
+  }
+
+  /**
    * A route for every file in a folder: `teas/[id].ts` exporting `GET` is `GET /teas/:id`,
    * under this scope's prefix. It loads in order with the plugins, and `ready()` waits for it.
    * Pass `new URL("./routes", import.meta.url)` to name the folder next to the file.
@@ -212,13 +306,13 @@ export class Scope<Defs extends RouteDefs = any, Deco = any> extends Routes<Defs
    * they are registered; one that returns a promise holds back the ones after it, and
    * `await app.ready()` (or `listen`) waits for all of them.
    */
-  register<O extends object = {}>(p: Plugin<O, Deco> | ((app: Scope<{}, Deco>, options: O) => void | Promise<void>), options?: O & { prefix?: string }): this {
-    const shared = (p as Plugin)[SHARED] === true;
+  register: RegisterMethod<this> = ((p: Plugin, options?: { prefix?: string }) => {
+    const shared = p[SHARED] === true;
     const prefix = options?.prefix ? joinPath(this._prefix, options.prefix) : this._prefix;
     const scope = new Scope<{}, Deco>(this._root, shared ? this._box : new Box(this._box), prefix);
-    this._root._load(() => p(scope, (options ?? {}) as O));
+    this._root._load(() => p(scope, options ?? {}));
     return this;
-  }
+  }) as never;
 }
 
 /** Runs request hooks in order; the first one that returns something ends the run with that. */

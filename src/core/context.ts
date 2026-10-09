@@ -2,7 +2,7 @@
 // with it from routing to the answer.
 
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { Reply, type Context, type RouteRecord } from "./route.ts";
+import { Reply, type Context, type RouteInfo, type RouteRecord } from "./route.ts";
 import type { Hooks } from "./scope.ts";
 import type { RawQuery } from "./route.ts";
 import { NO_PARAMS } from "./router.ts";
@@ -86,7 +86,7 @@ export class RequestContext {
   params: unknown = NO_PARAMS;
   headers: unknown;
   body: unknown = undefined;
-  route?: { method: string; path: string } = undefined;
+  route?: RouteInfo = undefined;
   req?: IncomingMessage;
   res?: ServerResponse;
   private target: Target;
@@ -249,6 +249,62 @@ export class RequestContext {
       return page instanceof Promise ? page.then((p) => this.html(p)) : this.html(page);
     });
   }
+}
+
+/**
+ * Which proxies to believe about the client's address: `true` for every one (the address
+ * the request was first forwarded for), a number for that many hops in front of the app,
+ * or a function that says whether an address is a proxy of yours.
+ */
+export type TrustProxy = boolean | number | ((ip: string) => boolean);
+
+/**
+ * The context class of an app with `trustProxy`: `ctx.ip` reads x-forwarded-for, or
+ * forwarded when there is none. It keeps the request's own headers, since a header schema
+ * may strip them from `ctx.headers`. An app without `trustProxy` never uses it, so it pays
+ * nothing for it.
+ */
+export function trustingContext(Base: typeof RequestContext, trust: TrustProxy): typeof RequestContext {
+  return class extends Base {
+    _forwarded: Record<string, string | undefined>;
+    constructor(raw: RawRequest, target: Target, id: string, headers: Record<string, string>, out: RawResponse) {
+      super(raw, target, id, headers, out);
+      this._forwarded = headers;
+    }
+    override get ip(): string | undefined {
+      return clientIp(super.ip, this._forwarded, trust);
+    }
+  };
+}
+
+/** The client's address behind the proxies `trust` names, walking the forwarded chain back from the socket. */
+export function clientIp(socket: string | undefined, headers: Record<string, string | undefined>, trust: TrustProxy): string | undefined {
+  const list = forwardedFor(headers);
+  if (!list.length || trust === false) return socket;
+  if (trust === true) return list[0];
+  const chain = [...list, socket ?? ""]; // the socket is the nearest hop
+  let i = chain.length - 1;
+  if (typeof trust === "number") i = Math.max(0, i - trust);
+  else while (i > 0 && trust(chain[i]!)) i--;
+  return chain[i] || undefined;
+}
+
+/** The addresses a request was forwarded for, the client's first. */
+function forwardedFor(headers: Record<string, string | undefined>): string[] {
+  const xff = headers["x-forwarded-for"];
+  if (xff) return xff.split(",").map((s) => s.trim()).filter(Boolean);
+  const fwd = headers.forwarded;
+  if (!fwd) return [];
+  const out: string[] = [];
+  // RFC 7239: `for=192.0.2.60;proto=http, for="[2001:db8::17]:4711"`
+  for (const element of fwd.split(",")) {
+    const m = /(?:^|;)\s*for\s*=\s*(?:"([^"]*)"|([^;\s]*))/i.exec(element);
+    if (!m) continue;
+    const v = (m[1] ?? m[2] ?? "").trim();
+    if (v.startsWith("[")) out.push(v.slice(1, v.indexOf("]") > 0 ? v.indexOf("]") : undefined)); // IPv6, maybe with a port
+    else out.push(v.split(":").length === 2 ? v.slice(0, v.indexOf(":")) : v); // IPv4 with a port, or a bare address
+  }
+  return out.filter(Boolean);
 }
 
 /**

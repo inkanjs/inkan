@@ -15,7 +15,7 @@ import { paint, useColor } from "./color.ts";
 import type { Seal } from "../seal/compile.ts";
 import { applySeal, type SealState } from "../seal/seal.ts";
 import { Reply, type Context, type Example, type Middleware, type RawQuery, type RouteRecord, type Responses, type RouteDefs } from "./route.ts";
-import { target, queryObject, type Exchange, type RawRequest, type RawResponse, type Target } from "./context.ts";
+import { target, queryObject, trustingContext, type Exchange, type RawRequest, type RawResponse, type Target, type TrustProxy } from "./context.ts";
 import { NO_HOOKS, runHooks, Scope, type Hooks, type Root } from "./scope.ts";
 import { nextId } from "./request-id.ts";
 import { jsonRows, SafeHtml } from "./helpers.ts";
@@ -59,6 +59,13 @@ export type AppOptions = OpenAPIInfo & {
    * SIGTERM lets every one finish its open requests. Default: one process, no cluster.
    */
   workers?: number | "auto";
+  /**
+   * Believe the proxies in front of the app about who the client is: `ctx.ip` then reads
+   * x-forwarded-for (or forwarded). `true` trusts every proxy, a number that many hops,
+   * a function the addresses it says yes to. Default off: `ctx.ip` is the socket's address,
+   * since anyone can send these headers.
+   */
+  trustProxy?: TrustProxy;
   /** Development mode. Default: NODE_ENV is not "production". */
   dev?: boolean;
   onError?: (error: unknown, ctx: Context<any, any, any, any, any>) => void;
@@ -194,6 +201,8 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
       gracefulShutdown: true,
       ...options,
     };
+    // before any plugin: every scope's context class extends this one
+    if (options.trustProxy) this._box.Ctx = trustingContext(this._box.Ctx, options.trustProxy);
   }
 
   /** Middleware for every request, before routing. */
@@ -238,19 +247,20 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     return this.sealState;
   }
 
-  /** @internal A hook was added somewhere: the routes' joined hooks are out of date. */
+  /** @internal A hook was added somewhere: the routes' joined hooks, and the document, are out of date. */
   _changed() {
     this.built = false;
+    this.spec = undefined;
   }
 
   /** @internal Runs a plugin now, or after the ones still loading, so they run in the order they were registered. */
-  _load(run: () => void | Promise<void>) {
+  _load(run: () => unknown) {
     if (!this.loading) {
       const r = run(); // a plugin that throws at once throws out of register()
       if (r instanceof Promise) this.loading = r.then(() => undefined);
       return;
     }
-    this.loading = this.loading.then(() => run());
+    this.loading = this.loading.then(() => run() as void | Promise<void>); // a plugin may hand back its scope; only waiting matters
   }
 
   /** Resolves once every plugin registered so far has loaded; rejects with the error of one that failed. */
@@ -274,7 +284,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
       r.plan = planOf(r);
       r.run = r.spec.cache ? cached(r.handler, r.spec.cache) : r.handler;
       r.timeout = r.spec.timeout ?? this.options.timeout;
-      r.info = Object.freeze({ method: r.method, path: r.path });
+      r.info = Object.freeze({ method: r.method, path: r.path, security: Object.freeze([...r.security!]), meta: r.spec.meta ?? NO_META });
     }
     const { requestId, docs } = this.options;
     this.idHeader = requestId ? requestId.toLowerCase() : undefined;
@@ -1067,6 +1077,9 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
 }
 
 export const inkan = (options?: AppOptions): App<{}, {}> => new App(options);
+
+/** `ctx.route.meta` of a route without `meta`. */
+const NO_META = Object.freeze({});
 
 /** What a route's contract says about every answer, worked out when the app is built instead of on each request. */
 function planOf(route: RouteRecord): NonNullable<RouteRecord["plan"]> {

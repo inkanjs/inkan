@@ -1,5 +1,6 @@
 // Compressed answers, built on nothing but the public plugin API: one onSend hook. Shared,
-// so it acts on the routes of the scope it is registered in.
+// so it acts on the routes of the scope it is registered in, and marked `last`, so it runs
+// after every other onSend hook of a route, wherever that one was registered.
 //
 //   app.register(compress())   // brotli or gzip, whatever the client takes
 
@@ -62,7 +63,7 @@ export const compress = (options: CompressOptions = {}) =>
         }
         const zip = encoding === "br" ? createBrotliCompress(BROTLI) : createGzip();
         return { ...out, stream: Readable.from(out.stream!).pipe(zip) };
-      });
+      }, { last: true }); // after every other onSend hook: an ETag or a signature hashes the bytes before they are packed
     },
     { name: "compress", shared: true },
   );

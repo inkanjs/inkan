@@ -71,7 +71,9 @@ export function buildOpenAPI(records: RouteRecord[], info: OpenAPIInfo = {}) {
   const ctx: RefContext = { components: new Map() };
   const paths: Record<string, Record<string, unknown>> = {};
   const problemRef = () => t.problem()._schema(ctx);
-  const schemes = new Map<string, JsonSchema>();
+  // what describe() hooks see and may add to; schemas join it at the end
+  const components: Record<string, Record<string, any>> = { securitySchemes: {} };
+  const schemes = components.securitySchemes!;
 
   for (const r of records) {
     const { spec } = r;
@@ -122,7 +124,7 @@ export function buildOpenAPI(records: RouteRecord[], info: OpenAPIInfo = {}) {
     if (r.security?.length) {
       op.security = r.security.map((s) => {
         const [name, scheme] = schemeOf(s);
-        schemes.set(name, scheme);
+        schemes[name] ??= scheme;
         return { [name]: [] };
       });
       responses["401"] ??= {
@@ -141,6 +143,8 @@ export function buildOpenAPI(records: RouteRecord[], info: OpenAPIInfo = {}) {
     if (!Object.keys(responses).length) responses["200"] = { description: "OK" };
     op.responses = responses;
     if (spec.examples?.length) op["x-inkan-examples"] = spec.examples;
+    // what the scopes around the route add: outermost first, as with hooks
+    if (r.box) for (const b of r.box.chain()) for (const d of b.describers) d(op, r, components);
 
     (paths[toOpenAPIPath(r.path)] ??= {})[r.method.toLowerCase()] = op;
   }
@@ -155,9 +159,9 @@ export function buildOpenAPI(records: RouteRecord[], info: OpenAPIInfo = {}) {
   };
   if (info.servers) doc.servers = info.servers;
   doc.paths = paths;
-  const components: Record<string, unknown> = {};
-  if (ctx.components.size) components.schemas = Object.fromEntries(ctx.components);
-  if (schemes.size) components.securitySchemes = Object.fromEntries(schemes);
-  if (Object.keys(components).length) doc.components = components;
+  const all: Record<string, Record<string, any>> = { schemas: { ...Object.fromEntries(ctx.components), ...components.schemas } };
+  for (const k in components) if (k !== "schemas") all[k] = components[k]!;
+  for (const k of Object.keys(all)) if (!Object.keys(all[k]!).length) delete all[k];
+  if (Object.keys(all).length) doc.components = all;
   return doc;
 }
