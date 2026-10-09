@@ -165,11 +165,12 @@ measured, with a bare `node:http` server as 100:
 
 | | node:http | **inkan** | Fastify | Hono | Express |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| score | 100 | **89.1** | 88.6 | 84.9 | 42.4 |
+| score | 100 | **91.4** | 87.7 | 82.9 | 44.7 |
 
-inkan and Fastify are level within the spread of a run. Every scenario, how it is measured
+inkan is ahead of Fastify in every run, on average, though not in every scenario: Fastify
+still leads the async handler. Every scenario, how it is measured
 and how to run it yourself are on **[the benchmarks page](https://inkan-dev.vercel.app/benchmarks)**;
-how 0.6.0 got there is in [`bench/reports/0.6.0.md`](bench/reports/0.6.0.md), and the bench
+how 0.7.0 got there is in [`bench/reports/0.7.0.md`](bench/reports/0.7.0.md), and the bench
 itself in [`bench/`](bench).
 
 ## How inkan is made

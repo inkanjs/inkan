@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.7.0 (unreleased)
+## 0.7.0
 
 ### New
 
@@ -176,6 +176,11 @@
   as they came. A list for any other header is joined with `", "`. `ReplyHeaders` is exported.
 
 ### Faster
+
+- **On average ahead of Fastify now.** On the GitHub runner, three runs: inkan 91.4 (90.3–92.2)
+  against Fastify 87.7 (87.4–88.1) and 0.6.0 86.7, with node:http as 100. Not in every
+  scenario: Fastify still leads the async handler. The numbers, run by run and scenario by
+  scenario, are in [`bench/reports/0.7.0.md`](bench/reports/0.7.0.md).
 
 - **Objects check by their own keys.** An object's fields are read in the order the value
   holds them, mostly the contract's, and each field's check is called directly: a body of
