@@ -305,21 +305,22 @@ test("close codes: the client's comes to the server and is echoed; the server's 
   }
 });
 
-test("heartbeat: a peer that answers pings stays, one that does not is cut off", async () => {
-  const app = inkan(quiet).ws("/hb", { heartbeat: 30 }, (socket) => socket.on("message", (m) => void socket.sendRaw(m)));
+// a beat of 30 ms cut the platform client off on a busy machine (its pong came a beat late), and the test hung
+test("heartbeat: a peer that answers pings stays, one that does not is cut off", { timeout: 15_000 }, async () => {
+  const app = inkan(quiet).ws("/hb", { heartbeat: 250 }, (socket) => socket.on("message", (m) => void socket.sendRaw(m)));
   const s = await served(app);
   try {
     const ws = new WebSocket(`${s.url}/hb`); // answers pings by itself
     const next = inbox(ws);
     await opened(ws);
-    await sleep(150);
+    await sleep(800);
     ws.send('"still here"');
     assert.equal(await next(), "still here");
     ws.close();
 
     const r = await raw(s.port, "/hb"); // never answers
     assert.equal((await r.next())?.op, 0x9, "the server pings");
-    assert.equal(await r.next(500), null, "and hangs up without a pong");
+    assert.equal(await r.next(), null, "and hangs up without a pong");
   } finally {
     await s.close();
   }
