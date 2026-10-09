@@ -446,3 +446,14 @@ test("SIGTERM: event streams end before the server waits, and onClose runs after
     (process as any).exit = exit;
   }
 });
+
+test("result?wait is not cut short by an app-wide timeout", async () => {
+  const app = inkan({ ...quiet, timeout: 20 }).job("/slow", { result: t.object({ ok: t.boolean() }) }, async () => {
+    await sleep(80);
+    return { ok: true };
+  });
+  const started = await app.inject({ method: "POST", url: "/slow" });
+  const res = await app.inject({ url: `/slow/${started.body.id}/result?wait=5` });
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.body, { ok: true });
+});

@@ -737,6 +737,7 @@ export function defineJob(hub: JobHub, define: Define, prefix: string, path: str
       description: "`wait` waits up to that many seconds for the job to be over. A job not done yet is a 409.",
       params: paramsOf(full + "/:id/result"),
       query: t.object({ wait: t.int().min(0).max(30).optional() }),
+      timeout: 0, // `wait` keeps its own clock (30 s at most); an app-wide timeout would cut it short
       response: { 200: opts.result ?? t.any(), 404: Problem, 409: Problem },
       examples: [...chained("the result", { query: { wait: 10 } }), missing],
     },
