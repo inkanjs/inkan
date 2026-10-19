@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.8.0 (unreleased)
+
+### New
+
+- **`Store`, one storage interface for everything that keeps state**: `get`, `set`, `delete`,
+  `add` (set if absent), `take` (get and delete), `increment` (count, keeping the first TTL),
+  and optionally `publish`/`subscribe` and `shared`. TTLs are in milliseconds, values are
+  JSON, `add`/`take`/`increment` are atomic across processes; the JSDoc on `Store` says what
+  an adapter must guarantee. One adapter (Redis, a database, taking the user's own client)
+  works for jobs, `rateLimit` and the middleware packages alike.
+- **`memoryStore({ max, clock })`** is the generic in-memory `Store`: LRU-bounded (default
+  10000 keys), TTLs, `add`/`take`/`increment` atomic in the process, publish/subscribe in
+  the process, `shared: false`.
+- **`storeConformance(make, { wait, close, timeout })`** from the new
+  `@vxnsin/inkan/testing` entry registers the node:test cases every `Store` must pass: get,
+  set and delete, JSON round trips, TTLs, `add`/`take`/`increment` under 50 concurrent
+  calls, look-alike keys kept apart, separate stores from `make`, and publish/subscribe when
+  present. `wait` can move a store's own clock instead of waiting in real time.
+- **`rateLimit({ store, prefix })`** counts in a `Store` the processes share, with one atomic
+  `increment` per request in fixed windows. Without a store it counts in memory as before.
+
+### Changed
+
+- `app.job({ store })` takes a `Store`. Jobs keep one key per job, forgotten by the store's
+  TTL `keep` seconds after the job ends; on a `shared` store, progress and cancels reach
+  the other processes through `publish`/`subscribe` (a shared store without them is polled
+  once a second while someone follows a job). Writes of one job are coalesced, latest wins.
+- `memoryStore()` returns the generic `Store` instead of the jobs-only store of 0.7. Passing
+  it to `app.job` works as before; with `max`, the key used longest ago goes first, not the
+  oldest finished job.
+- `JobRecord` keeps `createdAt`, `startedAt` and `finishedAt` as epoch milliseconds, since
+  records go through JSON. The job routes still answer with dates.
+- `JobStore` is deprecated. One passed to `app.job` still works as in 0.7.
+
 ## 0.7.0
 
 ### New
