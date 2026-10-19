@@ -13,6 +13,8 @@ const source = JSON.stringify(pathToFileURL(join(import.meta.dirname, "../src/in
 /** A routes folder on disk, from file name to module text. */
 function folder(files: Record<string, string>) {
   const dir = mkdtempSync(join(tmpdir(), "inkan-routes-"));
+  // ES modules wherever the temp folder is, whatever package.json sits above it
+  writeFileSync(join(dir, "package.json"), '{"type":"module"}');
   for (const [name, text] of Object.entries(files)) {
     const file = join(dir, name);
     mkdirSync(dirname(file), { recursive: true });

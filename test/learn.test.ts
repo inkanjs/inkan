@@ -53,6 +53,8 @@ function solved(done: number, seal?: Seal): App {
 }
 
 const dir = mkdtempSync(join(tmpdir(), "inkan-learn-"));
+// ES modules wherever the temp folder is, whatever package.json sits above it
+writeFileSync(join(dir, "package.json"), '{"type":"module"}');
 
 test("every quest has a solution, and its check tells the solution from the step before", async () => {
   // quest 10 compares with the document saved before the change it asks for

@@ -9,6 +9,8 @@ import { compile } from "../src/seal/compile.ts";
 import { writeSeal } from "../src/seal/seal.ts";
 
 const dir = mkdtempSync(join(tmpdir(), "inkan-seal-"));
+// ES modules wherever the temp folder is, whatever package.json sits above it
+writeFileSync(join(dir, "package.json"), '{"type":"module"}');
 let files = 0;
 /** Writes a seal file the way `inkan seal` does and imports it, as an app would. */
 async function sealOf(app: ReturnType<typeof inkan>): Promise<Seal> {
