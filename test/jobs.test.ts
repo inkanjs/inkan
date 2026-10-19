@@ -224,7 +224,7 @@ test("a job past its timeout fails and its signal says why", async () => {
 test("finished jobs are forgotten after keep seconds, and the store holds at most max", async () => {
   mock.timers.enable({ apis: ["setInterval", "Date"], now: Date.now() });
   try {
-    const app = inkan(quiet).job("/work", { keep: 1 }, () => "ok");
+    const app = inkan(quiet).job("/work", { retain: 1000 }, () => "ok");
     const { id } = (await app.inject({ method: "POST", url: "/work" })).body;
     await until(async () => (await stateOf(app, `/work/${id}`)) === "done", "the job");
     mock.timers.tick(500);

@@ -4,11 +4,14 @@
 
 import type { Context, Handler } from "./route.ts";
 import { Reply } from "./route.ts";
+import { deprecate } from "./deprecate.ts";
 import { EventStream, isStream } from "./stream.ts";
 
 export type CacheRule = {
-  /** How long an answer is kept. */
-  seconds: number;
+  /** Milliseconds an answer is kept. */
+  ttl?: number;
+  /** @deprecated How long an answer is kept, in seconds; use `ttl`, in milliseconds. */
+  seconds?: number;
   /**
    * Answers are kept per caller unless this is true: the request's authorization and cookie
    * headers are part of the key, so one user never gets another's answer. Set it only for
@@ -27,7 +30,8 @@ const keepable = (v: unknown) => !(v instanceof Reply) && !(v instanceof EventSt
 
 /** The handler with a memory, per route and per process. A handler that throws keeps nothing. */
 export function cached(handler: Handler<any, any, any, any, any>, rule: CacheRule): Handler<any, any, any, any, any> {
-  const ms = rule.seconds * 1000;
+  if (rule.ttl === undefined && rule.seconds !== undefined) deprecate("cache: { seconds }", "cache: { ttl } in milliseconds");
+  const ms = rule.ttl ?? (rule.seconds ?? 0) * 1000;
   const max = rule.max ?? 1000;
   const kept = new Map<string, Entry>();
   const pending = new Map<string, Promise<Entry | undefined>>();

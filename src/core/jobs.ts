@@ -14,6 +14,7 @@
 // `Store` (./store.ts), whose publish/subscribe carries progress and cancels between them.
 
 import { randomBytes } from "node:crypto";
+import { deprecate } from "./deprecate.ts";
 import { HttpProblem, problem, type ProblemBody } from "./problem.ts";
 import { EventsSchema, t, type Issue, type Schema } from "../schema/schema.ts";
 import { sse } from "./stream.ts";
@@ -84,7 +85,7 @@ const jobKey = (id: string) => `inkan:job:${id}`;
 const asRecord = (raw: unknown): JobRecord | undefined => (raw && typeof raw === "object" ? (raw as JobRecord) : undefined);
 
 /**
- * The jobs' view of a {@link Store}: one key per job, forgotten `keep` seconds after it ends
+ * The jobs' view of a {@link Store}: one key per job, forgotten `retain` milliseconds after it ends
  * by the store's TTL. This process hears of a change at once; the store gets the latest
  * version of each job, one write at a time (a hundred quick progress updates are a few
  * writes), and reads here see what is not written yet. When the store is shared, changes
@@ -231,7 +232,9 @@ export type JobOptions<B, P, R, Deco = {}> = {
   concurrency?: number;
   /** How many may wait; past that, starting one is a 503. Default 100. */
   queue?: number;
-  /** Seconds a finished job is kept for its result. Default 3600. */
+  /** Milliseconds a finished job is kept for its result. Default 3600000 (an hour). */
+  retain?: number;
+  /** @deprecated Seconds a finished job is kept; use `retain`, in milliseconds. */
   keep?: number;
   /** Milliseconds a job may run before it fails and `job.signal` is aborted. Default: no limit. */
   timeout?: number;
@@ -454,7 +457,7 @@ export class JobKind {
     this.opts = opts;
     this.run = run;
     this.store = opts.store ? hub.board(opts.store) : hub.defaultStore();
-    this.keep = (opts.keep ?? 3600) * 1000;
+    this.keep = opts.retain ?? (opts.keep === undefined ? 3_600_000 : (deprecate("app.job({ keep }) in seconds", "{ retain } in milliseconds"), opts.keep * 1000));
     this.concurrency = Math.max(1, opts.concurrency ?? 1);
     this.limit = Math.max(0, opts.queue ?? 100);
   }
