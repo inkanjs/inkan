@@ -194,6 +194,65 @@ test("the inspector hides secret headers", async () => {
   assert.equal(entry.request.headers["x-visible"], "yes");
 });
 
+test("a real socket: an async handler's answer, its problem, HEAD, and a log that breaks", async () => {
+  const tick = () => new Promise((resolve) => setImmediate(resolve));
+  const errors: unknown[] = [];
+  let breakLog = false;
+  const make = (extra: object) =>
+    inkan({ ...quiet, ...extra })
+      .get("/a/:id", { params: t.object({ id: t.int() }), response: { 200: t.object({ id: t.int() }) } }, async ({ params }) => {
+        await tick();
+        if (params.id < 0) throw problem(404, "missing");
+        return { id: params.id, extra: "trimmed" } as { id: number };
+      })
+      .get("/later", async () => {
+        await tick();
+        return reply(201, "made", { "x-made": "yes" });
+      });
+  const apps = [
+    make({}),
+    make({ context: true }),
+    make({
+      log: true,
+      logger: () => {
+        if (breakLog) throw new Error("the log broke");
+      },
+      onError: (err: unknown) => void errors.push(err),
+    }),
+  ];
+  for (const app of apps) {
+    const server = await app.listen(0, "127.0.0.1");
+    const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
+    try {
+      const ok = await fetch(`${base}/a/7`);
+      assert.equal(ok.status, 200);
+      assert.equal(ok.headers.get("content-length"), "8");
+      assert.deepEqual(await ok.json(), { id: 7 });
+      const missing = await fetch(`${base}/a/-1`);
+      assert.equal(missing.status, 404);
+      assert.equal(missing.headers.get("content-type"), "application/problem+json");
+      const head = await fetch(`${base}/a/7`, { method: "HEAD" });
+      assert.equal(head.status, 200);
+      assert.equal(head.headers.get("content-length"), "8");
+      assert.equal(await head.text(), "");
+      const made = await fetch(`${base}/later`);
+      assert.equal(made.status, 201);
+      assert.equal(made.headers.get("x-made"), "yes");
+      assert.equal(await made.text(), "made");
+      breakLog = true;
+      const broke = await fetch(`${base}/a/7`);
+      breakLog = false;
+      // the log is written once the answer is made: when it breaks, the request is answered 500
+      assert.equal(broke.status, app === apps[2] ? 500 : 200);
+    } finally {
+      server.closeAllConnections();
+      server.close();
+    }
+  }
+  assert.equal(errors.length, 1);
+  assert.match(String(errors[0]), /the log broke/);
+});
+
 test("a real socket: listen, body limit, loopback inspector", async () => {
   const app = inkan({ ...quiet, bodyLimit: 16 }).post("/echo", { body: t.object({ a: t.string() }) }, ({ body }) => body);
   const server = await app.listen(0, "127.0.0.1");
