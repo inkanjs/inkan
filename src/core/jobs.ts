@@ -259,6 +259,8 @@ export type JobOptions<B, P, R, Deco = {}> = {
    * run is a context of no real request: a POST to the job's path, no headers, its input as
    * the body.
    */
+  schedule?: string | { cron: string; input?: B; timezone?: CronZone };
+  /** @deprecated Use `schedule`, which it is. */
   every?: string | { cron: string; input?: B; timezone?: CronZone };
 };
 
@@ -419,7 +421,7 @@ const TIMEOUT = Symbol("timeout");
 /** The longest delay a timer takes: 2^31 - 1 ms, almost 25 days. Longer waits go in hops. */
 const LONGEST = 2 ** 31 - 1;
 
-/** A kind's schedule, from `every`. */
+/** A kind's schedule, from `schedule`. */
 type Schedule = {
   cron: Cron;
   zone: CronZone;
@@ -843,11 +845,12 @@ function paramsOf(path: string) {
 
 type Define = (method: string, path: string, spec: object, handler: (ctx: any) => unknown) => void;
 
-/** A job's `every`, read and checked when the job is defined, so a wrong one stops the start. */
+/** A job's `schedule`, read and checked when the job is defined, so a wrong one stops the start. */
 function scheduleOf(path: string, full: string, opts: JobOptions<any, any, any, any>, ctxFor: (path: string) => Context<any, any, any, any, any>): Schedule {
-  const every = typeof opts.every === "string" ? { cron: opts.every } : opts.every!;
+  const given = opts.schedule ?? opts.every!;
+  const every = typeof given === "string" ? { cron: given } : given;
   const where = `app.job("${path}")`;
-  if (/:\w/.test(full)) throw new Error(`${where}: every needs a path without parameters, since no request names them`);
+  if (/:\w/.test(full)) throw new Error(`${where}: schedule needs a path without parameters, since no request names them`);
   let cron: Cron;
   try {
     cron = new Cron(every.cron);
@@ -855,13 +858,13 @@ function scheduleOf(path: string, full: string, opts: JobOptions<any, any, any, 
     throw new Error(`${where}: ${(err as Error).message}`);
   }
   const zone = every.timezone ?? "UTC";
-  if (zone !== "UTC" && zone !== "local") throw new Error(`${where}: every.timezone is "UTC" or "local", not "${zone}"`);
+  if (zone !== "UTC" && zone !== "local") throw new Error(`${where}: schedule.timezone is "UTC" or "local", not "${zone}"`);
   if (!cron.next(Date.now(), zone)) throw new Error(`${where}: the cron "${every.cron}" never matches`);
   let input = every.input;
   if (opts.body) {
-    if (!("input" in every)) throw new Error(`${where}: the job takes a body, so every needs { cron, input } with the input to start it with`);
+    if (!("input" in every)) throw new Error(`${where}: the job takes a body, so schedule needs { cron, input } with the input to start it with`);
     const r = opts.body.safeParse(input);
-    if (!r.ok) throw new Error(`${where}: every.input does not match the body: ${r.issues.map((i) => `${i.path || "(body)"} ${i.message}`).join("; ")}`);
+    if (!r.ok) throw new Error(`${where}: schedule.input does not match the body: ${r.issues.map((i) => `${i.path || "(body)"} ${i.message}`).join("; ")}`);
     input = r.value;
   }
   return { cron, zone, input, ctx: () => ctxFor(full) };
@@ -887,7 +890,8 @@ export function defineJob(
     console.warn("inkan: background jobs run in the process that started them; on a serverless platform it may be frozen or gone before they finish.");
   }
   const kind = new JobKind(hub, full, opts, run);
-  if (opts.every !== undefined) kind.schedule = scheduleOf(path, full, opts, ctxFor);
+  if (opts.schedule === undefined && opts.every !== undefined) deprecate("app.job({ every })", "app.job({ schedule })");
+  if ((opts.schedule ?? opts.every) !== undefined) kind.schedule = scheduleOf(path, full, opts, ctxFor);
   hub.kinds.push(kind);
 
   const name = opts.name ?? nameOf(full);

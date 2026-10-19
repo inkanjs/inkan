@@ -184,3 +184,12 @@ test("app.use(cors()) still works as middleware, and warns once", async () => {
   assert.equal(said.length, 1);
   assert.match(said[0]!, /app\.use\(cors\(\)\) is deprecated, use app\.register\(cors\(\)\)/);
 });
+
+test("app.job({ every }) is { schedule }, and warns once", async () => {
+  const said = await warnings(() => {
+    inkan(quiet).job("/a", { every: "0 3 * * *" }, () => null);
+    assert.throws(() => inkan(quiet).job("/b", { every: "* * *" }, () => null), /five fields/, "checked as before");
+  });
+  assert.equal(said.length, 1);
+  assert.match(said[0]!, /\{ every \}.*\{ schedule \}/);
+});

@@ -1174,7 +1174,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     this.schedule();
   }
 
-  /** Starts the jobs' schedules (`every`): in one process only, the first worker of a cluster. */
+  /** Starts the jobs' schedules (`schedule`): in one process only, the first worker of a cluster. */
   private schedule() {
     if (!this._jobs) return;
     const slot = process.env.INKAN_WORKER;

@@ -99,10 +99,10 @@ function timers(now = START) {
 }
 afterEach(() => mock.timers.reset());
 
-test("every: runs the job on its schedule once the app has started, and stops on shutdown", async () => {
+test("schedule: runs the job on its schedule once the app has started, and stops on shutdown", async () => {
   timers();
   const runs: { at: string; input: unknown; method: string; path: string }[] = [];
-  const app = inkan(quiet).job("/nightly", { every: "0 3 * * *", owner: (ctx) => ctx.headers["x-user"] as string }, async (job) => {
+  const app = inkan(quiet).job("/nightly", { schedule: "0 3 * * *", owner: (ctx) => ctx.headers["x-user"] as string }, async (job) => {
     runs.push({ at: new Date().toISOString(), input: job.input, method: job.ctx.method, path: job.ctx.path });
     return 1;
   });
@@ -130,11 +130,11 @@ test("every: runs the job on its schedule once the app has started, and stops on
   assert.equal(runs.length, 2, "stopped");
 });
 
-test("every: a run is skipped while the last scheduled one still runs", async () => {
+test("schedule: a run is skipped while the last scheduled one still runs", async () => {
   timers(Date.UTC(2026, 0, 1, 0, 0, 0));
   let open!: () => void;
   let started = 0;
-  const app = inkan(quiet).job("/minutely", { every: "* * * * *" }, async (job: Job) => {
+  const app = inkan(quiet).job("/minutely", { schedule: "* * * * *" }, async (job: Job) => {
     started++;
     if (started === 1) await new Promise<void>((r) => (open = r));
     return job.id;
@@ -154,17 +154,17 @@ test("every: a run is skipped while the last scheduled one still runs", async ()
   await app.stopped();
 });
 
-test("every: a job with a body needs input, checked against it; the run gets it as job.input and ctx.body", async () => {
+test("schedule: a job with a body needs input, checked against it; the run gets it as job.input and ctx.body", async () => {
   timers(Date.UTC(2026, 0, 1, 0, 0, 0));
   const Body = t.object({ rows: t.int(), format: t.enum(["csv", "json"]).default("csv") });
-  assert.throws(() => inkan(quiet).job("/a", { body: Body, every: "* * * * *" }, () => 1), /needs \{ cron, input \}/);
-  assert.throws(() => inkan(quiet).job("/b", { body: Body, every: { cron: "* * * * *", input: { rows: "x" } as never } }, () => 1), /every.input does not match the body: rows expected an integer/);
-  assert.throws(() => inkan(quiet).job("/c", { every: "* * *" }, () => 1), /app.job\("\/c"\): cron "\* \* \*": five fields/);
-  assert.throws(() => inkan(quiet).job("/d", { every: "0 0 30 2 *" }, () => 1), /never matches/);
-  assert.throws(() => inkan(quiet).job("/e", { every: { cron: "@daily", timezone: "Europe/Berlin" as never } }, () => 1), /timezone/);
+  assert.throws(() => inkan(quiet).job("/a", { body: Body, schedule: "* * * * *" }, () => 1), /needs \{ cron, input \}/);
+  assert.throws(() => inkan(quiet).job("/b", { body: Body, schedule: { cron: "* * * * *", input: { rows: "x" } as never } }, () => 1), /schedule.input does not match the body: rows expected an integer/);
+  assert.throws(() => inkan(quiet).job("/c", { schedule: "* * *" }, () => 1), /app.job\("\/c"\): cron "\* \* \*": five fields/);
+  assert.throws(() => inkan(quiet).job("/d", { schedule: "0 0 30 2 *" }, () => 1), /never matches/);
+  assert.throws(() => inkan(quiet).job("/e", { schedule: { cron: "@daily", timezone: "Europe/Berlin" as never } }, () => 1), /timezone/);
 
   let got: unknown[] = [];
-  const app = inkan(quiet).job("/export", { body: Body, every: { cron: "*/5 * * * *", input: { rows: 3, format: "json" } } }, async (job) => {
+  const app = inkan(quiet).job("/export", { body: Body, schedule: { cron: "*/5 * * * *", input: { rows: 3, format: "json" } } }, async (job) => {
     got = [job.input, job.ctx.body];
     return 1;
   });
@@ -175,10 +175,10 @@ test("every: a job with a body needs input, checked against it; the run gets it 
   await app.stopped();
 });
 
-test("every: a wait longer than a timer takes goes in hops and still lands on the minute", async () => {
+test("schedule: a wait longer than a timer takes goes in hops and still lands on the minute", async () => {
   timers(Date.UTC(2026, 2, 1, 0, 0, 0));
   const at: string[] = [];
-  const app = inkan(quiet).job("/leap", { every: "0 0 29 2 *" }, async () => void at.push(new Date().toISOString()));
+  const app = inkan(quiet).job("/leap", { schedule: "0 0 29 2 *" }, async () => void at.push(new Date().toISOString()));
   await app.started();
   const longest = 2 ** 31 - 1;
   let left = Date.UTC(2028, 1, 29) - Date.now() - 1000;
