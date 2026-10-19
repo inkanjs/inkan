@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { functionName, minorRange, npmNameProblem } from "../src/cli/create.ts";
+import { functionName, pluginRange, npmNameProblem } from "../src/cli/create.ts";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const version: string = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version;
@@ -42,7 +42,7 @@ test("create plugin: a package that installs, typechecks and passes its own test
     for (const f of ["package.json", "index.js", "index.d.ts", "test.ts", "README.md", "LICENSE", ".gitignore", ".github/workflows/ci.yml", "tsconfig.json"]) {
       assert.ok(existsSync(join(dir, f)), f);
     }
-    const range = minorRange(version);
+    const range = pluginRange(version);
     const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
     assert.equal(pkg.name, "inkan-quota");
     assert.equal(pkg.version, "0.1.0");
@@ -141,6 +141,7 @@ test("create plugin: names, function names and ranges", () => {
   assert.equal(functionName("inkan-delete"), "deletePlugin");
   assert.equal(functionName("3d-inkan"), "plugin3d");
   assert.equal(functionName("inkan"), "inkan");
-  assert.equal(minorRange("0.7.0"), ">=0.7.0 <0.8.0");
-  assert.equal(minorRange("1.12.3"), ">=1.12.0 <1.13.0");
+  assert.equal(pluginRange("0.8.0"), ">=0.8.0 <1.0.0");
+  assert.equal(pluginRange("0.9.2"), ">=0.9.0 <1.0.0");
+  assert.equal(pluginRange("1.12.3"), ">=1.12.0 <2.0.0");
 });

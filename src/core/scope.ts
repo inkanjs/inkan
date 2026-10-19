@@ -205,9 +205,9 @@ export type PluginOptions = {
   /** Put its hooks and decorations into the scope it is registered in, not a scope of its own. */
   shared?: boolean;
   /**
-   * The inkan versions it works with, as an npm range: `">=0.7.0 <0.8.0"`, `"^0.7.0"`,
+   * The inkan versions it works with, as an npm range: `">=0.8.0 <1.0.0"` (what `inkan create plugin` writes), `"^0.8.0"`,
    * `"0.7.x || 0.8.x"`. `register()` throws when the app runs a version outside it
-   * (`inkan-quota needs inkan >=0.7.0 <0.8.0, this app runs 0.9.1`), so a plugin built
+   * (`inkan-quota needs inkan >=0.8.0 <1.0.0, this app runs 1.0.1`), so a plugin built
    * against one version does not half-work on another. A range that is not one throws
    * right here. A prerelease of inkan is in the range only when the range names a
    * prerelease of the same version (`>=0.8.0-rc.1`), as npm reads it. Keep it the same
@@ -234,7 +234,7 @@ export type PluginOptions = {
  * A plugin published on its own names the inkan versions it works with, and `register()`
  * refuses it on any other:
  *
- *   export const quota = plugin(setup, { name: "inkan-quota", inkan: ">=0.7.0 <0.8.0" });
+ *   export const quota = plugin(setup, { name: "inkan-quota", inkan: ">=0.8.0 <1.0.0" });
  */
 export function plugin<O = {}, Deco = {}, R = void>(
   setup: (app: Scope<{}, Deco>, options: O) => R,
@@ -252,7 +252,7 @@ export function plugin(setup: (app: Scope, options: unknown) => unknown, opts: P
     try {
       parseRange(opts.inkan);
     } catch {
-      throw new TypeError(`${name || "A plugin"} names the inkan versions it works with as "${opts.inkan}", which is not a version range. Write it the way npm does: ">=0.7.0 <0.8.0", "^0.7.0".`);
+      throw new TypeError(`${name || "A plugin"} names the inkan versions it works with as "${opts.inkan}", which is not a version range. Write it the way npm does: ">=0.8.0 <1.0.0", "^0.8.0".`);
     }
   }
   return Object.defineProperties(p, {
