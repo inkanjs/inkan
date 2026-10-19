@@ -1,7 +1,15 @@
 import type { Middleware } from "../core/route.ts";
+import type { Origins, PreContext } from "../core/ws.ts";
+import { deprecate } from "../core/deprecate.ts";
 
 export type CorsOptions = {
-  /** Which origins may call: `"*"` (the default), one origin, a list, or a function that decides. */
+  /**
+   * Which origins may call: `"*"` (the default), a list, or a function that decides, given
+   * the Origin header and the request. A request without an Origin is no cross-origin call
+   * and gets no CORS headers, so the function is only asked about one with an Origin.
+   */
+  origins?: Origins;
+  /** @deprecated Use `origins`: a list instead of one origin, and a function that gets `(origin, ctx)`. */
   origin?: "*" | string | string[] | ((origin: string) => boolean);
   /** Lets the browser send cookies and auth headers. The origin is then echoed instead of `*`. */
   credentials?: boolean;
@@ -19,17 +27,16 @@ const METHODS = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"];
 
 /** Answers browser preflights and marks every answer for allowed origins. Add it with `app.use(cors(…))`. */
 export function cors(options: CorsOptions = {}): Middleware {
-  const { origin = "*", credentials = false, maxAge, methods = METHODS, allowHeaders, exposeHeaders } = options;
-  const allowed =
-    typeof origin === "function"
-      ? origin
-      : Array.isArray(origin)
-        ? (o: string) => origin.includes(o)
-        : (o: string) => origin === "*" || origin === o;
+  const { credentials = false, maxAge, methods = METHODS, allowHeaders, exposeHeaders } = options;
+  if (options.origin !== undefined && options.origins === undefined) deprecate("cors({ origin })", "cors({ origins })");
+  const old = options.origin;
+  const origin: Origins = options.origins ?? (typeof old === "string" && old !== "*" ? [old] : (old as Origins | undefined)) ?? "*";
+  const allowed: (o: string, ctx: PreContext) => boolean =
+    typeof origin === "function" ? (o, ctx) => origin(o, ctx) === true : Array.isArray(origin) ? (o) => origin.includes(o) : () => true;
 
   return async (ctx, next) => {
     const from = ctx.headers.origin;
-    if (!from || !allowed(from)) return next();
+    if (!from || !allowed(from, ctx as PreContext)) return next();
 
     const echo = origin !== "*" || credentials;
     ctx.header("access-control-allow-origin", echo ? from : "*");

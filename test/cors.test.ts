@@ -41,7 +41,7 @@ test("cors: any origin by default, preflight echoes the asked headers", async ()
 });
 
 test("cors: one origin or a list, others get no headers", async () => {
-  const one = shop().use(cors({ origin: "https://shop.example", maxAge: 600 }));
+  const one = shop().use(cors({ origins: ["https://shop.example"], maxAge: 600 }));
   const ok = await one.inject(preflight("https://shop.example"));
   assert.equal(ok.headers["access-control-allow-origin"], "https://shop.example");
   assert.equal(ok.headers.vary, "origin");
@@ -50,7 +50,7 @@ test("cors: one origin or a list, others get no headers", async () => {
   assert.equal(no.status, 204);
   assert.equal(no.headers["access-control-allow-origin"], undefined);
 
-  const many = shop().use(cors({ origin: ["https://a.example", "https://b.example"] }));
+  const many = shop().use(cors({ origins: ["https://a.example", "https://b.example"] }));
   assert.equal((await many.inject(preflight("https://b.example"))).headers["access-control-allow-origin"], "https://b.example");
   assert.equal((await many.inject(preflight("https://c.example"))).headers["access-control-allow-origin"], undefined);
 });
@@ -63,4 +63,20 @@ test("cors: credentials echo the origin instead of *, error answers keep the hea
   assert.equal(res.headers["access-control-allow-origin"], "https://a.example");
   assert.equal(res.headers["access-control-allow-credentials"], "true");
   assert.equal(res.headers["access-control-expose-headers"], "x-total");
+});
+
+test("cors: origins as a function gets the origin and the request", async () => {
+  const seen: string[] = [];
+  const app = shop().use(
+    cors({
+      origins: (origin, ctx) => {
+        seen.push(`${origin} ${ctx.method} ${ctx.path} ${ctx.protocol}`);
+        return origin?.endsWith(".shop.example") === true;
+      },
+    }),
+  );
+  assert.equal((await app.inject({ url: "/teas/1", headers: { origin: "https://eu.shop.example" } })).headers["access-control-allow-origin"], "https://eu.shop.example");
+  assert.equal((await app.inject({ url: "/teas/1", headers: { origin: "https://evil.example" } })).headers["access-control-allow-origin"], undefined);
+  await app.inject({ url: "/teas/1" });
+  assert.deepEqual(seen, ["https://eu.shop.example GET /teas/1 http", "https://evil.example GET /teas/1 http"], "no Origin, nothing to ask");
 });

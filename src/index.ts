@@ -7,7 +7,7 @@ export type { AdapterRequest, AdapterResponse, AppOptions, InjectOptions, Inject
 export { Routes, routes, reply, Reply } from "./core/route.ts";
 export type { ReplyHeaders } from "./core/route.ts";
 export type { Context, Example, Handler, Middleware, OperationRoute, PathParams, Responses, RouteInfo, RouteMeta, RouteSpec, Security } from "./core/route.ts";
-export type { WsHandler, WsOrigins, WsSocket, WsSpec } from "./core/ws.ts";
+export type { Origins, PreContext, WsDefaults, WsHandler, WsOrigins, WsSocket, WsSpec } from "./core/ws.ts";
 export { t, Schema, ValidationError } from "./schema/schema.ts";
 export type { Infer, Issue, JsonSchema, SafeResult, ServerEvent, UploadedFile } from "./schema/schema.ts";
 export { sse, fileExample, EventStream } from "./core/stream.ts";

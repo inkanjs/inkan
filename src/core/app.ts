@@ -24,7 +24,8 @@ import { jsonRows, SafeHtml } from "./helpers.ts";
 import { cached } from "./cache.ts";
 import { ArraySchema } from "../schema/schema.ts";
 import { readRequestBody, requestStream, TOO_LARGE, validateInput } from "./input.ts";
-import { Connection, originAllowed, UPGRADING, writeAnswer, writeSwitch, type Upgrading, type WsOrigins, type WsSpec } from "./ws.ts";
+import { Connection, originAllowed, UPGRADING, writeAnswer, writeSwitch, type Origins, type Upgrading, type WsDefaults, type WsSpec } from "./ws.ts";
+import { deprecate } from "./deprecate.ts";
 import { Gauge, type PressureOptions, type PressureSample } from "./pressure.ts";
 import { contextStorage, type Cell } from "./request-context.ts";
 import { Buffer } from "node:buffer"; // explicit, for runtimes without a global Buffer
@@ -71,8 +72,14 @@ export type AppOptions = OpenAPIInfo & {
    * since anyone can send these headers.
    */
   trustProxy?: TrustProxy;
-  /** The pages that may open the app's WebSockets, for every route without `origins` of its own. Default: the app's own origin. See `WsSpec.origins`. */
-  wsOrigins?: WsOrigins;
+  /**
+   * Defaults for every WebSocket route that does not set its own: `origins` (the pages that
+   * may open them; default the app's own origin, see `WsSpec.origins`), `maxMessage` (1 MiB),
+   * `heartbeat` (30 000 ms) and `handshakeTimeout` (10 000 ms).
+   */
+  ws?: WsDefaults;
+  /** @deprecated Use `ws: { origins }`. */
+  wsOrigins?: Origins;
   /** Development mode. Default: NODE_ENV is not "production". */
   dev?: boolean;
   /**
@@ -247,6 +254,8 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     // before any plugin: every scope's context class extends this one
     if (options.trustProxy) this._box.Ctx = trustingContext(this._box.Ctx, options.trustProxy);
     if (options.pressure) this._gauge = new Gauge(options.pressure);
+    if (options.wsOrigins !== undefined) deprecate("the wsOrigins option", "ws: { origins }");
+    this.wsDefaults = { ...options.ws, origins: options.ws?.origins ?? options.wsOrigins };
     if (options.context) {
       const als = contextStorage();
       const handle = this.handle.bind(this);
@@ -260,6 +269,8 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
   }
   /** The store of the request being handled, with `context: true`, until its context is in it. */
   private cell?: Cell;
+  /** What every WebSocket route without its own takes: the `ws` option, `wsOrigins` folded in. */
+  private wsDefaults: WsDefaults;
 
   /** The last overload sample (see `pressure`), for a health route; undefined without `pressure`. */
   pressure(): PressureSample | undefined {
@@ -966,7 +977,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     const m = this.router.match("WS", url.pathname);
     const route = m.kind === "found" ? m.route : undefined;
     // a handshake that never gets its answer (a hook that hangs) does not hold the socket forever
-    const limit = (route?.spec as WsSpec<unknown, unknown, unknown, unknown, unknown> | undefined)?.handshakeTimeout ?? HANDSHAKE_TIMEOUT;
+    const limit = (route?.spec as WsSpec<unknown, unknown, unknown, unknown, unknown> | undefined)?.handshakeTimeout ?? this.wsDefaults.handshakeTimeout ?? HANDSHAKE_TIMEOUT;
     const deadline = setTimeout(() => socket.destroy(), limit);
     deadline.unref();
     socket.once("close", () => clearTimeout(deadline));
@@ -1023,7 +1034,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     }
     if (!route) return;
     const spec = route.spec as WsSpec<unknown, unknown, unknown, unknown, unknown>;
-    const rule = spec.origins ?? this.options.wsOrigins;
+    const rule = spec.origins ?? this.wsDefaults.origins;
     if (rule !== "*" && (h.origin !== undefined || typeof rule === "function")) {
       let ctx: Context<any, any, any, any, any> | undefined;
       const early = () => (ctx ??= new route.box!.Ctx({ method: "GET", url: req.url ?? "/", headers: h, req }, url, "", h as Record<string, string>, fresh()) as Context<any, any, any, any, any>);
@@ -1044,8 +1055,8 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     const spec = route.spec as WsSpec<unknown, unknown, unknown, unknown, unknown>;
     const report = (err: unknown) => (this.options.onError ? this.options.onError(err, ctx) : console.error(err));
     const ws = new Connection(socket, {
-      maxMessage: spec.maxMessage ?? 1024 * 1024,
-      heartbeat: spec.heartbeat ?? 30_000,
+      maxMessage: spec.maxMessage ?? this.wsDefaults.maxMessage ?? 1024 * 1024,
+      heartbeat: spec.heartbeat ?? this.wsDefaults.heartbeat ?? 30_000,
       message: spec.message,
       send: spec.send,
       check: Boolean(this.options.validateResponses),

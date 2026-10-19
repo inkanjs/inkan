@@ -69,22 +69,45 @@ export type WsSpec<P, Q, H, In, Out> = {
   heartbeat?: number | false;
   /**
    * The pages that may open the socket, by the Origin header browsers send. Default (or the
-   * app's `wsOrigins`): only the app's own origin (the Host header and `ctx.protocol`), and
+   * app's `ws.origins`): only the app's own origin (the Host header and `ctx.protocol`), and
    * requests without an Origin, which are not browsers. A list adds those origins to the own
    * one; a function decides alone (its `ctx` is the request before hooks and input checks:
    * headers, protocol, path); `"*"` lets every page in. Anything else is a 403
    * `origin-not-allowed` before any hook runs, so another site cannot open the socket with
    * the user's cookies (cross-site WebSocket hijacking).
    */
-  origins?: WsOrigins;
+  origins?: Origins;
   /** The most sockets this route holds open at once, handshakes on the way counted; past it the upgrade is a 503. Default: no limit. */
   maxConnections?: number;
   /** Milliseconds the upgrade request has to get its answer (hooks, security, middleware) before the connection is cut. Default 10 000. */
   handshakeTimeout?: number;
 };
 
-/** Which pages may open a WebSocket: see `WsSpec.origins`. */
-export type WsOrigins = string[] | "*" | ((origin: string | undefined, ctx: Context<any, any, any, any, any>) => boolean);
+/**
+ * What an `origins` function sees of a request: it is asked before any hook, decoration or
+ * input check, so only what the request itself says is there.
+ */
+export type PreContext = {
+  readonly method: string;
+  readonly path: string;
+  /** Names in lower case, as they arrived. */
+  readonly headers: Readonly<Record<string, string | string[] | undefined>>;
+  readonly protocol: "http" | "https";
+  readonly ip: string | undefined;
+};
+
+/**
+ * Which pages may call: `"*"` for every one, a list of origins (`"https://shop.example"`),
+ * or a function that decides, given the request's Origin header (undefined when it has
+ * none) and the request. Used by WebSockets (`ws.origins`, `WsSpec.origins`) and by `cors`.
+ */
+export type Origins = "*" | string[] | ((origin: string | undefined, ctx: PreContext) => boolean);
+
+/** @deprecated Use `Origins`. */
+export type WsOrigins = Origins;
+
+/** What an app's `ws` option sets for every WebSocket route that does not say otherwise. */
+export type WsDefaults = Pick<WsSpec<unknown, unknown, unknown, unknown, unknown>, "origins" | "maxMessage" | "heartbeat" | "handshakeTimeout">;
 
 /** The socket a WebSocket route's handler gets. `In` is what the client sends, `Out` what the server does. */
 export interface WsSocket<In = string | Buffer, Out = unknown> extends AsyncIterable<In> {
@@ -130,7 +153,7 @@ export const canonicalKey = (key: unknown): key is string =>
  * request names it (scheme and Host). Origins are compared as URL origins, so `http://X:80`
  * is `http://x`.
  */
-export function originAllowed(rule: WsOrigins | undefined, origin: string | undefined, own: () => string, ctx: () => Context<any, any, any, any, any>): boolean {
+export function originAllowed(rule: Origins | undefined, origin: string | undefined, own: () => string, ctx: () => PreContext): boolean {
   if (rule === "*") return true;
   if (typeof rule === "function") return rule(origin, ctx()) === true;
   if (origin === undefined) return true; // not a browser: no cookies of somebody else's to ride on
