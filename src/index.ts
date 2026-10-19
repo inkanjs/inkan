@@ -15,6 +15,8 @@ export type { SseEvent } from "./core/stream.ts";
 export { memoryStore } from "./core/store.ts";
 export type { MemoryStoreOptions, Store } from "./core/store.ts";
 export { env } from "./core/env.ts";
+export { stateKey } from "./core/state.ts";
+export type { StateKey } from "./core/state.ts";
 export { context } from "./core/request-context.ts";
 export type { PressureOptions, PressureSample } from "./core/pressure.ts";
 export type { Job, JobBody, JobOptions, JobRecord, JobState, JobStore } from "./core/jobs.ts";

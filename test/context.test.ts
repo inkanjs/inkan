@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { context, inkan, t, type Context } from "../src/index.ts";
+import { context, inkan, stateKey, t, type Context } from "../src/index.ts";
 
 const quiet = { log: false, gracefulShutdown: false } as const;
 const sleep = (ms = 0) => new Promise((r) => setTimeout(r, ms));
@@ -77,4 +77,17 @@ test("context(): a job runs with its own job.ctx, not inside the request that st
   assert.notEqual(inJob, started, "not the request's own context object");
   assert.equal((inJob as Context<any, any, any, any, any>).id, started!.id, "but it reads like it");
   await app.stopped();
+});
+
+test("stateKey: a typed slot in ctx.state that no string key reaches", async () => {
+  const tenant = stateKey<{ name: string }>("tenant");
+  const other = stateKey<number>("tenant");
+  const app = inkan({ log: false })
+    .onRequest((ctx) => {
+      tenant.set(ctx, { name: "tea house" });
+      ctx.state.tenant = "a string of someone else";
+    })
+    .get("/me", (ctx) => ({ name: tenant.get(ctx)?.name, other: other.get(ctx) ?? null, plain: ctx.state.tenant, keys: Object.keys(ctx.state) }));
+  assert.deepEqual((await app.inject({ url: "/me" })).body, { name: "tea house", other: null, plain: "a string of someone else", keys: ["tenant"] });
+  assert.equal(tenant.name, "tenant");
 });
