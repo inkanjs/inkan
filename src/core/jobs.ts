@@ -305,7 +305,7 @@ export type JobMethod<Self> = <Path extends string, B = undefined, P = unknown, 
 /** What the jobs need from the app. */
 export interface JobHost {
   dev: boolean;
-  options: { validateResponses?: boolean; onError?: (error: unknown, ctx: Context<any, any, any, any, any>) => void };
+  options: { validateResponses?: boolean; onError?: (error: unknown, ctx: Context<any, any, any, any, any> | undefined) => void };
 }
 
 const newId = () => randomBytes(16).toString("base64url"); // not the request id: that one is a counter, easy to guess
@@ -368,7 +368,7 @@ export class JobHub {
   }
 
   report(err: unknown, ctx?: Context<any, any, any, any, any>) {
-    if (this.host.options.onError) this.host.options.onError(err, ctx as never);
+    if (this.host.options.onError) this.host.options.onError(err, ctx);
     else console.error(err);
   }
 

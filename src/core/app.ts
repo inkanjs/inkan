@@ -75,7 +75,14 @@ export type AppOptions = OpenAPIInfo & {
   wsOrigins?: WsOrigins;
   /** Development mode. Default: NODE_ENV is not "production". */
   dev?: boolean;
-  onError?: (error: unknown, ctx: Context<any, any, any, any, any>) => void;
+  /**
+   * Hears about every error that is a bug, not an answer: whatever a handler or hook throws
+   * that is not a problem, a broken onResponse hook, a stream that fails midway. `ctx` is the
+   * request's context where there is one, and undefined where the error came from outside any
+   * request's handling (the socket, a stream after its answer started, inkan itself).
+   * Default: `console.error`.
+   */
+  onError?: (error: unknown, ctx: Context<any, any, any, any, any> | undefined) => void;
   /**
    * The contracts stamped into code by `inkan seal`: `import seal from "./inkan.seal.js"`.
    * Each one is used only while it matches its contract; the rest run as without a seal.
@@ -428,7 +435,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
         for await (const chunk of res.stream) parts.push(Buffer.from(chunk));
       } catch (err) {
         // as over a socket: what was written stays, the answer ends there, and the error is reported
-        if (this.options.onError) this.options.onError(err, undefined as never);
+        if (this.options.onError) this.options.onError(err, undefined);
         else console.error(err);
       }
       res.abort?.abort();
@@ -1201,7 +1208,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
 
   /** Something failed outside every handler (the socket, inkan itself): log it and answer 500. */
   private broken(req: IncomingMessage, res: ServerResponse | Duplex, err: unknown) {
-    if (this.options.onError) this.options.onError(err, { req, res } as never);
+    if (this.options.onError) this.options.onError(err, undefined);
     else console.error(err);
     if (!(res instanceof ServerResponse)) {
       const body = JSON.stringify({ type: "internal", title: "Internal Server Error", status: 500, instance: req.url });
@@ -1241,7 +1248,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
         if (!res.write(chunk)) await new Promise((resolve) => res.once("drain", resolve));
       }
     } catch (err) {
-      if (this.options.onError) this.options.onError(err, { req: res.req, res } as never);
+      if (this.options.onError) this.options.onError(err, undefined);
       else console.error(err);
     } finally {
       res.off("close", stop);

@@ -222,3 +222,23 @@ test("app.routes() hands out each route as written, read-only, without the app's
   app.get("/more", () => ({}));
   assert.equal(app.routes().length, 2);
 });
+
+test("onError gets the context of the request, or undefined outside one", async () => {
+  const seen: [string, string | undefined][] = [];
+  const app = inkan({ log: false, onError: (err, ctx) => void seen.push([(err as Error).message, ctx?.path]) })
+    .get("/bug", () => {
+      throw new Error("in the handler");
+    })
+    .get("/bytes", () =>
+      (async function* () {
+        yield new Uint8Array([1]);
+        throw new Error("midway");
+      })(),
+    );
+  assert.equal((await app.inject({ url: "/bug" })).status, 500);
+  await app.inject({ url: "/bytes" });
+  assert.deepEqual(seen, [
+    ["in the handler", "/bug"],
+    ["midway", undefined],
+  ]);
+});
