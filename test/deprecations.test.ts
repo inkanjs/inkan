@@ -92,8 +92,8 @@ test("a plugin that reads options.prefix still finds the mount prefix there, and
 
 test("cors({ origin }) still takes one origin, a list or a function, and warns once", async () => {
   const said = await warnings(async () => {
-    const one = inkan(quiet).use(cors({ origin: "https://shop.example" })).get("/x", () => ({}));
-    const fn = inkan(quiet).use(cors({ origin: (o: string) => o === "https://a.example" })).get("/x", () => ({}));
+    const one = inkan(quiet).register(cors({ origin: "https://shop.example" })).get("/x", () => ({}));
+    const fn = inkan(quiet).register(cors({ origin: (o: string) => o === "https://a.example" })).get("/x", () => ({}));
     const at = (app: typeof one, origin: string) => app.inject({ url: "/x", headers: { origin } }).then((r) => r.headers["access-control-allow-origin"]);
     assert.equal(await at(one, "https://shop.example"), "https://shop.example");
     assert.equal(await at(one, "https://evil.example"), undefined);
@@ -168,4 +168,19 @@ test('decorateRequest(…, { before: "handler" }) is { resolve: "preHandler" }, 
   });
   assert.equal(said.length, 1);
   assert.match(said[0]!, /before: "handler".*resolve: "preHandler"/);
+});
+
+test("app.use(cors()) still works as middleware, and warns once", async () => {
+  const said = await warnings(async () => {
+    const app = inkan(quiet).use(cors({ origins: ["https://a.example"], maxAge: 60 })).put("/teas/:id", () => ({ ok: true }));
+    const pre = await app.inject({ method: "OPTIONS", url: "/teas/1", headers: { origin: "https://a.example", "access-control-request-method": "PUT" } });
+    assert.equal(pre.status, 204);
+    assert.equal(pre.headers["access-control-allow-origin"], "https://a.example");
+    assert.equal(pre.headers["access-control-max-age"], "60");
+    const put = await app.inject({ method: "PUT", url: "/teas/1", headers: { origin: "https://a.example" } });
+    assert.equal(put.headers["access-control-allow-origin"], "https://a.example");
+    assert.equal((await app.inject({ url: "/nowhere", headers: { origin: "https://a.example" } })).headers["access-control-allow-origin"], "https://a.example");
+  });
+  assert.equal(said.length, 1);
+  assert.match(said[0]!, /app\.use\(cors\(\)\) is deprecated, use app\.register\(cors\(\)\)/);
 });

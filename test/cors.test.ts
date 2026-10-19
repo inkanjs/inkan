@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { cors, inkan, problem, t } from "../src/index.ts";
+import { cors, inkan, plugin, problem, t } from "../src/index.ts";
 
 const quiet = { log: false, gracefulShutdown: false } as const;
 const preflight = (origin: string, extra: Record<string, string> = {}) => ({
@@ -27,7 +27,7 @@ test("OPTIONS answers on its own, with Allow and no contract note", async () => 
 });
 
 test("cors: any origin by default, preflight echoes the asked headers", async () => {
-  const app = shop().use(cors());
+  const app = shop().register(cors());
   const pre = await app.inject(preflight("https://a.example", { "access-control-request-headers": "content-type, x-tea" }));
   assert.equal(pre.status, 204);
   assert.equal(pre.headers["access-control-allow-origin"], "*");
@@ -41,7 +41,7 @@ test("cors: any origin by default, preflight echoes the asked headers", async ()
 });
 
 test("cors: one origin or a list, others get no headers", async () => {
-  const one = shop().use(cors({ origins: ["https://shop.example"], maxAge: 600 }));
+  const one = shop().register(cors({ origins: ["https://shop.example"], maxAge: 600 }));
   const ok = await one.inject(preflight("https://shop.example"));
   assert.equal(ok.headers["access-control-allow-origin"], "https://shop.example");
   assert.equal(ok.headers.vary, "origin");
@@ -50,13 +50,13 @@ test("cors: one origin or a list, others get no headers", async () => {
   assert.equal(no.status, 204);
   assert.equal(no.headers["access-control-allow-origin"], undefined);
 
-  const many = shop().use(cors({ origins: ["https://a.example", "https://b.example"] }));
+  const many = shop().register(cors({ origins: ["https://a.example", "https://b.example"] }));
   assert.equal((await many.inject(preflight("https://b.example"))).headers["access-control-allow-origin"], "https://b.example");
   assert.equal((await many.inject(preflight("https://c.example"))).headers["access-control-allow-origin"], undefined);
 });
 
 test("cors: credentials echo the origin instead of *, error answers keep the headers", async () => {
-  const app = shop().use(cors({ credentials: true, exposeHeaders: ["x-total"] }));
+  const app = shop().register(cors({ credentials: true, exposeHeaders: ["x-total"] }));
   const res = await app.inject({ url: "/teas/9", headers: { origin: "https://a.example" } });
   assert.equal(res.status, 404);
   assert.equal(res.headers["content-type"], "application/problem+json");
@@ -67,7 +67,7 @@ test("cors: credentials echo the origin instead of *, error answers keep the hea
 
 test("cors: origins as a function gets the origin and the request", async () => {
   const seen: string[] = [];
-  const app = shop().use(
+  const app = shop().register(
     cors({
       origins: (origin, ctx) => {
         seen.push(`${origin} ${ctx.method} ${ctx.path} ${ctx.protocol}`);
@@ -79,4 +79,15 @@ test("cors: origins as a function gets the origin and the request", async () => 
   assert.equal((await app.inject({ url: "/teas/1", headers: { origin: "https://evil.example" } })).headers["access-control-allow-origin"], undefined);
   await app.inject({ url: "/teas/1" });
   assert.deepEqual(seen, ["https://eu.shop.example GET /teas/1 http", "https://evil.example GET /teas/1 http"], "no Origin, nothing to ask");
+});
+
+test("cors in a plugin covers that plugin's routes only; a 404 of the app gets the headers when registered on the app", async () => {
+  const app = inkan(quiet)
+    .get("/open", () => ({}))
+    .register(plugin((p) => void p.register(cors({ origins: ["https://a.example"] })).get("/api", () => ({}))));
+  const h = (url: string) => app.inject({ url, headers: { origin: "https://a.example" } }).then((r) => r.headers["access-control-allow-origin"]);
+  assert.equal(await h("/api"), "https://a.example");
+  assert.equal(await h("/open"), undefined);
+  const whole = inkan(quiet).register(cors()).get("/x", () => ({}));
+  assert.equal((await whole.inject({ url: "/nowhere", headers: { origin: "https://b.example" } })).headers["access-control-allow-origin"], "*");
 });
