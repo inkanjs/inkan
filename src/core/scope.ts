@@ -17,6 +17,7 @@ import { defineJob, type JobHub, type JobMethod } from "./jobs.ts";
 import type { JsonSchema, Schema } from "../schema/schema.ts";
 import { parseRange } from "./semver.ts";
 import { checkInkan } from "./version.ts";
+import { deprecate } from "./deprecate.ts";
 import { joinPath, Routes, type Context, type DecoOf, type DefsOf, type Middleware, type OperationRoute, type Prefixed, type RouteDefs, type RouteInfo, type RouteRecord, type WithDeco, type WithRoutes } from "./route.ts";
 
 type Ctx<Deco> = Context<any, any, any, any, any> & Deco;
@@ -41,10 +42,18 @@ export type ResolveOptions = {
  * `register` as a property: the scope it returns knows what a shared plugin decorated, and
  * the routes a plugin made with `plugin()` defined, under the prefix it is registered with.
  */
-export type RegisterMethod<Self> = <O extends object = {}, A = {}, D extends RouteDefs = {}, Pre extends string = "">(
+export type RegisterMethod<Self> = <O extends object = {}, A = {}, D extends RouteDefs = {}, Pre extends string = "", Old extends string = "">(
   p: Plugin<O, DecoOf<Self>, A, D> | ((app: Scope<{}, DecoOf<Self>>, options: O) => unknown),
-  options?: O & { prefix?: Pre },
-) => WithRoutes<WithDeco<Self, A>, Prefixed<D, Pre>>;
+  /** What the plugin is handed. `prefix` here is deprecated: give it in the third argument. */
+  options?: O & { prefix?: Old },
+  /** Where the plugin is mounted: `{ prefix: "/v1" }` puts its routes under /v1. */
+  mount?: RegisterOptions<Pre>,
+) => WithRoutes<WithDeco<Self, A>, Prefixed<D, Pre extends "" ? Old : Pre>>;
+/** How `register` mounts a plugin, apart from the plugin's own options. */
+export type RegisterOptions<Pre extends string = string> = {
+  /** A path prefix for every route the plugin defines, under the prefix of the scope it is registered in. */
+  prefix?: Pre;
+};
 /** Only a type: the routes a plugin's setup defined in a chain on the scope it returns. */
 type RoutesOf<R> = DefsOf<R>;
 
@@ -479,17 +488,33 @@ export class Scope<Defs extends RouteDefs = any, Deco = any> extends Routes<Defs
   }
 
   /**
-   * Runs a plugin with a scope of its own, under `prefix` if given. Plugins run in the order
-   * they are registered; one that returns a promise holds back the ones after it, and
-   * `await app.ready()` (or `listen`) waits for all of them. Throws, before the plugin
-   * runs, when it was made for other versions of inkan (`plugin(fn, { inkan })`).
+   * Runs a plugin with a scope of its own, handing it `options`, and mounts it under
+   * `mount.prefix` if given: `app.register(auth, { secret }, { prefix: "/auth" })`. Plugins
+   * run in the order they are registered; one that returns a promise holds back the ones
+   * after it, and `await app.ready()` (or `listen`) waits for all of them. Throws, before
+   * the plugin runs, when it was made for other versions of inkan (`plugin(fn, { inkan })`).
+   *
+   * A `prefix` among the plugin's options (`register(p, { prefix })`, as before 0.8) still
+   * mounts it there, and is deprecated.
    */
-  register: RegisterMethod<this> = ((p: Plugin, options?: { prefix?: string }) => {
+  register: RegisterMethod<this> = ((p: Plugin, options?: { prefix?: string }, mount?: RegisterOptions) => {
     if (p.inkan !== undefined) checkInkan(p.pluginName || "This plugin", p.inkan);
     const shared = p[SHARED] === true;
-    const prefix = options?.prefix ? joinPath(this._prefix, options.prefix) : this._prefix;
+    let given = options ?? {};
+    let at = mount?.prefix;
+    if (at === undefined && options?.prefix !== undefined) {
+      deprecate("register(plugin, { prefix })", "register(plugin, options, { prefix })");
+      at = options.prefix;
+    } else if (at !== undefined && !("prefix" in given)) {
+      // a plugin written before 0.8 may read its prefix from its options: there it still is
+      given = Object.defineProperty({ ...given }, "prefix", {
+        get: () => (deprecate("a plugin reading options.prefix", "scope.prefix"), at),
+        enumerable: false,
+      });
+    }
+    const prefix = at ? joinPath(this._prefix, at) : this._prefix;
     const scope = new Scope<{}, Deco>(this._root, shared ? this._box : new Box(this._box), prefix);
-    this._root._load(() => p(scope, options ?? {}));
+    this._root._load(() => p(scope, given));
     return this;
   }) as never;
 }

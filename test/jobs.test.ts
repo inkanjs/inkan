@@ -326,6 +326,7 @@ test("a job path with :id is refused; a job in a plugin lives under its prefix",
     (scope) => {
       scope.job("/exports", {}, () => "ok");
     },
+    {},
     { prefix: "/teams/:team" },
   );
   const res = await app.inject({ method: "POST", url: "/teams/blue/exports" });

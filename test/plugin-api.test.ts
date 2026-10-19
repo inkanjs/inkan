@@ -472,9 +472,9 @@ test("scope.dev and scope.prefix: the app's mode and each scope's prefix, read-o
   const inner = plugin((app) => void got.push({ dev: app.dev, prefix: app.prefix }));
   const outer = plugin((app) => {
     got.push({ dev: app.dev, prefix: app.prefix });
-    app.register(inner, { prefix: "/admin" });
+    app.register(inner, {}, { prefix: "/admin" });
   });
-  const app = inkan({ ...quiet, dev: false }).register(outer, { prefix: "/v1" }).register(inner);
+  const app = inkan({ ...quiet, dev: false }).register(outer, {}, { prefix: "/v1" }).register(inner);
   await app.ready();
   assert.equal(app.dev, false);
   assert.equal(app.prefix, "");

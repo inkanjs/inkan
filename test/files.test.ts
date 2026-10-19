@@ -65,7 +65,7 @@ test("app.load reads a folder of routes, and they are routes like any other", as
 });
 
 test("load in a plugin puts the routes under its prefix; inject waits without ready()", async () => {
-  const app = inkan(quiet).register(plugin((p) => void p.load(pathToFileURL(shop))), { prefix: "/v1" });
+  const app = inkan(quiet).register(plugin((p) => void p.load(pathToFileURL(shop))), {}, { prefix: "/v1" });
   assert.equal((await app.inject({ url: "/v1/teas" })).status, 200);
   assert.equal((await app.inject({ url: "/teas" })).status, 404);
 });

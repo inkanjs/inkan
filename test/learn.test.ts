@@ -48,7 +48,7 @@ function solved(done: number, seal?: Seal): App {
     app.mount("/admin", admin);
   }
   if (done >= 7) app.onSend((_ctx, answer) => void (answer.headers["x-tea"] = "yes"));
-  if (done >= 11) app.register(plugin((p) => void p.get("/ping", () => ({ pong: true }))), { prefix: "/v2" });
+  if (done >= 11) app.register(plugin((p) => void p.get("/ping", () => ({ pong: true }))), {}, { prefix: "/v2" });
   return app;
 }
 

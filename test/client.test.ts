@@ -193,12 +193,12 @@ test("routes a plugin defines reach the typed client, under the prefix it is reg
   // not shared: a scope of its own, but its routes are the app's all the same
   const health = plugin((app) => app.get("/health", { response: { 200: s.object({ up: s.boolean() }) } }, () => ({ up: true })));
   // a plugin that registers another hands both its routes on
-  const v1 = plugin((app) => app.register(health, { prefix: "/v1" }).get("/", () => ({ root: true })));
+  const v1 = plugin((app) => app.register(health, {}, { prefix: "/v1" }).get("/", () => ({ root: true })));
 
   const app = inkan(quiet)
     .register(auth, { realm: "tea", prefix: "/auth" })
     .register(health)
-    .register(v1, { prefix: "/api" })
+    .register(v1, {}, { prefix: "/api" })
     .get("/me", (ctx) => ({ realm: ctx.realm }));
   const api = client<typeof app>("http://auth.local", { fetch: viaInject(app) });
 
