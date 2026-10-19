@@ -17,6 +17,8 @@ export type RawRequest = {
   /** The body, unread, for a route that takes it as a stream; `body` stays undefined then. */
   stream?: AsyncIterable<Buffer>;
   remote?: string;
+  /** Sent from inside the process (`inject`): the inspector answers it without an address. */
+  local?: boolean;
   /** Whether the request came over TLS, where the platform says so (`fetch`: the URL's scheme). Otherwise the socket tells. */
   secure?: boolean;
   req?: IncomingMessage;

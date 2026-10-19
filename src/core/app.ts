@@ -196,8 +196,8 @@ const SAFE_ID = /^[\w.:@-]{1,128}$/; // anything else could smuggle into logs, s
 const REDACT = new Set(["authorization", "cookie", "set-cookie", "proxy-authorization", "x-api-key"]);
 const CLIP = 4096;
 const clip = (s: string, n = CLIP) => (s.length > n ? s.slice(0, n) + `… (${s.length - n} more)` : s);
-const isLoopback = (addr?: string) =>
-  !addr || addr === "127.0.0.1" || addr === "::1" || addr === "::ffff:127.0.0.1";
+/** Whether an address is this machine's own. No address is not: an adapter that names none gets no inspector. */
+export const isLoopback = (addr?: string) => addr === "127.0.0.1" || addr === "::1" || addr === "::ffff:127.0.0.1";
 
 export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, Deco> implements Root {
   options: AppOptions;
@@ -405,7 +405,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
         headers["content-type"] ??= "application/json";
       }
     }
-    const res = await this.handle({ method: (opts.method ?? "GET").toUpperCase(), url: opts.url, headers, body });
+    const res = await this.handle({ method: (opts.method ?? "GET").toUpperCase(), url: opts.url, headers, body, local: true });
     const type = res.headers["content-type"] ?? "";
     let text = "";
     if (res.stream && type.startsWith("text/event-stream")) {
@@ -872,7 +872,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
       return encode(fresh({ "content-type": "text/html; charset=utf-8" }), 200, page);
     }
     if (inspector && (p === inspector || p.startsWith(inspector + "/"))) {
-      if (!isLoopback(raw.remote ?? raw.req?.socket.remoteAddress)) return; // a plain 404 for everybody else
+      if (!raw.local && !isLoopback(raw.remote ?? raw.req?.socket.remoteAddress)) return; // a plain 404 for everybody else
       if (p === inspector + "/log.json") {
         const since = Number(url.searchParams.get("since") ?? 0);
         return encode(fresh({ "cache-control": "no-store" }), 200, this.log.filter((e) => e.id > since));
