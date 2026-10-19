@@ -1674,9 +1674,9 @@ function warnIfExposed(server: Server) {
   warnedExposed = true;
   const c = paint(useColor());
   console.warn(
-    `\n  ${c.warn("! inkan runs in development mode on " + (addr.address === "::" || addr.address === "0.0.0.0" ? "every network interface" : addr.address))}` +
-      `\n    NODE_ENV is not "production", so errors are answered with their messages and every answer is checked.` +
-      `\n    In production set NODE_ENV=production. Running it this way on purpose? Say so with inkan({ dev: true }), or listen on 127.0.0.1.\n`,
+    `\n  ${c.warn("development mode")} ${c.dim("(NODE_ENV is not \"production\"), reachable on " + (addr.address === "::" || addr.address === "0.0.0.0" ? "every network interface" : addr.address))}` +
+      `\n  ${c.dim("errors are answered with their messages and every answer is checked. Deploying? Set NODE_ENV=production.")}` +
+      `\n  ${c.dim("This note goes away with inkan({ dev: true }) or listen({ host: \"127.0.0.1\" }).")}\n`,
   );
 }
 
