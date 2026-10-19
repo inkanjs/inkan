@@ -9,6 +9,7 @@ import { NO_PARAMS } from "./router.ts";
 import { problem } from "./problem.ts";
 import { csvChunks, isRedirect, parseCookies, SafeHtml, serializeCookie, type CookieOptions, type CsvOptions, type RedirectStatus } from "./helpers.ts";
 
+/** @internal */
 export type RawRequest = {
   method: string;
   url: string;
@@ -27,6 +28,7 @@ export type RawRequest = {
   signal?: AbortSignal;
 };
 
+/** @internal */
 export type RawResponse = {
   status: number;
   headers: Record<string, string>;
@@ -44,7 +46,7 @@ export type RawResponse = {
 /** How a scope wraps the pages its handlers render: `app.layout(...)`. */
 export type Layout = (content: SafeHtml, props: Record<string, unknown>, ctx: Context<any, any, any, any, any>) => SafeHtml | string | Promise<SafeHtml | string>;
 
-/** One request on its way through the app: what every step after routing needs. */
+/** @internal One request on its way through the app: what every step after routing needs. */
 export type Exchange = {
   raw: RawRequest;
   url: Target;
@@ -63,7 +65,7 @@ export type Exchange = {
   hooks: Hooks;
 };
 
-/** A request target split into its path and its query. A class, so every one has the same shape. */
+/** @internal A request target split into its path and its query. A class, so every one has the same shape. */
 export class Target {
   pathname: string;
   search: string;
@@ -77,6 +79,7 @@ export class Target {
 }
 
 /**
+ * @internal
  * The context of one request. A class, so every context has the same shape and the
  * getters live on the prototype. Nothing is made before it is asked for: the query is cut
  * apart, `state` created and `status` and `header` bound only on first use. `status` and
@@ -280,6 +283,7 @@ export class RequestContext {
 export type TrustProxy = boolean | number | ((ip: string) => boolean);
 
 /**
+ * @internal
  * The context class of an app with `trustProxy`: `ctx.ip` reads x-forwarded-for, or
  * forwarded when there is none, and `ctx.secure` x-forwarded-proto, or forwarded's
  * `proto=`. Both read the request's own headers, since a header schema may strip them from
@@ -296,7 +300,7 @@ export function trustingContext(Base: typeof RequestContext, trust: TrustProxy):
   };
 }
 
-/** The client's address behind the proxies `trust` names, walking the forwarded chain back from the socket. */
+/** @internal The client's address behind the proxies `trust` names, walking the forwarded chain back from the socket. */
 export function clientIp(socket: string | undefined, headers: Record<string, string | undefined>, trust: TrustProxy): string | undefined {
   const list = forwardedFor(headers);
   if (!list.length || trust === false) return socket;
@@ -309,6 +313,7 @@ export function clientIp(socket: string | undefined, headers: Record<string, str
 }
 
 /**
+ * @internal
  * Whether the client's own connection was TLS, as the proxies `trust` names tell it,
  * counted back from the socket as `clientIp` walks. `secure` is the socket's word, kept
  * when no believed proxy says anything.
@@ -362,6 +367,7 @@ function forwardedFor(headers: Record<string, string | undefined>): string[] {
 }
 
 /**
+ * @internal
  * Splits a request target into its path and its query. Not `new URL()`: that reads a path
  * like `//elsewhere/x` as a host and routes it as `/x`. A proxy's absolute form
  * (`scheme://host/path`) loses its scheme and host first.
@@ -374,6 +380,7 @@ export function target(raw: string): Target {
   return new Target(pathname || "/", search);
 }
 
+/** @internal */
 export function queryObject(sp: URLSearchParams): RawQuery {
   const o: RawQuery = {};
   for (const [k, v] of sp) addQuery(o, k, v);
@@ -381,6 +388,7 @@ export function queryObject(sp: URLSearchParams): RawQuery {
 }
 
 /**
+ * @internal
  * A query string (with its `?`) as an object. A query with nothing to decode, the usual
  * `?page=2&sort=name`, is cut apart in place; one with `%` or `+` goes through
  * URLSearchParams, so decoding stays exactly the platform's.

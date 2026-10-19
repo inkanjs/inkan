@@ -219,6 +219,7 @@ export type Result<R extends Responses> = SuccessBody<R> | Rows<SuccessBody<R>> 
 export type Handler<P, Q, B, H, R extends Responses, Deco = {}> = (ctx: Context<P, Q, B, H, R> & Deco) => Result<R> | Promise<Result<R>>;
 export type Middleware = (ctx: Context<any, any, any, any, any>, next: () => Promise<void>) => unknown;
 
+/** @internal A route as the app keeps it. Not API: `app.routes()` hands out `OperationRoute`s. */
 export type RouteRecord = {
   method: string;
   path: string;
@@ -265,7 +266,7 @@ export type WithRoutes<Self, More extends RouteDefs> =
         : Self;
 
 /** What `decorate` has put on the context so far. */
-export type DecoOf<Self> = Self extends { readonly _deco: infer X } ? X : {};
+export type DecoOf<Self> = Self extends { readonly [DECO]: infer X } ? X : {};
 /** The same app or scope, with one more decoration on its context. */
 export type WithDeco<Self, More> =
   Self extends App<infer D, infer X> ? App<D, X & More> : Self extends Scope<infer D, infer X> ? Scope<D, X & More> : Self;
@@ -312,11 +313,17 @@ export const joinPath = (a: string, b: string) => "/" + [a, b].join("/").split("
  * A set of routes that can be mounted under a prefix. Its type remembers every route
  * defined on it in a chain, which is what the typed client reads.
  */
+/** Only types: the keys of what a table of routes remembers in its type. */
+declare const DEFS: unique symbol;
+declare const DECO: unique symbol;
+/** The routes a table knows, as its type remembers them; `{}` for one typed `any`. */
+export type DefsOf<R> = R extends { readonly [DEFS]: infer D extends RouteDefs } ? (0 extends 1 & D ? {} : D) : {};
+
 export class Routes<Defs extends RouteDefs = any, Deco = {}> {
   /** Only a type: the routes this table knows. There is nothing here at runtime. */
-  declare readonly _defs: Defs;
+  declare readonly [DEFS]: Defs;
   /** Only a type: what `decorate` put on the context its handlers get. */
-  declare readonly _deco: Deco;
+  declare readonly [DECO]: Deco;
   /** @internal */
   _records: RouteRecord[] = [];
   /** @internal */

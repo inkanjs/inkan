@@ -1,11 +1,14 @@
 // Writing a seal file from an app, and putting a seal to work in one.
 
-import type { RouteRecord } from "../core/route.ts";
+import type { OperationRoute } from "../core/route.ts";
+
+/** What a seal reads of a route: where it is and its contract. */
+type SealRoute = Pick<OperationRoute, "method" | "path" | "spec">;
 import type { Schema } from "../schema/schema.ts";
 import { compile, PRELUDE, SEAL_FORMAT, Unsealable, type Seal } from "./compile.ts";
 
 /** Every schema a route's contract holds, with a label that says where it sits. */
-function contractsOf(routes: RouteRecord[]): { label: string; schema: Schema<any> }[] {
+function contractsOf(routes: readonly SealRoute[]): { label: string; schema: Schema<any> }[] {
   const out: { label: string; schema: Schema<any> }[] = [];
   for (const r of routes) {
     const at = `${r.method} ${r.path}`;
@@ -29,7 +32,7 @@ export type SealReport = {
 };
 
 /** The seal file for these routes. `from` only goes into the header, to say how to make it again. */
-export function writeSeal(routes: RouteRecord[], from: string): SealReport {
+export function writeSeal(routes: readonly SealRoute[], from: string): SealReport {
   const entries = new Map<string, { source: string; labels: string[] }>();
   const unsealable: SealReport["unsealable"] = [];
   let sealed = 0;
@@ -73,7 +76,7 @@ export type SealState = { sealed: number; stale: string[]; unsealable: number; w
  * whose code hashes to something the seal does not have changed since the seal was made:
  * it keeps running unsealed, and is reported.
  */
-export function applySeal(seal: Seal, routes: RouteRecord[]): SealState {
+export function applySeal(seal: Seal, routes: readonly SealRoute[]): SealState {
   const state: SealState = { sealed: 0, stale: [], unsealable: 0 };
   if (seal?.inkan !== SEAL_FORMAT || typeof seal.entries !== "object") return { ...state, wrongFormat: true };
   const seen = new Set<Schema<any>>();

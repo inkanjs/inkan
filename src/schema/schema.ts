@@ -52,8 +52,12 @@ const required = (path: string, issues: Issue[]): Fail => {
   return FAIL;
 };
 
+/** Only a type: the key of the value type a schema carries, which `Infer` reads. */
+declare const OUT: unique symbol;
+
 export abstract class Schema<T = unknown> {
-  declare readonly _type: T;
+  /** Only a type: what the schema checks to. There is nothing here at runtime. */
+  declare readonly [OUT]: T;
   meta: Meta = {};
 
   /**
@@ -63,16 +67,16 @@ export abstract class Schema<T = unknown> {
   protected abstract stamp(): Check<T>;
   protected abstract json(ctx?: RefContext): JsonSchema;
 
-  private _check?: Check<T>;
+  private checkFn?: Check<T>;
 
   /** @internal */
   _run(value: unknown, path: string, coerce: boolean, issues: Issue[]): T | Fail {
-    return (this._check ??= this.runner())(value, path, coerce, issues);
+    return (this.checkFn ??= this.runner())(value, path, coerce, issues);
   }
 
   /** @internal The whole check as one function, for a parent to call directly. */
   _checker(): Check<T> {
-    return (this._check ??= this.runner());
+    return (this.checkFn ??= this.runner());
   }
 
   /** The stamp, with what every schema does first: a missing value, a default, null. */
@@ -131,13 +135,13 @@ export abstract class Schema<T = unknown> {
     const copy = Object.create(Object.getPrototypeOf(this));
     Object.assign(copy, this);
     copy.meta = { ...this.meta, ...patch };
-    copy._ser = undefined; // a copy with other rules writes its own way
-    copy._trimmed = false;
-    copy._trimFn = undefined;
-    copy._fitted = false;
-    copy._fitFn = undefined;
-    copy._check = undefined; // and checks its own way, from its own rules
-    copy._sealedParse = undefined; // a seal belongs to one contract
+    copy.ser = undefined; // a copy with other rules writes its own way
+    copy.trimmed = false;
+    copy.trimFn = undefined;
+    copy.fitted = false;
+    copy.fitFn = undefined;
+    copy.checkFn = undefined; // and checks its own way, from its own rules
+    copy.sealedParse = undefined; // a seal belongs to one contract
     copy._sealedBy = undefined;
     return copy;
   }
@@ -193,8 +197,8 @@ export abstract class Schema<T = unknown> {
    * when there is one, as in safeParse.
    */
   _into(value: unknown, coerce: boolean, issues: Issue[]): T | typeof INVALID {
-    if (this._sealedParse) {
-      const r = this._sealedParse(value, coerce) as SafeResult<T>;
+    if (this.sealedParse) {
+      const r = this.sealedParse(value, coerce) as SafeResult<T>;
       if (r.ok) return r.value;
       issues.push(...r.issues);
       return FAIL;
@@ -204,7 +208,7 @@ export abstract class Schema<T = unknown> {
   }
 
   safeParse(value: unknown, opts: { coerce?: boolean } = {}): SafeResult<T> {
-    if (this._sealedParse) return this._sealedParse(value, opts.coerce ?? false) as SafeResult<T>;
+    if (this.sealedParse) return this.sealedParse(value, opts.coerce ?? false) as SafeResult<T>;
     const issues: Issue[] = [];
     const out = this._run(value, "", opts.coerce ?? false, issues);
     if (out === FAIL || issues.length) return { ok: false, issues };
@@ -217,8 +221,8 @@ export abstract class Schema<T = unknown> {
     return ctx.components.size ? { ...schema, $defs: Object.fromEntries(ctx.components) } : schema;
   }
 
-  private _ser?: (v: unknown) => string;
-  private _sealedParse?: (v: unknown, coerce: boolean) => SafeResult<unknown>;
+  private ser?: (v: unknown) => string;
+  private sealedParse?: (v: unknown, coerce: boolean) => SafeResult<unknown>;
   /** @internal The seal this schema runs on, if any. */
   _sealedBy?: object;
 
@@ -228,7 +232,7 @@ export abstract class Schema<T = unknown> {
    */
   _seal(by: object, parse: (v: unknown, coerce: boolean) => SafeResult<unknown>) {
     this._sealedBy = by;
-    this._sealedParse = parse; // writing stays this schema's own, so sealed or not it writes the same
+    this.sealedParse = parse; // writing stays this schema's own, so sealed or not it writes the same
   }
 
   /**
@@ -239,29 +243,29 @@ export abstract class Schema<T = unknown> {
    * or a symbol is left out, as JSON.stringify leaves it out.
    */
   _serializer(): (v: unknown) => string {
-    if (!this._ser) {
+    if (!this.ser) {
       const trim = this._trimmer();
       const fit = this._fitter();
       // Most answers hold exactly what the contract lists, as plain objects: those go to the
       // native writer as they are, which is the fastest there is. Anything else is trimmed to
       // the contract first, so what it does not list can never go out.
-      this._ser = !trim || !fit ? json : (v) => (!borrowsKeys() && fit(v) ? json(v) : (JSON.stringify(trim(v)) ?? "null"));
+      this.ser = !trim || !fit ? json : (v) => (!borrowsKeys() && fit(v) ? json(v) : (JSON.stringify(trim(v)) ?? "null"));
     }
-    return this._ser;
+    return this.ser;
   }
 
-  private _fitFn?: Fit;
-  private _fitted = false;
+  private fitFn?: Fit;
+  private fitted = false;
   /**
    * @internal Whether a value can go to JSON.stringify as it is, because a trim would not
    * change what is written; undefined when that is so for any value. Built once.
    */
   _fitter(): Fit | undefined {
-    if (!this._fitted) {
-      this._fitted = true;
-      this._fitFn = this.fitter();
+    if (!this.fitted) {
+      this.fitted = true;
+      this.fitFn = this.fitter();
     }
-    return this._fitFn;
+    return this.fitFn;
   }
 
   /** When in doubt, no: the trim is always right. */
@@ -269,18 +273,18 @@ export abstract class Schema<T = unknown> {
     return () => false;
   }
 
-  private _trimFn?: Trim;
-  private _trimmed = false;
+  private trimFn?: Trim;
+  private trimmed = false;
   /**
    * @internal A function that copies a value with only what this schema lists, or undefined
    * when the value is written as it is (a primitive, a list of them). Built once.
    */
   _trimmer(): Trim | undefined {
-    if (!this._trimmed) {
-      this._trimmed = true;
-      this._trimFn = this.trimmer();
+    if (!this.trimmed) {
+      this.trimmed = true;
+      this.trimFn = this.trimmer();
     }
-    return this._trimFn;
+    return this.trimFn;
   }
 
   /** How this kind of schema trims a value. The fallback lets the parser strip it, and writes the value as it is when it does not parse. */
@@ -980,7 +984,7 @@ export class DiscriminatedSchema<K extends string, S extends Record<string, Obje
       }
     }
   }
-  protected stamp(): Check<this["_type"]> {
+  protected stamp(): Check<this[typeof OUT]> {
     const { key, options } = this;
     const message = `must be one of ${Object.keys(options).map((x) => JSON.stringify(x)).join(", ")}`;
     return (value, path, coerce, issues) => {
@@ -993,7 +997,7 @@ export class DiscriminatedSchema<K extends string, S extends Record<string, Obje
         issues.push({ path: path ? `${path}.${key}` : key, message });
         return FAIL;
       }
-      return options[tag]!._run(value, path, coerce, issues) as this["_type"] | Fail;
+      return options[tag]!._run(value, path, coerce, issues) as this[typeof OUT] | Fail;
     };
   }
   protected override trimmer(): Trim | undefined {

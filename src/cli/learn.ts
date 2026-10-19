@@ -9,7 +9,7 @@ import { createServer, type Server } from "node:http";
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, symlinkSync, watch, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import type { App } from "../core/app.ts";
+import type { App, AppOptions } from "../core/app.ts";
 import { paint, useColor } from "../core/color.ts";
 import { writeSeal } from "../seal/seal.ts";
 import { QUESTS, type QuestContext } from "./quests.ts";
@@ -109,7 +109,7 @@ export async function learn(dir: string, opts: { port?: number } = {}): Promise<
         return;
       }
       await fresh.ready();
-      fresh.options.log = false; // the quests send many requests; their log lines would bury the text
+      (fresh.options as AppOptions).log = false; // the quests send many requests; their log lines would bury the text
       fresh.onResponse((ctx) => {
         const ref = (ctx.headers as Record<string, string | undefined>).referer ?? "";
         if (ref.includes("/docs") && !seen.fromDocs) {

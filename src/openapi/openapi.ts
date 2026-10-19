@@ -2,12 +2,14 @@
 // the schemas that validate a request are the ones that describe it.
 
 import { STATUS_CODES } from "node:http";
+import type { App } from "../core/app.ts";
+import { deprecate } from "../core/deprecate.ts";
 import type { OperationRoute, RouteRecord, Security } from "../core/route.ts";
 import { ArraySchema, EventsSchema, FileSchema, ObjectSchema, RawBodySchema, t, type JsonSchema, type RefContext, type Schema } from "../schema/schema.ts";
 
 const NO_META = Object.freeze({});
-/** What a describe hook sees of a route: `ctx.route`'s fields and the spec, read-only. */
-const routeView = (r: RouteRecord): OperationRoute =>
+/** @internal What `app.routes()` and an onOperation hook see of a route: `ctx.route`'s fields and the spec, read-only. */
+export const routeView = (r: RouteRecord): OperationRoute =>
   Object.freeze({ ...(r.info ?? { method: r.method, path: r.path, security: Object.freeze([...(r.security ?? [])]), meta: r.spec.meta ?? NO_META }), spec: r.spec });
 
 /** A body with a file anywhere at its top level goes as multipart/form-data. */
@@ -72,7 +74,20 @@ function schemeOf(s: Security): [string, JsonSchema] {
   return [name, { type: "apiKey", in: where, name: s.apiKey }];
 }
 
-export function buildOpenAPI(records: RouteRecord[], info: OpenAPIInfo = {}) {
+/**
+ * The OpenAPI document of an app: what `app.openapi()` hands back.
+ * @deprecated Use `app.openapi()`. Given a list of routes (`app.routes()`, as before 0.8),
+ * it still writes their document, without what the scopes' onOperation hooks add.
+ */
+export function buildOpenAPI(app: App | readonly OperationRoute[], info: OpenAPIInfo = {}): Record<string, unknown> {
+  deprecate("buildOpenAPI()", "app.openapi()");
+  if (Array.isArray(app)) return openAPIDocument(app as unknown as RouteRecord[], info);
+  const a = app as App;
+  return Object.keys(info).length ? openAPIDocument(a._records, { ...a.options, ...info }) : a.openapi();
+}
+
+/** @internal The OpenAPI document of these routes. */
+export function openAPIDocument(records: RouteRecord[], info: OpenAPIInfo = {}) {
   const ctx: RefContext = { components: new Map() };
   const paths: Record<string, Record<string, unknown>> = {};
   const problemRef = () => t.problem()._schema(ctx);

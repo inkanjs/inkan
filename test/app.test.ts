@@ -210,3 +210,15 @@ test("a real socket: listen, body limit, loopback inspector", async () => {
     server.close();
   }
 });
+
+test("app.routes() hands out each route as written, read-only, without the app's insides", () => {
+  const app = inkan({ log: false }).security("bearer").get("/teas/:id", { meta: { cached: true }, summary: "One tea" }, () => ({}));
+  const routes = app.routes();
+  assert.equal(routes, app.routes(), "the same list until a route is added");
+  assert.ok(Object.isFrozen(routes) && Object.isFrozen(routes[0]));
+  const [r] = routes;
+  assert.deepEqual({ method: r!.method, path: r!.path, security: [...r!.security], meta: r!.meta, summary: r!.spec.summary }, { method: "GET", path: "/teas/:id", security: ["bearer"], meta: { cached: true }, summary: "One tea" });
+  assert.deepEqual(Object.keys(r!).sort(), ["meta", "method", "path", "security", "spec"]);
+  app.get("/more", () => ({}));
+  assert.equal(app.routes().length, 2);
+});

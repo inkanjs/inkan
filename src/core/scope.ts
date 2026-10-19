@@ -17,7 +17,7 @@ import { defineJob, type JobHub, type JobMethod } from "./jobs.ts";
 import type { JsonSchema, Schema } from "../schema/schema.ts";
 import { parseRange } from "./semver.ts";
 import { checkInkan } from "./version.ts";
-import { joinPath, Routes, type Context, type DecoOf, type OperationRoute, type Prefixed, type RouteDefs, type RouteInfo, type RouteRecord, type WithDeco, type WithRoutes } from "./route.ts";
+import { joinPath, Routes, type Context, type DecoOf, type DefsOf, type OperationRoute, type Prefixed, type RouteDefs, type RouteInfo, type RouteRecord, type WithDeco, type WithRoutes } from "./route.ts";
 
 type Ctx<Deco> = Context<any, any, any, any, any> & Deco;
 /** `decorate` as a property, so its type can name the app or scope it returns. */
@@ -46,7 +46,7 @@ export type RegisterMethod<Self> = <O extends object = {}, A = {}, D extends Rou
   options?: O & { prefix?: Pre },
 ) => WithRoutes<WithDeco<Self, A>, Prefixed<D, Pre>>;
 /** Only a type: the routes a plugin's setup defined in a chain on the scope it returns. */
-type RoutesOf<R> = R extends { readonly _defs: infer D extends RouteDefs } ? (0 extends 1 & D ? {} : D) : {};
+type RoutesOf<R> = DefsOf<R>;
 
 /** An answer on its way out, as onSend sees it. A hook may change it, or return another. */
 export type Outgoing = {
@@ -103,7 +103,7 @@ export const NO_HOOKS: Hooks = Object.freeze({
 const RESERVED = new Set(["method", "path", "id", "ip", "remote", "params", "query", "headers", "body", "state", "route", "req", "res", "status", "header", "target", "host", "out", "_query", "_state", "_status", "_header", "text", "html", "redirect", "notFound", "render", "cookies", "setCookie", "clearCookie", "rawCookie", "_cookies", "_setCookie", "_clearCookie", "_render", "_layout", "_forwarded", "raw", "rawHeaders", "secure", "protocol"]);
 
 /**
- * What a scope holds. Its context class extends the one of the scope around it, so a
+ * @internal What a scope holds. Its context class extends the one of the scope around it, so a
  * decoration made outside is seen inside, even when it is made later, and never the
  * other way round.
  */
@@ -145,13 +145,17 @@ export class Box {
   }
 }
 
-/** What the app does for every scope inside it. */
+/** @internal What the app does for every scope inside it. */
 export interface Root {
   /** @internal */
   _dev: boolean;
+  /** @internal */
   _addRoute(r: RouteRecord): void;
+  /** @internal */
   _load(run: () => unknown): void;
+  /** @internal */
   _changed(): void;
+  /** @internal */
   _jobHub(): JobHub;
 }
 
@@ -252,6 +256,7 @@ export class Scope<Defs extends RouteDefs = any, Deco = any> extends Routes<Defs
   /** @internal */
   _prefix: string;
 
+  /** @internal */
   constructor(root?: Root, box?: Box, prefix = "") {
     super();
     this._root = root ?? (this as unknown as Root);

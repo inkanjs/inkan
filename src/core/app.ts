@@ -7,7 +7,7 @@ import { HttpProblem, problem, type ProblemBody } from "./problem.ts";
 import { type Match, Router } from "./router.ts";
 import { EventsSchema, RawBodySchema, StreamSchema, t, type Infer, type Issue, type Schema, type UploadedFile } from "../schema/schema.ts";
 import { encodeEvents, EventStream, hasFiles, isStream, parseEvents, toFormData, type SseEvent } from "./stream.ts";
-import { buildOpenAPI, type OpenAPIInfo } from "../openapi/openapi.ts";
+import { openAPIDocument, routeView, type OpenAPIInfo } from "../openapi/openapi.ts";
 import { docsPage } from "../pages/docs.ts";
 import { inspectorPage } from "../pages/inspector.ts";
 import { exampleFrom } from "../testing/record.ts";
@@ -15,9 +15,9 @@ import { runChecks, type CheckOptions, type CheckReport } from "../testing/check
 import { paint, useColor } from "./color.ts";
 import type { Seal } from "../seal/compile.ts";
 import { applySeal, type SealState } from "../seal/seal.ts";
-import { Reply, type Context, type Example, type Middleware, type RawQuery, type RouteRecord, type Responses, type RouteDefs } from "./route.ts";
+import { Reply, type Context, type Example, type Middleware, type OperationRoute, type RawQuery, type RouteRecord, type Responses, type RouteDefs } from "./route.ts";
 import { target, queryObject, trustingContext, type Exchange, type RawRequest, type RawResponse, type Target, type TrustProxy } from "./context.ts";
-import { NO_HOOKS, runHooks, Scope, type Hooks, type Root } from "./scope.ts";
+import { NO_HOOKS, runHooks, Scope, type Hooks } from "./scope.ts";
 import { nextId } from "./request-id.ts";
 import { JobHub } from "./jobs.ts";
 import { jsonRows, SafeHtml } from "./helpers.ts";
@@ -199,8 +199,9 @@ const clip = (s: string, n = CLIP) => (s.length > n ? s.slice(0, n) + `… (${s.
 /** Whether an address is this machine's own. No address is not: an adapter that names none gets no inspector. */
 export const isLoopback = (addr?: string) => addr === "127.0.0.1" || addr === "::1" || addr === "::ffff:127.0.0.1";
 
-export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, Deco> implements Root {
-  options: AppOptions;
+export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, Deco> {
+  /** The options the app was made with, the defaults filled in. Read them; they are fixed once the app is made. */
+  readonly options: Readonly<AppOptions>;
   /** @internal */
   _dev: boolean;
   private router = new Router<RouteRecord>();
@@ -208,8 +209,10 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
   private log: LogEntry[] = [];
   private logId = 0;
   private spec?: Record<string, unknown>;
-  private _onListen: (() => void | Promise<void>)[] = [];
-  private _onClose: (() => void | Promise<void>)[] = [];
+  /** What `routes()` hands out, made once until a route is added. */
+  private views?: readonly OperationRoute[];
+  private listenHooks: (() => void | Promise<void>)[] = [];
+  private closeHooks: (() => void | Promise<void>)[] = [];
   /** Plugins still loading, in order; undefined when everything registered so far has run. */
   private loading?: Promise<void>;
   /** Whether every route has its hooks joined; adding a route or a hook undoes it. */
@@ -243,13 +246,13 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
       // handle() puts the request's context into the cell, synchronously, the moment it has one
       this.handle = (raw, url, matched) => {
         const cell: Cell = { ctx: undefined };
-        this._cell = cell;
+        this.cell = cell;
         return als.run(cell, handle, raw, url, matched);
       };
     }
   }
   /** The store of the request being handled, with `context: true`, until its context is in it. */
-  private _cell?: Cell;
+  private cell?: Cell;
 
   /** The last overload sample (see `pressure`), for a health route; undefined without `pressure`. */
   pressure(): PressureSample | undefined {
@@ -277,12 +280,12 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
   }
 
   onListen(fn: () => void | Promise<void>): this {
-    this._onListen.push(fn);
+    this.listenHooks.push(fn);
     return this;
   }
 
   onClose(fn: () => void | Promise<void>): this {
-    this._onClose.push(fn);
+    this.closeHooks.push(fn);
     return this;
   }
 
@@ -293,6 +296,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     this.router.add(r.method, r.path, r);
     this._records.push(r);
     this.spec = undefined;
+    this.views = undefined;
     this.built = false;
     this.sealState = undefined; // a new route: its contracts get sealed on the next request
   }
@@ -372,12 +376,13 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
   /** The docs path with a slash at the end, which answers too. */
   private docsSlash?: string;
 
-  routes(): RouteRecord[] {
-    return [...this._records];
+  /** Every route of the app and of the scopes inside it, as written: method, path, security, meta and spec. Read-only. */
+  routes(): readonly OperationRoute[] {
+    return (this.views ??= Object.freeze(this._records.map(routeView)));
   }
 
   openapi(): Record<string, unknown> {
-    return (this.spec ??= buildOpenAPI(this._records, this.options));
+    return (this.spec ??= openAPIDocument(this._records, this.options));
   }
 
   /** Runs every route's examples against the app, without a socket. */
@@ -440,13 +445,12 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
   // ----- the request path -----
 
   /**
-   * @internal
    * Synchronous as long as nothing on the way is asynchronous: a promise only for a body
    * that has to be read, middleware, or a handler that returns one. Everything else answers
    * in the same turn, without a promise, a closure per step or an extra trip through the
    * microtask queue.
    */
-  handle(raw: RawRequest, url: Target = target(raw.url), matched?: Match<RouteRecord>): RawResponse | Promise<RawResponse> {
+  private handle(raw: RawRequest, url: Target = target(raw.url), matched?: Match<RouteRecord>): RawResponse | Promise<RawResponse> {
     if (!this.built) this.build();
     if (this.options.seal && !this.sealState) this.sealed();
     const timed = Boolean(this.options.log || this.options.inspector); // read each time: check() turns the log off for a while
@@ -478,9 +482,9 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     // A request no route takes never reads one on the plain path, so it gets none there.
     const ctx = (route || !plain ? new (route ? route.box! : this._box).Ctx(raw, url, id, headers, out) : undefined) as Context<any, any, any, any, any>;
     const x: Exchange = { raw, url, ctx, out, notes, headers, started, timed, id: idHeader ? id : undefined, route: undefined, hooks };
-    if (this._cell) {
-      this._cell.ctx = ctx;
-      this._cell = undefined;
+    if (this.cell) {
+      this.cell.ctx = ctx;
+      this.cell = undefined;
     }
 
     if (!plain) return this.full(x, m);
@@ -719,7 +723,12 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     return res;
   }
 
-  private logRequest(entry: RequestLog) {
+  /**
+   * Writes one request's log line the way the app's `log` and `logger` options say: for an
+   * adapter that answers some requests itself. Requests through `exchange`, `fetch` or
+   * `listen` are logged already.
+   */
+  logRequest(entry: RequestLog): void {
     const { log, logger } = this.options;
     if (!log) return;
     if (logger) return logger(entry);
@@ -1135,7 +1144,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
 
   /** For adapters: runs the onListen hooks, once the adapter's server listens. */
   async started(): Promise<void> {
-    for (const hook of this._onListen) await hook();
+    for (const hook of this.listenHooks) await hook();
     this.schedule();
   }
 
@@ -1151,7 +1160,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
   async stopped(): Promise<void> {
     this._gauge?.stop();
     await Promise.all([this._jobs?.stop(), this.closeSockets()]);
-    for (const hook of this._onClose) await hook();
+    for (const hook of this.closeHooks) await hook();
   }
 
   // ----- web standard -----
@@ -1317,7 +1326,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
       server.listen(p, h, () => {
         server.off("error", reject);
         (async () => {
-          for (const hook of this._onListen) await hook();
+          for (const hook of this.listenHooks) await hook();
           this.schedule();
           const { log, logger } = this.options;
           if (log && !logger) {
@@ -1327,7 +1336,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
               console.log(JSON.stringify({ time: new Date().toISOString(), msg: "listening", port, worker: WORKER }));
             } else this.banner(server);
           }
-          if (this.options.gracefulShutdown) shutdownOnSignal(server, this._onClose, [() => this._jobs?.stop(), () => this.closeSockets(), () => this._gauge?.stop()]);
+          if (this.options.gracefulShutdown) shutdownOnSignal(server, this.closeHooks, [() => this._jobs?.stop(), () => this.closeSockets(), () => this._gauge?.stop()]);
           resolve(server);
         })().catch((err) => server.close(() => reject(err)));
       });
@@ -1379,10 +1388,10 @@ function isRows(v: unknown): boolean {
 const INPUT_PROBLEM = t.problem();
 
 /**
- * The schema a status answers with. A route that takes input also promises
+ * @internal The schema a status answers with. A route that takes input also promises
  * a 400 problem for input that breaks the contract, without saying so.
  */
-export function contractFor(route: RouteRecord, status: number): Schema<any> | undefined {
+export function contractFor(route: { readonly spec: RouteRecord["spec"] }, status: number): Schema<any> | undefined {
   const { spec } = route;
   const declared = spec.response?.[status];
   if (declared) return declared;
