@@ -242,6 +242,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
   constructor(options: AppOptions = {}) {
     super();
     this._dev = options.dev ?? process.env.NODE_ENV !== "production";
+    this.devGuessed = options.dev === undefined;
     this.options = {
       docs: "/docs",
       openapi: "/openapi.json",
@@ -273,6 +274,8 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
   private cell?: Cell;
   /** What every WebSocket route without its own takes: the `ws` option, `wsOrigins` folded in. */
   private wsDefaults: WsDefaults;
+  /** Whether development mode came from NODE_ENV, not from the `dev` option. */
+  private devGuessed: boolean;
 
   /** The last overload sample (see `pressure`), for a health route; undefined without `pressure`. */
   pressure(): PressureSample | undefined {
@@ -1370,6 +1373,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
       server.once("error", reject);
       server.listen(p, h, () => {
         server.off("error", reject);
+        if (this.devGuessed && this._dev) warnIfExposed(server);
         (async () => {
           for (const hook of this.listenHooks) await hook();
           this.schedule();
@@ -1603,6 +1607,24 @@ function toWebResponse(out: RawResponse): Response {
     },
   });
   return new Response(body, { status: out.status, headers });
+}
+
+let warnedExposed = false;
+/**
+ * Development mode that nobody chose, on an address other machines reach: most likely a
+ * deploy without NODE_ENV=production, which answers with error messages and runs the
+ * response checks. Said once per process, loudly; `dev: true` or a loopback host quiets it.
+ */
+function warnIfExposed(server: Server) {
+  const addr = server.address();
+  if (warnedExposed || !addr || typeof addr === "string" || isLoopback(addr.address) || addr.address === "::ffff:127.0.0.1") return;
+  warnedExposed = true;
+  const c = paint(useColor());
+  console.warn(
+    `\n  ${c.warn("! inkan runs in development mode on " + (addr.address === "::" || addr.address === "0.0.0.0" ? "every network interface" : addr.address))}` +
+      `\n    NODE_ENV is not "production", so errors are answered with their messages and every answer is checked.` +
+      `\n    In production set NODE_ENV=production. Running it this way on purpose? Say so with inkan({ dev: true }), or listen on 127.0.0.1.\n`,
+  );
 }
 
 let shuttingDown = false;
