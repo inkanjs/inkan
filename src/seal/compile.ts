@@ -25,24 +25,37 @@ import {
   type Schema,
 } from "../schema/schema.ts";
 
-/** The version of the code a seal is written in. A seal of another version is not used. */
+/**
+ * The version of the code a seal is written in. A seal of another version is not used.
+ * @internal
+ */
 export const SEAL_FORMAT = 2;
 
 /** A contract's check, stamped into code. Writing is the schema's own, so a seal never writes differently. */
 export type SealedEntry = {
   parse: (value: unknown, coerce: boolean) => { ok: true; value: unknown } | { ok: false; issues: Issue[] };
 };
+/** @experimental */
 export type Seal = { inkan: number; entries: Record<string, SealedEntry> };
 
-/** Thrown for a schema the seal cannot write yet; that contract then runs unsealed. */
+/**
+ * Thrown for a schema the seal cannot write yet; that contract then runs unsealed.
+ * @internal
+ */
 export class Unsealable extends Error {}
 
-/** What every entry in a seal file can lean on. Fixed per SEAL_FORMAT, so not part of a hash. */
+/**
+ * What every entry in a seal file can lean on. Fixed per SEAL_FORMAT, so not part of a hash.
+ * @internal
+ */
 export const PRELUDE = `const F = Symbol("fail");
 const typeOf = (v) => (v === null ? "null" : Array.isArray(v) ? "array" : typeof v);
 const json = (v) => JSON.stringify(v) ?? "null";`;
 
-/** A schema as an expression that evaluates to its entry, and the hash that finds it again. */
+/**
+ * A schema as an expression that evaluates to its entry, and the hash that finds it again.
+ * @internal
+ */
 export function compile(schema: Schema<any>): { source: string; hash: string } {
   const g = new Gen();
   const parse = g.parser(schema);

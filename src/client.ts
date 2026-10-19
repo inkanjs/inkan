@@ -148,6 +148,7 @@ export type Client<A> = {
    *
    *   for await (const e of api.events("/exports/:id/events", { params: { id } }))
    *     if (e.event === "progress") e.data.done;
+   * @experimental
    */
   events: Events<DefsOf<A>>;
   /**
@@ -158,6 +159,7 @@ export type Client<A> = {
    *   room.on("message", (m) => m.type === "said" && show(m.text));
    *   await room.ready;
    *   room.send({ type: "say", text: "hello" });
+   * @experimental
    */
   ws: WsCall<DefsOf<A>>;
 };

@@ -28,7 +28,10 @@ type Ctx = Context<any, any, any, any, any> & { _caller(): string; _out(): { sta
 /** Plain values only: an answer that is a stream, an event stream or a reply is made anew each time. */
 const keepable = (v: unknown) => !(v instanceof Reply) && !(v instanceof EventStream) && !isStream(v);
 
-/** The handler with a memory, per route and per process. A handler that throws keeps nothing. */
+/**
+ * The handler with a memory, per route and per process. A handler that throws keeps nothing.
+ * @internal
+ */
 export function cached(handler: Handler<any, any, any, any, any>, rule: CacheRule): Handler<any, any, any, any, any> {
   if (rule.ttl === undefined && rule.seconds !== undefined) deprecate("cache: { seconds }", "cache: { ttl } in milliseconds");
   const ms = rule.ttl ?? (rule.seconds ?? 0) * 1000;

@@ -75,6 +75,7 @@ export type RouteInfo = {
 /**
  * The route a `describe` hook adds to: what `ctx.route` holds, plus the spec it was
  * written with (summary, tags, schemas, examples, ...). Read-only: change the operation instead.
+ * @experimental
  */
 export type OperationRoute = Readonly<RouteInfo> & {
   readonly spec: Readonly<RouteSpec<any, any, any, any, Responses>>;
@@ -307,7 +308,10 @@ export type RouteMethod<Self, M extends string> = {
 
 // ---------- route tables ----------
 
-/** `security` as a list: undefined to take the group's, empty for none. */
+/**
+ * `security` as a list: undefined to take the group's, empty for none.
+ * @internal
+ */
 export const securityList = (s: Security | Security[] | false | undefined): Security[] | undefined =>
   s === undefined ? undefined : s === false ? [] : Array.isArray(s) ? s : [s];
 
@@ -390,6 +394,7 @@ export class Routes<Defs extends RouteDefs = any, Deco = {}> {
    *   app.ws("/rooms/:room", { query: t.object({ name: t.string() }), message: Say, send: Said }, (socket, ctx) => {
    *     socket.on("message", (m) => socket.send({ text: m.text, from: ctx.query.name }));
    *   });
+   * @experimental
    */
   ws: WsMethod<this> = ((path: string, spec: WsSpec<any, any, any, any, any>, handler: WsHandler<any, any, any, any, any>) => {
     const s = spec as RouteRecord["spec"];

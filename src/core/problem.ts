@@ -79,6 +79,7 @@ export function problem(status: number, type: string, detail?: string | ProblemO
   return new HttpProblem(status, type, detail.detail, detail.extra ?? extra, detail.headers);
 }
 
+/** @internal */
 export const validationProblem = (where: string, issues: Issue[]) =>
   new HttpProblem(400, "validation", `The ${where} does not match the contract`, {
     errors: issues.map((i) => ({ in: where, path: i.path, message: i.message })),

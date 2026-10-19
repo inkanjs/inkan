@@ -27,6 +27,7 @@ export class EventStream {
  */
 export const sse = (source: EventSource, opts: { keepAlive?: number } = {}) => new EventStream(source, opts.keepAlive ?? 15_000);
 
+/** @internal */
 export function formatEvent(e: SseEvent): string {
   const lines: string[] = [];
   if (e.event) lines.push(`event: ${e.event}`);
@@ -41,7 +42,10 @@ export { parseEvents } from "./sse.ts";
 
 const PING = Symbol("ping");
 
-/** The wire format of a stream, with keep-alive comments and a check per event. */
+/**
+ * The wire format of a stream, with keep-alive comments and a check per event.
+ * @internal
+ */
 export async function* encodeEvents(
   stream: EventStream,
   signal: AbortSignal,
@@ -72,7 +76,10 @@ export async function* encodeEvents(
   }
 }
 
-/** Is this something to stream rather than to send as one body? */
+/**
+ * Is this something to stream rather than to send as one body?
+ * @internal
+ */
 export function isStream(v: unknown): v is AsyncIterable<Uint8Array | string> {
   if (v === null || typeof v !== "object" || Buffer.isBuffer(v) || v instanceof Uint8Array) return false;
   return typeof (v as AsyncIterable<unknown>)[Symbol.asyncIterator] === "function";
@@ -87,9 +94,11 @@ export const fileExample = (name: string, content: string, type = "application/o
 
 const isFileExample = (v: unknown): v is FileExample => typeof v === "object" && v !== null && typeof (v as FileExample).$file === "string";
 
+/** @internal */
 export const hasFiles = (body: unknown): boolean =>
   typeof body === "object" && body !== null && Object.values(body).some((v) => isFileExample(v) || (Array.isArray(v) && v.some(isFileExample)));
 
+/** @internal */
 export function toFormData(body: Record<string, unknown>): FormData {
   const form = new FormData();
   for (const [k, v] of Object.entries(body)) {

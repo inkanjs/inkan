@@ -8,6 +8,7 @@ type Json = Record<string, any>;
 type Doc = { paths?: Record<string, Record<string, Json>>; components?: { schemas?: Record<string, Json> } };
 type Dir = "request" | "response";
 
+/** @experimental */
 export type Change = { breaking: boolean; where: string; message: string };
 
 const METHODS = ["get", "put", "post", "delete", "patch", "head", "options"];
@@ -34,6 +35,7 @@ const firstSchema = (content: Json | undefined) => {
 const values = (s: Json): unknown[] | undefined => (s.enum ? s.enum : s.const !== undefined ? [s.const] : undefined);
 const show = (v: unknown) => JSON.stringify(v);
 
+/** @experimental */
 export function diffOpenAPI(before: Doc, after: Doc): Change[] {
   const out: Change[] = [];
   const note = (breaking: boolean, where: string, message: string) => out.push({ breaking, where, message });

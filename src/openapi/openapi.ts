@@ -24,6 +24,7 @@ export type OpenAPIInfo = {
   servers?: { url: string; description?: string }[];
 };
 
+/** @internal */
 export const toOpenAPIPath = (path: string) =>
   path.replace(/:(\w+)/g, "{$1}").replace(/\*(\w*)$/, (_, n) => `{${n || "rest"}}`);
 

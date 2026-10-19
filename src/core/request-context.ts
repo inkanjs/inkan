@@ -5,7 +5,10 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import type { Context } from "./route.ts";
 import { deprecate } from "./deprecate.ts";
 
-/** What a request's store holds. Filled once the request has its context, a moment after the store is entered. */
+/**
+ * What a request's store holds. Filled once the request has its context, a moment after the store is entered.
+ * @internal
+ */
 export type Cell = { ctx: Context<any, any, any, any, any> | undefined };
 
 let storage: AsyncLocalStorage<Cell> | undefined;
@@ -23,6 +26,7 @@ export function contextStorage(): AsyncLocalStorage<Cell> {
  * undefined. A background job runs with its own: `job.ctx`, not the request that started it.
  *
  *   const log = (msg: string) => console.log(`[${currentContext()?.id ?? "-"}] ${msg}`);
+ * @experimental
  */
 export function currentContext<C = Context<any, any, any, any, any>>(): C | undefined {
   if (!storage) throw new Error("inkan: currentContext() needs an app made with { context: true }; without it there is no request to hand back");

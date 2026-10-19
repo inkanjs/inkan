@@ -4,6 +4,7 @@
 import { monitorEventLoopDelay } from "node:perf_hooks";
 import { getHeapStatistics } from "node:v8";
 
+/** @experimental */
 export type PressureOptions = {
   /** Milliseconds the event loop may lag (the 99th percentile since the last sample). */
   eventLoopDelay?: number;
@@ -21,7 +22,10 @@ export type PressureOptions = {
   interval?: number;
 };
 
-/** What the last sample found. */
+/**
+ * What the last sample found.
+ * @experimental
+ */
 export type PressureSample = {
   /** Whether requests are turned away right now. */
   under: boolean;
@@ -34,9 +38,13 @@ export type PressureSample = {
   at: Date;
 };
 
-/** What one sample reads. A field of its own, so tests can put in numbers of their own. */
+/**
+ * What one sample reads. A field of its own, so tests can put in numbers of their own.
+ * @internal
+ */
 export type Measure = () => { eventLoopDelay: number; heapUsed: number; heapLimit: number; rss: number };
 
+/** @internal */
 export class Gauge {
   /** The one thing a request reads. */
   under = false;

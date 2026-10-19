@@ -28,7 +28,10 @@ export function route<P = Record<string, string>, Q = Record<string, string | st
   return { spec, handler } as FileRoute;
 }
 
-/** The exports a route file may have, and the method each one answers. */
+/**
+ * The exports a route file may have, and the method each one answers.
+ * @internal
+ */
 export const METHOD_EXPORTS: [string, string][] = [
   ["GET", "GET"],
   ["POST", "POST"],
@@ -40,7 +43,10 @@ export const METHOD_EXPORTS: [string, string][] = [
 const ROUTE_FILE = /\.(ts|mts|js|mjs)$/;
 const SKIPPED = /(\.d\.ts|\.test\.[mc]?[jt]s|\.spec\.[mc]?[jt]s)$/;
 
-/** Every route file under `dir`, in a stable order. Names starting with `_` or `.` are left alone. */
+/**
+ * Every route file under `dir`, in a stable order. Names starting with `_` or `.` are left alone.
+ * @internal
+ */
 export function routeFiles(dir: string): string[] {
   const out: string[] = [];
   const walk = (at: string) => {
@@ -55,7 +61,10 @@ export function routeFiles(dir: string): string[] {
   return out;
 }
 
-/** The path a file answers: `teas/[id].ts` is `/teas/:id`, `index` is its folder, `[...rest]` the rest. */
+/**
+ * The path a file answers: `teas/[id].ts` is `/teas/:id`, `index` is its folder, `[...rest]` the rest.
+ * @internal
+ */
 export function routePath(file: string): string {
   const segments = file.replace(ROUTE_FILE, "").split(sep).join("/").split("/");
   if (segments.at(-1) === "index") segments.pop();
@@ -71,10 +80,16 @@ export function routePath(file: string): string {
   return "/" + path.join("/");
 }
 
-/** The folder a `load` call means: a URL or an absolute path as it is, a relative path from the working directory. */
+/**
+ * The folder a `load` call means: a URL or an absolute path as it is, a relative path from the working directory.
+ * @internal
+ */
 export const folderOf = (dir: string | URL) => (dir instanceof URL ? fileURLToPath(dir) : resolve(dir));
 
-/** Reads every route file in a folder and hands each method it exports to `define`. */
+/**
+ * Reads every route file in a folder and hands each method it exports to `define`.
+ * @internal
+ */
 export async function loadRoutes(dir: string, define: (method: string, path: string, spec: unknown, handler: unknown) => void) {
   for (const file of routeFiles(dir)) {
     const rel = relative(dir, file);

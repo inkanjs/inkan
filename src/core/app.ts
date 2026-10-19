@@ -63,6 +63,7 @@ export type AppOptions = OpenAPIInfo & {
    * Run one process per core (`"auto"`) or this many, sharing the port. The first process
    * only looks after them: it starts them, starts another when one dies, and on SIGINT or
    * SIGTERM lets every one finish its open requests. Default: one process, no cluster.
+   * @experimental
    */
   workers?: number | "auto";
   /**
@@ -93,6 +94,7 @@ export type AppOptions = OpenAPIInfo & {
   /**
    * The contracts stamped into code by `inkan seal`: `import seal from "./inkan.seal.js"`.
    * Each one is used only while it matches its contract; the rest run as without a seal.
+   * @experimental
    */
   seal?: Seal;
   /**
@@ -103,6 +105,7 @@ export type AppOptions = OpenAPIInfo & {
    * and before hooks, the log and the inspector; the pages inkan serves itself and the
    * `exempt` paths still answer. `app.pressure()` hands back the last sample, for a health
    * route. Default off: no timer, and a request reads nothing for it.
+   * @experimental
    */
   pressure?: PressureOptions;
   /**
@@ -113,6 +116,7 @@ export type AppOptions = OpenAPIInfo & {
    * unless another app in the process turned it on. On, it costs about 0.5-1 µs a request
    * (bench/inproc.mjs: 113 % of the time without it, geomean; 10-25 % on the smallest
    * requests, a few % where a request does real work).
+   * @experimental
    */
   context?: boolean;
 };
@@ -212,7 +216,10 @@ const SAFE_ID = /^[\w.:@-]{1,128}$/; // anything else could smuggle into logs, s
 const REDACT = new Set(["authorization", "cookie", "set-cookie", "proxy-authorization", "x-api-key"]);
 const CLIP = 4096;
 const clip = (s: string, n = CLIP) => (s.length > n ? s.slice(0, n) + `… (${s.length - n} more)` : s);
-/** Whether an address is this machine's own. No address is not: an adapter that names none gets no inspector. */
+/**
+ * Whether an address is this machine's own. No address is not: an adapter that names none gets no inspector.
+ * @internal
+ */
 export const isLoopback = (addr?: string) => addr === "127.0.0.1" || addr === "::1" || addr === "::ffff:127.0.0.1";
 
 export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, Deco> {
@@ -277,7 +284,10 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
   /** Whether development mode came from NODE_ENV, not from the `dev` option. */
   private devGuessed: boolean;
 
-  /** The last overload sample (see `pressure`), for a health route; undefined without `pressure`. */
+  /**
+   * The last overload sample (see `pressure`), for a health route; undefined without `pressure`.
+   * @experimental
+   */
   pressure(): PressureSample | undefined {
     return this._gauge && { ...this._gauge.sample };
   }
@@ -325,7 +335,10 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
   }
 
   private sealState?: SealState;
-  /** How the seal went: how many contracts run on it, and which changed since it was made. */
+  /**
+   * How the seal went: how many contracts run on it, and which changed since it was made.
+   * @experimental
+   */
   sealed(): SealState | undefined {
     if (!this.options.seal) return undefined;
     if (!this.sealState) {
@@ -410,7 +423,10 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     return (this.spec ??= openAPIDocument(this._records, this.options));
   }
 
-  /** Runs every route's examples against the app, without a socket. */
+  /**
+   * Runs every route's examples against the app, without a socket.
+   * @experimental
+   */
   async check(opts?: CheckOptions): Promise<CheckReport> {
     await this.ready();
     return runChecks(this, opts);
@@ -961,6 +977,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
    * A Node `upgrade` listener, for `server.on("upgrade", app.upgradeListener)` on a server
    * made by hand; `listen` adds it by itself when the app has a WebSocket route. An upgrade
    * to a path without one is a 404.
+   * @experimental
    */
   get upgradeListener() {
     return (req: IncomingMessage, socket: Duplex, head: Buffer) => void this.upgrade(req, socket, head);

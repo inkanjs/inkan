@@ -158,6 +158,16 @@ Everything else lives on **[the website](https://inkan-dev.vercel.app/docs)**:
 | [Integrations](https://inkan-dev.vercel.app/docs/integrations) | Next.js, Vite, TanStack Query, uWebSockets.js |
 | [CLI](https://inkan-dev.vercel.app/docs/cli) | `inkan check`, `inkan seal`, `inkan learn`, `inkan examples`, `inkan create plugin` |
 
+## Stability
+
+From 0.8.0 the API is frozen: what is marked stable is not removed or changed in meaning
+in a minor release. A rename ships as a deprecated alias first, with a one-time warning in
+development, for at least two minor releases and six months. What is marked
+`@experimental` (jobs, WebSockets, seals, a few hooks) may still change, and the CHANGELOG
+says when. The lists and the full policy are on
+**[the stability page](https://inkan-dev.vercel.app/docs/stability)** and in
+[`docs/STABILITY.md`](docs/STABILITY.md); plugins declare `inkan: ">=0.8.0 <1.0.0"`.
+
 ## How fast
 
 Twelve scenarios, every server doing the same work and every answer checked before it is

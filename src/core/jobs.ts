@@ -23,9 +23,13 @@ import { Cron, type CronZone } from "./cron.ts";
 import { memoryStore, type Store } from "./store.ts";
 import { joinPath, reply, type Context, type DecoOf, type Example, type JoinPath, type PathParams, type RawHeaders, type RawQuery, type Security, type WithRoutes } from "./route.ts";
 
+/** @experimental */
 export type JobState = "queued" | "running" | "done" | "failed" | "canceled";
 
-/** A job as the store keeps it. */
+/**
+ * A job as the store keeps it.
+ * @experimental
+ */
 export type JobRecord = {
   id: string;
   /** The job's kind: the path it was started at, as it was defined (`/exports`). */
@@ -58,6 +62,7 @@ type Maybe<T> = T | Promise<T>;
  *
  * Where jobs were kept in 0.7. A store several processes share (`shared: true`) lets an app
  * with jobs run with `workers`.
+ * @experimental
  */
 export interface JobStore {
   /** Whether every process sees the same jobs. The memory store does not. */
@@ -188,7 +193,10 @@ function onStore(store: Store, report: (err: unknown) => void): JobStore {
 
 // ---------- types ----------
 
-/** A job as the routes answer with it. */
+/**
+ * A job as the routes answer with it.
+ * @experimental
+ */
 export type JobBody<P = unknown> = {
   id: string;
   state: JobState;
@@ -200,7 +208,10 @@ export type JobBody<P = unknown> = {
   finishedAt?: Date;
 };
 
-/** What the function that does the work gets. */
+/**
+ * What the function that does the work gets.
+ * @experimental
+ */
 export type Job<B = unknown, P = unknown, Deco = {}> = {
   id: string;
   /** The checked body it was started with. */
@@ -216,6 +227,7 @@ export type Job<B = unknown, P = unknown, Deco = {}> = {
   ctx: Context<any, any, B, any, any> & Deco;
 };
 
+/** @experimental */
 export type JobOptions<B, P, R, Deco = {}> = {
   summary?: string;
   description?: string;
@@ -267,7 +279,10 @@ export type JobOptions<B, P, R, Deco = {}> = {
 type ProblemSchema = Schema<ProblemBody>;
 type JobSchema<P> = Schema<JobBody<P>>;
 
-/** The five routes of a job, as the typed client knows them. */
+/**
+ * The five routes of a job, as the typed client knows them.
+ * @experimental
+ */
 export type JobRoutes<Path extends string, B, P, R> = {
   [K in `POST ${Path}`]: { params: PathParams<Path>; query: RawQuery; body: B; headers: RawHeaders; response: { 202: JobSchema<P>; 503: ProblemSchema } };
 } & {
@@ -298,7 +313,10 @@ export type JobRoutes<Path extends string, B, P, R> = {
   };
 };
 
-/** `job` as a property, so its type can name the app or scope it returns. */
+/**
+ * `job` as a property, so its type can name the app or scope it returns.
+ * @experimental
+ */
 export type JobMethod<Self> = <Path extends string, B = undefined, P = unknown, R = unknown>(
   path: Path,
   options: JobOptions<B, P, R, DecoOf<Self>>,
@@ -307,7 +325,10 @@ export type JobMethod<Self> = <Path extends string, B = undefined, P = unknown, 
 
 // ---------- running them ----------
 
-/** What the jobs need from the app. */
+/**
+ * What the jobs need from the app.
+ * @internal
+ */
 export interface JobHost {
   dev: boolean;
   options: { validateResponses?: boolean; onError?: (error: unknown, ctx: Context<any, any, any, any, any> | undefined) => void };
@@ -315,7 +336,10 @@ export interface JobHost {
 
 const newId = () => randomBytes(16).toString("base64url"); // not the request id: that one is a counter, easy to guess
 
-/** Every kind of job of one app: their store, the sweep, and the shutdown. */
+/**
+ * Every kind of job of one app: their store, the sweep, and the shutdown.
+ * @internal
+ */
 export class JobHub {
   host: JobHost;
   kinds: JobKind[] = [];
@@ -435,7 +459,10 @@ type Schedule = {
   last?: string;
 };
 
-/** One kind of job: its queue, its slots, and the routes' work. */
+/**
+ * One kind of job: its queue, its slots, and the routes' work.
+ * @internal
+ */
 export class JobKind {
   hub: JobHub;
   path: string;
@@ -873,6 +900,7 @@ function scheduleOf(path: string, full: string, opts: JobOptions<any, any, any, 
 /**
  * Defines a job's five routes on a scope. `prefix` is the scope's, `path` the job's own; the
  * routes go through `define`, so they are routes like any other.
+ * @internal
  */
 export function defineJob(
   hub: JobHub,

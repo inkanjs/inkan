@@ -7,6 +7,7 @@ import type { Example, OperationRoute } from "../core/route.ts";
 import { paint } from "../core/color.ts";
 import { EventsSchema } from "../schema/schema.ts";
 
+/** @experimental */
 export type CheckOptions = {
   /** Runs before every example, e.g. to reset an in-memory store. */
   beforeEach?: () => unknown;
@@ -16,6 +17,7 @@ export type CheckOptions = {
   strict?: boolean;
 };
 
+/** @experimental */
 export type CheckResult = {
   method: string;
   path: string;
@@ -26,6 +28,7 @@ export type CheckResult = {
   problems: string[];
 };
 
+/** @experimental */
 export type CheckReport = {
   ok: boolean;
   passed: number;
@@ -59,7 +62,10 @@ function queryString(q: Record<string, unknown> = {}): string {
   return s ? `?${s}` : "";
 }
 
-/** Is everything in `expected` also in `actual`? Returns where it is not. */
+/**
+ * Is everything in `expected` also in `actual`? Returns where it is not.
+ * @experimental
+ */
 export function partialMatch(expected: unknown, actual: unknown, path = "body"): string | undefined {
   if (expected !== null && typeof expected === "object") {
     if (Array.isArray(expected)) {
@@ -92,7 +98,10 @@ function expectedStatus(r: OperationRoute, ex: Example): number | undefined {
 type Kept = Record<string, unknown>;
 type Step = { r: OperationRoute; ex: Example; label: string };
 
-/** Puts kept values into `{name}` placeholders. A placeholder alone keeps the value's type. */
+/**
+ * Puts kept values into `{name}` placeholders. A placeholder alone keeps the value's type.
+ * @internal
+ */
 export function substitute<T>(value: T, kept: Kept): T {
   if (typeof value === "string") {
     const whole = /^\{(\w+)\}$/.exec(value);
@@ -302,6 +311,7 @@ async function runOne(app: App, r: OperationRoute, raw: Example, i: number, inde
   return { method: r.method, path: r.path, example: name, ok: problems.length === 0, status, ms, problems };
 }
 
+/** @internal */
 export async function runChecks(app: App, opts: CheckOptions = {}): Promise<CheckReport> {
   const results: CheckResult[] = [];
   const unchecked: string[] = [];

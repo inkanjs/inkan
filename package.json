@@ -58,6 +58,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
+    "api:update": "node scripts/api.mjs --update",
     "test": "node --test \"test/**/*.test.ts\"",
     "check:example": "node src/cli.ts check examples/shop.ts",
     "dev:example": "node --watch examples/shop.ts",

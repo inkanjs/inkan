@@ -102,6 +102,7 @@ export type ProblemHook<Deco = {}> = (ctx: Ctx<Deco>, problem: HttpProblem) => v
  * `ref(schema, name?)` lists a `t.*` schema once under `components.schemas` and returns
  * `{ $ref }` to it, as a route's named schemas are; an unnamed schema needs `name`.
  * `route` is the route as written: `method`, `path`, `security`, `meta` and its `spec`.
+ * @experimental
  */
 export type OperationHook = (
   operation: Record<string, any>,
@@ -110,6 +111,7 @@ export type OperationHook = (
   ref: (schema: Schema<any>, name?: string) => JsonSchema,
 ) => void;
 
+/** @internal */
 export type Hooks = {
   onRequest: RequestHook<any>[];
   preHandler: RequestHook<any>[];
@@ -120,7 +122,10 @@ export type Hooks = {
 const KINDS = ["onRequest", "preHandler", "onSend", "onResponse", "onProblem"] as const;
 const emptyHooks = (): Hooks => ({ onRequest: [], preHandler: [], onSend: [], onResponse: [], onProblem: [] });
 
-/** The one empty set every route without hooks points at; the request path checks for exactly this object. */
+/**
+ * The one empty set every route without hooks points at; the request path checks for exactly this object.
+ * @internal
+ */
 export const NO_HOOKS: Hooks = Object.freeze({
   onRequest: Object.freeze([]) as never,
   preHandler: Object.freeze([]) as never,
@@ -246,6 +251,7 @@ export type PluginOptions = {
    * right here. A prerelease of inkan is in the range only when the range names a
    * prerelease of the same version (`>=0.8.0-rc.1`), as npm reads it. Keep it the same
    * as the `peerDependencies` entry for `@vxnsin/inkan`.
+   * @experimental
    */
   inkan?: string;
 };
@@ -491,6 +497,7 @@ export class Scope<Defs extends RouteDefs = any, Deco = any> extends Routes<Defs
    *     job.progress({ done: 1, total: 2 });
    *     return { url: "/x.csv", rows: 2 };
    *   });
+   * @experimental
    */
   job: JobMethod<this> = ((path: string, options: object, run: (job: never) => unknown) => {
     // a scheduled run's context: of no real request, but of this scope, with its decorations
@@ -578,7 +585,10 @@ function wantedBy(when: ((route: RouteInfo) => boolean) | undefined): (route: Ro
   };
 }
 
-/** Runs request hooks in order; the first one that returns something ends the run with that. */
+/**
+ * Runs request hooks in order; the first one that returns something ends the run with that.
+ * @internal
+ */
 export async function runHooks(list: RequestHook<any>[], ctx: Ctx<unknown>): Promise<unknown> {
   for (const h of list) {
     let v = h(ctx);

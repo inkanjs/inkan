@@ -21,6 +21,7 @@ function contractsOf(routes: readonly SealRoute[]): { label: string; schema: Sch
   return out;
 }
 
+/** @internal */
 export type SealReport = {
   /** The seal file, a JavaScript module. */
   code: string;
@@ -31,7 +32,10 @@ export type SealReport = {
   unsealable: { label: string; reason: string }[];
 };
 
-/** The seal file for these routes. `from` only goes into the header, to say how to make it again. */
+/**
+ * The seal file for these routes. `from` only goes into the header, to say how to make it again.
+ * @internal
+ */
 export function writeSeal(routes: readonly SealRoute[], from: string): SealReport {
   const entries = new Map<string, { source: string; labels: string[] }>();
   const unsealable: SealReport["unsealable"] = [];
@@ -75,6 +79,7 @@ export type SealState = { sealed: number; stale: string[]; unsealable: number; w
  * Puts the seal's code to work for every contract it holds a matching entry for. A contract
  * whose code hashes to something the seal does not have changed since the seal was made:
  * it keeps running unsealed, and is reported.
+ * @internal
  */
 export function applySeal(seal: Seal, routes: readonly SealRoute[]): SealState {
   const state: SealState = { sealed: 0, stale: [], unsealable: 0 };

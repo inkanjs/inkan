@@ -34,6 +34,7 @@ import type { Context, DecoOf, Middleware, PathParams, RawHeaders, RawQuery, Rou
 
 // ---------- the contract ----------
 
+/** @experimental */
 export type WsSpec<P, Q, H, In, Out> = {
   summary?: string;
   description?: string;
@@ -106,10 +107,16 @@ export type Origins = "*" | string[] | ((origin: string | undefined, ctx: PreCon
 /** @deprecated Use `Origins`. */
 export type WsOrigins = Origins;
 
-/** What an app's `ws` option sets for every WebSocket route that does not say otherwise. */
+/**
+ * What an app's `ws` option sets for every WebSocket route that does not say otherwise.
+ * @experimental
+ */
 export type WsDefaults = Pick<WsSpec<unknown, unknown, unknown, unknown, unknown>, "origins" | "maxMessage" | "heartbeat" | "handshakeTimeout">;
 
-/** The socket a WebSocket route's handler gets. `In` is what the client sends, `Out` what the server does. */
+/**
+ * The socket a WebSocket route's handler gets. `In` is what the client sends, `Out` what the server does.
+ * @experimental
+ */
 export interface WsSocket<In = string | Buffer, Out = unknown> extends AsyncIterable<In> {
   /** 1 while open, 2 while closing, 3 once closed. */
   readonly readyState: 0 | 1 | 2 | 3;
@@ -131,8 +138,10 @@ export interface WsSocket<In = string | Buffer, Out = unknown> extends AsyncIter
   off(event: "message" | "close" | "error", fn: (...args: any[]) => void): this;
 }
 
+/** @experimental */
 export type WsHandler<P, Q, H, In, Out, Deco = {}> = (socket: WsSocket<In, Out>, ctx: Context<P, Q, undefined, H, {}> & Deco) => unknown;
 
+/** @experimental */
 export type WsMethod<Self> = <Path extends string, P = PathParams<Path>, Q = RawQuery, H = RawHeaders, In = string | Buffer, Out = unknown>(
   path: Path,
   spec: WsSpec<P, Q, H, In, Out>,
@@ -142,9 +151,13 @@ export type WsMethod<Self> = <Path extends string, P = PathParams<Path>, Q = Raw
 // ---------- the handshake ----------
 
 const GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+/** @internal */
 export const acceptKey = (key: string) => createHash("sha1").update(key + GUID).digest("base64");
 
-/** Whether a sec-websocket-key is 16 bytes in canonical base64: decoded and encoded again, it is the same text. */
+/**
+ * Whether a sec-websocket-key is 16 bytes in canonical base64: decoded and encoded again, it is the same text.
+ * @internal
+ */
 export const canonicalKey = (key: unknown): key is string =>
   typeof key === "string" && key.length === 24 && Buffer.from(key, "base64").toString("base64") === key;
 
@@ -152,6 +165,7 @@ export const canonicalKey = (key: unknown): key is string =>
  * Whether the page an upgrade comes from may open the socket. `own` is the app's origin as the
  * request names it (scheme and Host). Origins are compared as URL origins, so `http://X:80`
  * is `http://x`.
+ * @internal
  */
 export function originAllowed(rule: Origins | undefined, origin: string | undefined, own: () => string, ctx: () => PreContext): boolean {
   if (rule === "*") return true;
@@ -172,11 +186,18 @@ function originOf(s: string): string | undefined {
   }
 }
 
-/** Marks an IncomingMessage that came in through the upgrade event; the route's acceptor finds it there. */
+/**
+ * Marks an IncomingMessage that came in through the upgrade event; the route's acceptor finds it there.
+ * @internal
+ */
 export const UPGRADING = Symbol("inkan.upgrading");
+/** @internal */
 export type Upgrading = { ctx?: Context<any, any, any, any, any> };
 
-/** What a WebSocket route runs as its handler: the request may become a socket. The answer is a 101 with no body. */
+/**
+ * What a WebSocket route runs as its handler: the request may become a socket. The answer is a 101 with no body.
+ * @internal
+ */
 export function acceptor(ctx: Context<any, any, any, any, any>): undefined {
   const req = ctx.req as (Record<symbol, Upgrading | undefined> & { headers: Record<string, string | string[] | undefined> }) | undefined;
   const state = req?.[UPGRADING];
@@ -209,7 +230,10 @@ const CLOSE = 0x8;
 const PING = 0x9;
 const PONG = 0xa;
 
-/** The codes a close frame may carry on the wire (RFC 6455 7.4, and the registry). */
+/**
+ * The codes a close frame may carry on the wire (RFC 6455 7.4, and the registry).
+ * @internal
+ */
 export const validCode = (c: number) => (c >= 1000 && c <= 1014 && c !== 1004 && c !== 1005 && c !== 1006) || (c >= 3000 && c <= 4999);
 
 function frame(op: number, payload: Buffer): Buffer[] {
@@ -294,6 +318,7 @@ class Bytes {
   }
 }
 
+/** @internal */
 export type SocketOptions = {
   maxMessage: number;
   heartbeat: number | false;
@@ -309,7 +334,10 @@ export type SocketOptions = {
 
 const CLOSE_WAIT = 3000; // ms the client has to answer a close frame before the socket is cut
 const HOLD = 16; // messages kept for a handler that does not listen yet, before reading pauses
-/** The most frames one message may come in; past it the socket closes with 1009. Not an option. */
+/**
+ * The most frames one message may come in; past it the socket closes with 1009. Not an option.
+ * @internal
+ */
 export const MAX_FRAGMENTS = 1024;
 /** What each frame after a message's first costs against `maxMessage`, on top of its bytes: empty frames are not free. */
 const FRAME_COST = 64;
@@ -318,7 +346,10 @@ const MIN_BUFFER = 1024 * 1024;
 
 type Listeners = { message: ((m: any) => void)[]; close: ((code: number, reason: string) => void)[]; error: ((e: Error) => void)[] };
 
-/** One WebSocket connection, server side. */
+/**
+ * One WebSocket connection, server side.
+ * @internal
+ */
 export class Connection implements WsSocket<any, any> {
   readyState: 0 | 1 | 2 | 3 = 1;
   private socket: Duplex;
@@ -732,7 +763,10 @@ export class Connection implements WsSocket<any, any> {
 
 const SAFE_HEADER = /^[^\r\n]*$/;
 
-/** An answer written straight onto the socket, for an upgrade that did not become one; then the connection ends. */
+/**
+ * An answer written straight onto the socket, for an upgrade that did not become one; then the connection ends.
+ * @internal
+ */
 export function writeAnswer(socket: Duplex, status: number, reasonPhrase: string, headers: Record<string, string>, cookies: string[] = [], body?: string | Buffer) {
   if (socket.destroyed) return;
   const bytes = body === undefined ? undefined : Buffer.from(body);
@@ -747,7 +781,10 @@ export function writeAnswer(socket: Duplex, status: number, reasonPhrase: string
   socket.end(bytes ? Buffer.concat([Buffer.from(lines.join("\r\n")), bytes]) : lines.join("\r\n"));
 }
 
-/** The 101 that makes the request a socket: the answer's own headers (request id, cookies) go with it. */
+/**
+ * The 101 that makes the request a socket: the answer's own headers (request id, cookies) go with it.
+ * @internal
+ */
 export function writeSwitch(socket: Duplex, key: string, headers: Record<string, string>, cookies: string[] = []) {
   const lines = ["HTTP/1.1 101 Switching Protocols", "upgrade: websocket", "connection: Upgrade", `sec-websocket-accept: ${acceptKey(key)}`];
   for (const [k, v] of Object.entries(headers)) {
