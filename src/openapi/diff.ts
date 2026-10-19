@@ -2,6 +2,8 @@
 // written against the first one. Requests may only get looser, answers may only
 // get stricter; everything else is a breaking change.
 
+import type { FormatOptions } from "../testing/check.ts";
+
 type Json = Record<string, any>;
 type Doc = { paths?: Record<string, Record<string, Json>>; components?: { schemas?: Record<string, Json> } };
 type Dir = "request" | "response";
@@ -157,7 +159,13 @@ export function diffOpenAPI(before: Doc, after: Doc): Change[] {
   return out.sort((x, y) => Number(y.breaking) - Number(x.breaking));
 }
 
-export function formatDiff(changes: Change[], title: string, color = false): string {
+/**
+ * The changes as text for a terminal: `formatDiff(changes, { title, color })`.
+ * `formatDiff(changes, title, color)` works too.
+ * @experimental
+ */
+export function formatDiff(changes: Change[], options: FormatOptions | string = {}, colored?: boolean): string {
+  const { title = "", color = false } = typeof options === "object" ? options : { title: options, color: colored };
   const c = (code: string, s: string) => (color ? `\x1b[${code}m${s}\x1b[0m` : s);
   const lines = ["", `  ${c("31", "印")} inkan diff  ·  ${title}`, ""];
   if (!changes.length) lines.push(`  ${c("32", "nothing changed that a client could notice")}`);

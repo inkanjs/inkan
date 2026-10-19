@@ -291,3 +291,10 @@ test("listen takes { port, host, signal }; aborting stops the server and the app
   assert.equal(server.listening, false);
   assert.equal(closed, 1, "the onClose hooks ran");
 });
+
+test("inject<T>() types the body", async () => {
+  const app = inkan({ log: false }).get("/tea", () => ({ name: "Sencha" }));
+  const res = await app.inject<{ name: string }>({ url: "/tea" });
+  const name: string = res.body.name;
+  assert.equal(name, "Sencha");
+});

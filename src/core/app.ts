@@ -107,9 +107,9 @@ export type AppOptions = OpenAPIInfo & {
   pressure?: PressureOptions;
   /**
    * Answers every request inside an AsyncLocalStorage that holds its context, so code far
-   * from the handler reads it with `context()`: `context()?.id` in a logger, `context()?.user`
+   * from the handler reads it with `currentContext()`: `currentContext()?.id` in a logger, `currentContext()?.user`
    * in a database helper. Background jobs run with their own (`job.ctx`), not the store of
-   * the request that started them. Default off: a request pays nothing, and `context()` throws
+   * the request that started them. Default off: a request pays nothing, and `currentContext()` throws
    * unless another app in the process turned it on. On, it costs about 0.5-1 µs a request
    * (bench/inproc.mjs: 113 % of the time without it, geomean; 10-25 % on the smallest
    * requests, a few % where a request does real work).
@@ -127,14 +127,14 @@ export type InjectOptions = {
   events?: number;
 };
 
-export type InjectResponse = {
+export type InjectResponse<T = any> = {
   status: number;
   headers: Record<string, string>;
   /** The Set-Cookie headers, one per cookie. */
   cookies: string[];
   text: string;
-  /** Parsed JSON when the answer was JSON, the events of an event stream, otherwise the text. */
-  body: any;
+  /** Parsed JSON when the answer was JSON, the events of an event stream, otherwise the text. `inject<T>()` types it. */
+  body: T;
 };
 
 /** A request as an adapter hands it to `app.exchange`. */
@@ -416,8 +416,11 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     return runChecks(this, opts);
   }
 
-  /** Sends a request straight into the app. Good for tests: no port, no network. */
-  async inject(opts: InjectOptions): Promise<InjectResponse> {
+  /**
+   * Sends a request straight into the app. Good for tests: no port, no network.
+   * `inject<Tea>(…)` types the body; it is not checked against `Tea`.
+   */
+  async inject<T = any>(opts: InjectOptions): Promise<InjectResponse<T>> {
     if (this.loading) await this.ready();
     const headers: Record<string, string> = {};
     for (const [k, v] of Object.entries(opts.headers ?? {})) headers[k.toLowerCase()] = v;
@@ -445,7 +448,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
       }
       res.abort?.abort();
       res.done?.();
-      return { status: res.status, headers: res.headers, cookies: res.cookies ?? [], text, body: parseEvents(text) };
+      return { status: res.status, headers: res.headers, cookies: res.cookies ?? [], text, body: parseEvents(text) as T };
     }
     const parts: Buffer[] = res.body === undefined ? [] : [Buffer.from(res.body)];
     if (res.stream) {
@@ -464,7 +467,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     const bytes = Buffer.concat(parts);
     text = (encoding === "br" ? brotliDecompressSync(bytes) : encoding === "gzip" ? gunzipSync(bytes) : bytes).toString();
     const json = /(^|\/|\+)json\b/.test(type); // application/json, problem+json; not NDJSON, which is lines
-    return { status: res.status, headers: res.headers, cookies: res.cookies ?? [], text, body: json && text ? parsedOr(text) : text };
+    return { status: res.status, headers: res.headers, cookies: res.cookies ?? [], text, body: (json && text ? parsedOr(text) : text) as T };
   }
 
   // ----- the request path -----

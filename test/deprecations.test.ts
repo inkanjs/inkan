@@ -4,7 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { request } from "node:http";
 import type { AddressInfo } from "node:net";
-import { buildOpenAPI, cors, inkan, plugin, t } from "../src/index.ts";
+import { buildOpenAPI, context, cors, inkan, plugin, t } from "../src/index.ts";
 
 const quiet = { log: false as const, gracefulShutdown: false };
 
@@ -192,4 +192,13 @@ test("app.job({ every }) is { schedule }, and warns once", async () => {
   });
   assert.equal(said.length, 1);
   assert.match(said[0]!, /\{ every \}.*\{ schedule \}/);
+});
+
+test("context() is currentContext(), and warns once", async () => {
+  const said = await warnings(async () => {
+    const app = inkan({ ...quiet, context: true }).get("/x", (ctx) => ({ same: context() === ctx && context() === ctx }));
+    assert.deepEqual((await app.inject({ url: "/x" })).body, { same: true });
+  });
+  assert.equal(said.length, 1);
+  assert.match(said[0]!, /context\(\) is deprecated, use currentContext\(\)/);
 });

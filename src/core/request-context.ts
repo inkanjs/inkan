@@ -1,8 +1,9 @@
-// The context of the request being answered, for code far from the handler: `context()`.
+// The context of the request being answered, for code far from the handler: `currentContext()`.
 // Made only when an app asks for it (`context: true`); until then there is no storage at all.
 
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { Context } from "./route.ts";
+import { deprecate } from "./deprecate.ts";
 
 /** What a request's store holds. Filled once the request has its context, a moment after the store is entered. */
 export type Cell = { ctx: Context<any, any, any, any, any> | undefined };
@@ -21,15 +22,21 @@ export function contextStorage(): AsyncLocalStorage<Cell> {
  * hand back undefined. Outside a request (at startup, in a timer started outside one) it is
  * undefined. A background job runs with its own: `job.ctx`, not the request that started it.
  *
- *   const log = (msg: string) => console.log(`[${context()?.id ?? "-"}] ${msg}`);
+ *   const log = (msg: string) => console.log(`[${currentContext()?.id ?? "-"}] ${msg}`);
  */
-export function context<C = Context<any, any, any, any, any>>(): C | undefined {
-  if (!storage) throw new Error("inkan: context() needs an app made with { context: true }; without it there is no request to hand back");
+export function currentContext<C = Context<any, any, any, any, any>>(): C | undefined {
+  if (!storage) throw new Error("inkan: currentContext() needs an app made with { context: true }; without it there is no request to hand back");
   return storage.getStore()?.ctx as C | undefined;
 }
 
+/** @deprecated Use `currentContext()`, which it is. */
+export function context<C = Context<any, any, any, any, any>>(): C | undefined {
+  deprecate("context()", "currentContext()");
+  return currentContext<C>();
+}
+
 /**
- * @internal Runs `fn` with `ctx` as what `context()` hands back, or with nothing for
+ * @internal Runs `fn` with `ctx` as what `currentContext()` hands back, or with nothing for
  * undefined: so work that outlives a request (a job, a timer) does not keep the request's
  * store. Without any app using `context`, just runs it.
  */

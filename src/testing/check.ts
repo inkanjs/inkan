@@ -332,7 +332,16 @@ export async function runChecks(app: App, opts: CheckOptions = {}): Promise<Chec
   return { ok, passed: results.length - failed, failed, results, unchecked, uncovered };
 }
 
-export function formatReport(report: CheckReport, title = "", color = false): string {
+/** How `formatReport` and `formatDiff` write: a title for the head line, and terminal colors. */
+export type FormatOptions = { title?: string; color?: boolean };
+
+/**
+ * A check report as text for a terminal: `formatReport(report, { title, color })`.
+ * `formatReport(report, title, color)` works too.
+ * @experimental
+ */
+export function formatReport(report: CheckReport, options?: FormatOptions | string, colored?: boolean): string {
+  const { title = "", color = false } = typeof options === "object" ? options : { title: options, color: colored };
   const c = paint(color);
   const lines: string[] = ["", `  ${c.seal("印")} ${c.bold("inkan check")}${title ? c.dim("  ·  " + title) : ""}`, ""];
   const gaps = (route: string) => {

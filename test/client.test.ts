@@ -234,3 +234,20 @@ test("routes a plugin defines reach the typed client, under the prefix it is reg
   const plain = inkan(quiet).register((scope) => scope.get("/plain", () => ({})));
   assert.equal(typeof typesOnly, "function");
 });
+
+test("client calls take a signal", async () => {
+  const app = inkan({ log: false }).get("/slow", async () => {
+    await new Promise((r) => setTimeout(r, 200));
+    return { ok: true };
+  });
+  const seen: (AbortSignal | null | undefined)[] = [];
+  // a fetch that does what the platform's does with an aborted signal
+  const api = client<typeof app>("http://api.test", {
+    fetch: (req, init) => (seen.push(init?.signal), init?.signal?.aborted ? Promise.reject(init.signal.reason) : app.fetch(new Request(req as string, init))),
+  });
+  const ac = new AbortController();
+  ac.abort();
+  assert.equal((await api.get("/slow", { signal: AbortSignal.timeout(5000) })).ok, true);
+  await assert.rejects(() => api.get("/slow", { signal: ac.signal }));
+  assert.ok(seen[0] instanceof AbortSignal);
+});
