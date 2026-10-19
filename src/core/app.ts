@@ -270,11 +270,11 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
       const als = contextStorage();
       const handle = this.handle.bind(this);
       // handle() puts the request's context into the cell, synchronously, the moment it has one
-      this.handle = (raw, url, matched) => {
+      this.handle = ((raw: RawRequest, url?: Target, matched?: Match<RouteRecord>) => {
         const cell: Cell = { ctx: undefined };
         this.cell = cell;
-        return als.run(cell, handle, raw, url, matched);
-      };
+        return als.run(cell, handle, raw as RawRequest & { res?: undefined }, url, matched);
+      }) as typeof this.handle;
     }
   }
   /** The store of the request being handled, with `context: true`, until its context is in it. */
@@ -492,9 +492,12 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
    * Synchronous as long as nothing on the way is asynchronous: a promise only for a body
    * that has to be read, middleware, or a handler that returns one. Everything else answers
    * in the same turn, without a promise, a closure per step or an extra trip through the
-   * microtask queue.
+   * microtask queue. On a Node server (`raw.res`) an async handler's answer is written where
+   * its promise settles, and nothing comes back.
    */
-  private handle(raw: RawRequest, url: Target = target(raw.url), matched?: Match<RouteRecord>): RawResponse | Promise<RawResponse> {
+  private handle(raw: RawRequest & { res: ServerResponse }, url?: Target, matched?: Match<RouteRecord>): RawResponse | Promise<RawResponse> | undefined;
+  private handle(raw: RawRequest & { res?: undefined }, url?: Target, matched?: Match<RouteRecord>): RawResponse | Promise<RawResponse>;
+  private handle(raw: RawRequest, url: Target = target(raw.url), matched?: Match<RouteRecord>): RawResponse | Promise<RawResponse> | undefined {
     if (!this.built) this.build();
     if (this.options.seal && !this.sealState) this.sealed();
     const timed = Boolean(this.options.log || this.options.inspector); // read each time: check() turns the log off for a while
@@ -630,14 +633,44 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     return Promise.race([work, late]).finally(() => clearTimeout(timer));
   }
 
-  private async settle(x: Exchange, pending: Promise<unknown>): Promise<RawResponse> {
+  /**
+   * An async handler's answer, made in the one `then` on its promise, without an async frame
+   * of its own. On a Node server it is written there too (as Fastify does), so no second
+   * promise is made for pass() to wait on, and the answer leaves a turn of the microtask
+   * queue sooner.
+   */
+  private settle(x: Exchange, pending: Promise<unknown>): Promise<RawResponse> | undefined {
+    const { req, res } = x.raw;
+    // with `context`, written by pass() as before: outside the request's store, like every other answer
+    if (!req || !res || this.options.context) return pending.then((v) => this.settled(x, v, false), (err) => this.settled(x, err, true));
+    pending.then(
+      (v) => this.deliver(req, res, x, v, false),
+      (err) => this.deliver(req, res, x, err, true),
+    );
+  }
+
+  private settled(x: Exchange, value: unknown, failed: boolean): RawResponse {
     let res: RawResponse;
-    try {
-      res = this.respond(await pending, x);
-    } catch (err) {
-      res = this.fail(err, x);
+    if (failed) res = this.fail(value, x);
+    else {
+      try {
+        res = this.respond(value, x);
+      } catch (err) {
+        res = this.fail(err, x);
+      }
     }
     return this.finish(x, res);
+  }
+
+  /** settled() and send() for a Node server: what pass() does with a promise, without one. */
+  private deliver(req: IncomingMessage, res: ServerResponse, x: Exchange, value: unknown, failed: boolean) {
+    let out: RawResponse;
+    try {
+      out = this.settled(x, value, failed);
+    } catch (err) {
+      return this.broken(req, res, err);
+    }
+    this.send(res, out);
   }
 
   /**
@@ -1149,7 +1182,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
   }
 
   private pass(req: IncomingMessage, res: ServerResponse, body: Buffer | undefined, stream?: AsyncIterable<Buffer>, url?: Target, m?: Match<RouteRecord>) {
-    let out: RawResponse | Promise<RawResponse>;
+    let out: RawResponse | Promise<RawResponse> | undefined;
     try {
       out = this.handle({ method: req.method ?? "GET", url: req.url ?? "/", headers: req.headers, body, stream, req, res }, url, m);
     } catch (err) {
@@ -1160,7 +1193,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
         (o) => this.send(res, o),
         (err) => this.broken(req, res, err),
       );
-    } else this.send(res, out);
+    } else if (out) this.send(res, out); // nothing: an async handler's answer is written once it settles
   }
 
   private tooLarge(req: IncomingMessage, res: ServerResponse, limit: number) {

@@ -421,7 +421,8 @@ export declare class App<Defs extends RouteDefs = any, Deco = any> extends Scope
      * Synchronous as long as nothing on the way is asynchronous: a promise only for a body
      * that has to be read, middleware, or a handler that returns one. Everything else answers
      * in the same turn, without a promise, a closure per step or an extra trip through the
-     * microtask queue.
+     * microtask queue. On a Node server (`raw.res`) an async handler's answer is written where
+     * its promise settles, and nothing comes back.
      */
     private handle;
     /** No route for the path, or not for this method. A problem to answer with, or nothing for an OPTIONS. */
@@ -435,7 +436,16 @@ export declare class App<Defs extends RouteDefs = any, Deco = any> extends Scope
      * is aborted, so the work can stop. Without a limit the work is handed back as it is.
      */
     private deadline;
+    /**
+     * An async handler's answer, made in the one `then` on its promise, without an async frame
+     * of its own. On a Node server it is written there too (as Fastify does), so no second
+     * promise is made for pass() to wait on, and the answer leaves a turn of the microtask
+     * queue sooner.
+     */
     private settle;
+    private settled;
+    /** settled() and send() for a Node server: what pass() does with a promise, without one. */
+    private deliver;
     /**
      * The whole way, for a request with hooks or app-wide middleware on it: onRequest,
      * middleware, the input, preHandler, the handler, onSend; onProblem for every problem.
