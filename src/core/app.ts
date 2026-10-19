@@ -1162,7 +1162,11 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     return this.handle({ method: request.method, url: request.url, headers: request.headers, body: buf, stream, remote: request.remote, secure: request.secure });
   }
 
-  /** For adapters: runs the onListen hooks, once the adapter's server listens. */
+  /**
+   * For adapters, a trigger rather than an event: call it once the server listens. It runs
+   * the onListen hooks and starts the jobs' schedules, as `listen` does by itself. An app
+   * served through `exchange` or `fetch` without it runs neither.
+   */
   async started(): Promise<void> {
     for (const hook of this.listenHooks) await hook();
     this.schedule();
@@ -1176,7 +1180,11 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     this._jobs.schedule();
   }
 
-  /** For adapters: runs the onClose hooks, once the adapter's server has stopped taking requests. */
+  /**
+   * For adapters, a trigger rather than an event: call it once the server has stopped taking
+   * requests. It stops the pressure sampler, the jobs and the WebSockets, then runs the
+   * onClose hooks, as `listen`'s shutdown does by itself.
+   */
   async stopped(): Promise<void> {
     this._gauge?.stop();
     await Promise.all([this._jobs?.stop(), this.closeSockets()]);

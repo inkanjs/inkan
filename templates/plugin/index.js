@@ -23,7 +23,7 @@ export function myPlugin(options = {}) {
       app.onRequest((ctx) => {
         if (!ctx.rawHeaders[header]) throw problem(400, "missing-header", `Send the ${header} header.`);
       });
-      app.describe((operation) => {
+      app.onOperation((operation) => {
         (operation.parameters ??= []).push({ name: header, in: "header", required: true, schema: { type: "string" } });
         operation.responses["400"] ??= { description: `Without the ${header} header` };
       });

@@ -128,3 +128,44 @@ test("the wsOrigins option still sets the WebSockets' origins, and warns once", 
     server.close();
   }
 });
+
+test("describe() is onOperation(), and warns once", async () => {
+  const said = await warnings(() => {
+    const app = inkan(quiet)
+      .describe((op) => void (op["x-one"] = true))
+      .describe((op) => void (op["x-two"] = true))
+      .get("/x", () => ({}));
+    const op = (app.openapi().paths as Record<string, Record<string, Record<string, unknown>>>)["/x"]!.get!;
+    assert.equal(op["x-one"], true);
+    assert.equal(op["x-two"], true);
+  });
+  assert.equal(said.length, 1);
+  assert.match(said[0]!, /scope\.describe\(\) is deprecated, use scope\.onOperation\(\)/);
+});
+
+test('onSend(fn, { last: true }) is { order: "last" }, and warns once', async () => {
+  const seen: string[] = [];
+  const said = await warnings(async () => {
+    const app = inkan(quiet)
+      .onSend(() => void seen.push("last"), { last: true })
+      .onSend(() => void seen.push("first"))
+      .onSend(() => void seen.push("second"), { last: false })
+      .get("/x", () => ({}));
+    await app.inject({ url: "/x" });
+  });
+  assert.deepEqual(seen, ["first", "second", "last"]);
+  assert.equal(said.length, 1);
+  assert.match(said[0]!, /\{ last: true \}/);
+});
+
+test('decorateRequest(…, { before: "handler" }) is { resolve: "preHandler" }, and warns once', async () => {
+  const said = await warnings(async () => {
+    const app = inkan(quiet)
+      .decorateRequest("user", async () => ({ name: "Ada" }), { before: "handler" })
+      .decorateRequest("team", async () => "tea", { before: "handler" })
+      .get("/me", (ctx) => ({ name: ctx.user.name, team: ctx.team }));
+    assert.deepEqual((await app.inject({ url: "/me" })).body, { name: "Ada", team: "tea" });
+  });
+  assert.equal(said.length, 1);
+  assert.match(said[0]!, /before: "handler".*resolve: "preHandler"/);
+});

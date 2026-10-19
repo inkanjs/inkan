@@ -28,15 +28,36 @@ export type DecorateRequestMethod<Self> = {
   <K extends string, V>(name: K, init: (ctx: Ctx<DecoOf<Self>>) => V): WithDeco<Self, { [P in K]: V }>;
   <K extends string, V>(name: K, init: (ctx: Ctx<DecoOf<Self>>) => V, options: ResolveOptions): WithDeco<Self, { [P in K]: Awaited<V> }>;
 };
-/** `decorateRequest(name, init, options)`: a value awaited before the handler, so the handler sees it without the promise. */
-export type ResolveOptions = {
-  /** Awaited after the input is checked, before the preHandler hooks and the handler. */
-  before: "handler";
+/**
+ * `decorateRequest(name, init, options)`: a value awaited before the handler, so the handler sees it without the promise.
+ * @experimental
+ */
+export type ResolveOptions = (
+  | {
+      /** Awaited after the input is checked, before the preHandler hooks and the handler. */
+      resolve: "preHandler";
+    }
+  | {
+      /** @deprecated Use `resolve: "preHandler"`. */
+      before: "handler";
+    }
+) & {
   /**
    * The routes that need it, asked once per route: `(route) => route.security.length > 0`.
    * Every route of the scope when left out. On a route it leaves out, reading it is an error.
    */
   when?: (route: RouteInfo) => boolean;
+};
+
+/** Where a hook runs among the others of its kind. */
+export type HookOptions = {
+  /**
+   * `"last"` runs it after every other hook of its kind on the route, wherever those were
+   * added (outermost scope first among the last ones too). Default: in the order added,
+   * outer scopes first.
+   * @experimental
+   */
+  order?: "last";
 };
 /**
  * `register` as a property: the scope it returns knows what a shared plugin decorated, and
@@ -119,11 +140,11 @@ const RESERVED = new Set(["method", "path", "id", "ip", "remote", "params", "que
 export class Box {
   parent?: Box;
   hooks: Hooks = emptyHooks();
-  /** onSend hooks that run after every other one: `onSend(fn, { last: true })`. */
-  lastSend: SendHook<any>[] = [];
-  /** Steps that await a decoration before the handler (`decorateRequest(…, { before: "handler" })`); they come before every preHandler hook. */
+  /** Hooks that run after every other one of their kind: `onSend(fn, { order: "last" })`. */
+  lastHooks: Hooks = emptyHooks();
+  /** Steps that await a decoration before the handler (`decorateRequest(…, { resolve: "preHandler" })`); they come before every preHandler hook. */
   resolvers: RequestHook<any>[] = [];
-  /** What this scope adds to the OpenAPI operations of its routes: `describe(fn)`. */
+  /** What this scope adds to the OpenAPI operations of its routes: `onOperation(fn)`. */
   describers: OperationHook[] = [];
   /** Middleware around the handler of every route in this scope and the scopes inside it: `around(fn)`. */
   around: Middleware[] = [];
@@ -149,16 +170,16 @@ export class Box {
 
   /**
    * Every hook from the app down to here, outermost first; NO_HOOKS when there is none.
-   * onSend hooks marked `last` come after all the others, again outermost first: that is
-   * where `compress` sits, so a hook that reads the body (an ETag) sees it unpacked,
-   * wherever it was registered.
+   * Hooks added with `order: "last"` come after all the others of their kind, again
+   * outermost first: that is where `compress` sits, so an onSend hook that reads the body
+   * (an ETag) sees it unpacked, wherever it was registered.
    */
   flatten(): Hooks {
     const chain = this.chain();
     const out = emptyHooks();
     for (const b of chain) out.preHandler.push(...b.resolvers);
     for (const b of chain) for (const k of KINDS) (out[k] as unknown[]).push(...b.hooks[k]);
-    for (const b of chain) out.onSend.push(...b.lastSend);
+    for (const b of chain) for (const k of KINDS) (out[k] as unknown[]).push(...b.lastHooks[k]);
     return KINDS.some((k) => out[k].length) ? out : NO_HOOKS;
   }
 }
@@ -303,8 +324,8 @@ export class Scope<Defs extends RouteDefs = any, Deco = any> extends Routes<Defs
     });
   }
 
-  private hook<K extends keyof Hooks>(kind: K, fn: Hooks[K][number]): this {
-    (this._box.hooks[kind] as unknown[]).push(fn);
+  private hook<K extends keyof Hooks>(kind: K, fn: Hooks[K][number], options: HookOptions | undefined): this {
+    ((options?.order === "last" ? this._box.lastHooks : this._box.hooks)[kind] as unknown[]).push(fn);
     this._root._changed();
     return this;
   }
@@ -314,35 +335,36 @@ export class Scope<Defs extends RouteDefs = any, Deco = any> extends Routes<Defs
    * answer at once. The pages inkan serves itself (`/docs`, `/openapi.json`, `/_inkan`) are
    * answered before any hook runs, so no hook sees them.
    */
-  onRequest(fn: RequestHook<Deco>): this {
-    return this.hook("onRequest", fn);
+  onRequest(fn: RequestHook<Deco>, options?: HookOptions): this {
+    return this.hook("onRequest", fn, options);
   }
   /** Runs after the input is checked, before the handler: rules that need the typed input. */
-  preHandler(fn: RequestHook<Deco>): this {
-    return this.hook("preHandler", fn);
+  preHandler(fn: RequestHook<Deco>, options?: HookOptions): this {
+    return this.hook("preHandler", fn, options);
   }
   /**
    * Sees every answer before it is written, problems too, and may change it: headers,
    * compression, envelopes. Hooks run outermost scope first, in the order they were added.
-   * `{ last: true }` runs a hook after every other onSend hook of the route instead, for one
-   * that changes the body's bytes: `compress` is one, so a hook that reads the body (an
+   * `{ order: "last" }` runs a hook after every other onSend hook of the route instead, for
+   * one that changes the body's bytes: `compress` is one, so a hook that reads the body (an
    * ETag, a signature) always sees it before it is packed, wherever either was registered.
    * The pages inkan serves itself (`/docs`, `/openapi.json`, `/_inkan`) are answered before
    * any hook runs: headers set here (secure headers, CORS) do not reach them.
    */
-  onSend(fn: SendHook<Deco>, options?: { last?: boolean }): this {
-    if (!options?.last) return this.hook("onSend", fn);
-    this._box.lastSend.push(fn);
-    this._root._changed();
-    return this;
+  onSend(fn: SendHook<Deco>, options?: HookOptions | { /** @deprecated Use `order: "last"`. */ last?: boolean }): this {
+    if (options && "last" in options) {
+      deprecate("onSend(fn, { last: true })", 'onSend(fn, { order: "last" })');
+      return this.hook("onSend", fn, options.last ? { order: "last" } : undefined);
+    }
+    return this.hook("onSend", fn, options as HookOptions | undefined);
   }
   /** Runs after the answer is written: metrics, audit logs. It cannot change the answer any more. */
-  onResponse(fn: ResponseHook<Deco>): this {
-    return this.hook("onResponse", fn);
+  onResponse(fn: ResponseHook<Deco>, options?: HookOptions): this {
+    return this.hook("onResponse", fn, options);
   }
   /** Sees every problem before it becomes an answer, and may change it or return another. */
-  onProblem(fn: ProblemHook<Deco>): this {
-    return this.hook("onProblem", fn);
+  onProblem(fn: ProblemHook<Deco>, options?: HookOptions): this {
+    return this.hook("onProblem", fn, options);
   }
 
   /**
@@ -402,20 +424,23 @@ export class Scope<Defs extends RouteDefs = any, Deco = any> extends Routes<Defs
    * It is made once however often it is read, and a problem it throws is the answer of the
    * request that awaits it.
    *
-   * With `{ before: "handler" }` it is awaited after the input is checked, before the
+   * With `{ resolve: "preHandler" }` it is awaited after the input is checked, before the
    * preHandler hooks, so they and the handler see the value itself, typed without the
    * promise. That loads it for every request of the routes it covers, read or not: `when`
    * picks them, asked once per route. A route it leaves out has no value to show, so reading
    * it there throws; onRequest hooks, which run before it is awaited, still get the promise.
    *
    *   app.decorateRequest("user", (ctx) => users.byId(ctx.cookies.sid), {
-   *     before: "handler",
+   *     resolve: "preHandler",
    *     when: (route) => route.security.length > 0,
    *   });
+   *
+   * The plain form is stable; the one with `options` (`resolve`, `when`) is experimental.
    */
   decorateRequest: DecorateRequestMethod<this> = ((name: string, init: (ctx: any) => unknown, options?: ResolveOptions) => {
     const proto = this._box.Ctx.prototype;
     if (RESERVED.has(name) || name in proto) throw new Error(`Cannot decorate ctx.${name}: the context already has a ${name}`);
+    if (options && "before" in options) deprecate('decorateRequest(…, { before: "handler" })', 'decorateRequest(…, { resolve: "preHandler" })');
     const keep = (ctx: object, value: unknown) => Object.defineProperty(ctx, name, { value, writable: true, enumerable: true, configurable: true });
     const wants = options && wantedBy(options.when);
     Object.defineProperty(proto, name, {
@@ -464,16 +489,24 @@ export class Scope<Defs extends RouteDefs = any, Deco = any> extends Routes<Defs
    * header parameters, answers, descriptions, details of a security scheme. Runs when the
    * document is written, never per request. Outer scopes' hooks run first.
    *
-   *   app.describe((op, route, components, ref) => {
+   *   app.onOperation((op, route, components, ref) => {
    *     if (components.securitySchemes?.bearer) components.securitySchemes.bearer.bearerFormat = "JWT";
    *     if (route.security?.length) op.responses["403"] ??= { description: "Not allowed for these credentials" };
    *     op.responses["409"] ??= { description: "Replayed", content: { "application/json": { schema: ref(Conflict, "Conflict") } } };
    *   });
+   *
+   * @experimental
    */
-  describe(fn: OperationHook): this {
+  onOperation(fn: OperationHook): this {
     this._box.describers.push(fn);
     this._root._changed();
     return this;
+  }
+
+  /** @deprecated Use `onOperation`, which it is. */
+  describe(fn: OperationHook): this {
+    deprecate("scope.describe()", "scope.onOperation()");
+    return this.onOperation(fn);
   }
 
   /**
