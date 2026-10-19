@@ -2,11 +2,12 @@
 // app and holds the answer against the contract: the status, the response
 // schema and whatever the example says it `expect`s.
 
-import { contractFor, type App, type InjectResponse } from "../core/app.ts";
-import type { Example, RouteRecord } from "../core/route.ts";
+import { contractFor, type App, type AppOptions, type InjectResponse } from "../core/app.ts";
+import type { Example, OperationRoute } from "../core/route.ts";
 import { paint } from "../core/color.ts";
 import { EventsSchema } from "../schema/schema.ts";
 
+/** @experimental */
 export type CheckOptions = {
   /** Runs before every example, e.g. to reset an in-memory store. */
   beforeEach?: () => unknown;
@@ -16,6 +17,7 @@ export type CheckOptions = {
   strict?: boolean;
 };
 
+/** @experimental */
 export type CheckResult = {
   method: string;
   path: string;
@@ -26,6 +28,7 @@ export type CheckResult = {
   problems: string[];
 };
 
+/** @experimental */
 export type CheckReport = {
   ok: boolean;
   passed: number;
@@ -59,7 +62,10 @@ function queryString(q: Record<string, unknown> = {}): string {
   return s ? `?${s}` : "";
 }
 
-/** Is everything in `expected` also in `actual`? Returns where it is not. */
+/**
+ * Is everything in `expected` also in `actual`? Returns where it is not.
+ * @experimental
+ */
 export function partialMatch(expected: unknown, actual: unknown, path = "body"): string | undefined {
   if (expected !== null && typeof expected === "object") {
     if (Array.isArray(expected)) {
@@ -81,7 +87,7 @@ export function partialMatch(expected: unknown, actual: unknown, path = "body"):
   if (!Object.is(expected, actual)) return `${path}: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`;
 }
 
-function expectedStatus(r: RouteRecord, ex: Example): number | undefined {
+function expectedStatus(r: OperationRoute, ex: Example): number | undefined {
   if (ex.status !== undefined) return ex.status;
   const ok = Object.keys(r.spec.response ?? {}).map(Number).filter((s) => s >= 200 && s < 300).sort();
   return ok[0];
@@ -90,9 +96,12 @@ function expectedStatus(r: RouteRecord, ex: Example): number | undefined {
 // ---------- examples that build on each other ----------
 
 type Kept = Record<string, unknown>;
-type Step = { r: RouteRecord; ex: Example; label: string };
+type Step = { r: OperationRoute; ex: Example; label: string };
 
-/** Puts kept values into `{name}` placeholders. A placeholder alone keeps the value's type. */
+/**
+ * Puts kept values into `{name}` placeholders. A placeholder alone keeps the value's type.
+ * @internal
+ */
 export function substitute<T>(value: T, kept: Kept): T {
   if (typeof value === "string") {
     const whole = /^\{(\w+)\}$/.exec(value);
@@ -194,7 +203,7 @@ function keepFrom(res: InjectResponse, keep: Record<string, string> = {}): { kep
   return { kept, missing };
 }
 
-const stepLabel = (r: RouteRecord, ex: Example, i: number) => `${r.method} ${r.path} > ${ex.name ?? `example ${i + 1}`}`;
+const stepLabel = (r: OperationRoute, ex: Example, i: number) => `${r.method} ${r.path} > ${ex.name ?? `example ${i + 1}`}`;
 
 function indexExamples(app: App): Map<string, Step> {
   const index = new Map<string, Step>();
@@ -235,11 +244,11 @@ async function runChain(app: App, chain: Step[], jar: CookieJar): Promise<Kept> 
 }
 
 // An event stream may never end, so an example reads as many events as it expects, or five.
-const eventsFor = (r: RouteRecord, ex: Example) =>
+const eventsFor = (r: OperationRoute, ex: Example) =>
   contractFor(r, expectedStatus(r, ex) ?? 200) instanceof EventsSchema ? (Array.isArray(ex.expect) ? ex.expect.length : 5) : undefined;
 
 /** An example's request, with the chain's cookies; what the answer sets goes into the jar. */
-async function send(app: App, r: RouteRecord, ex: Example, jar: CookieJar) {
+async function send(app: App, r: OperationRoute, ex: Example, jar: CookieJar) {
   const path = fill(r.path, ex.params);
   const cookie = jar.header(path);
   let headers = ex.headers;
@@ -256,7 +265,7 @@ async function send(app: App, r: RouteRecord, ex: Example, jar: CookieJar) {
   return res;
 }
 
-async function runOne(app: App, r: RouteRecord, raw: Example, i: number, index: Map<string, Step>, beforeEach?: () => unknown): Promise<CheckResult> {
+async function runOne(app: App, r: OperationRoute, raw: Example, i: number, index: Map<string, Step>, beforeEach?: () => unknown): Promise<CheckResult> {
   const name = raw.name ?? `example ${i + 1}`;
   const started = performance.now();
   const problems: string[] = [];
@@ -302,12 +311,13 @@ async function runOne(app: App, r: RouteRecord, raw: Example, i: number, index: 
   return { method: r.method, path: r.path, example: name, ok: problems.length === 0, status, ms, problems };
 }
 
+/** @internal */
 export async function runChecks(app: App, opts: CheckOptions = {}): Promise<CheckReport> {
   const results: CheckResult[] = [];
   const unchecked: string[] = [];
   const uncovered: CheckReport["uncovered"] = [];
   const log = app.options.log;
-  app.options.log = false;
+  (app.options as AppOptions).log = false;
   const index = indexExamples(app);
   try {
     for (const r of app.routes()) {
@@ -325,14 +335,23 @@ export async function runChecks(app: App, opts: CheckOptions = {}): Promise<Chec
       for (const [i, ex] of examples.entries()) results.push(await runOne(app, r, ex, i, index, opts.beforeEach));
     }
   } finally {
-    app.options.log = log;
+    (app.options as AppOptions).log = log;
   }
   const failed = results.filter((r) => !r.ok).length;
   const ok = failed === 0 && !(opts.strict && uncovered.length);
   return { ok, passed: results.length - failed, failed, results, unchecked, uncovered };
 }
 
-export function formatReport(report: CheckReport, title = "", color = false): string {
+/** How `formatReport` and `formatDiff` write: a title for the head line, and terminal colors. */
+export type FormatOptions = { title?: string; color?: boolean };
+
+/**
+ * A check report as text for a terminal: `formatReport(report, { title, color })`.
+ * `formatReport(report, title, color)` works too.
+ * @experimental
+ */
+export function formatReport(report: CheckReport, options?: FormatOptions | string, colored?: boolean): string {
+  const { title = "", color = false } = typeof options === "object" ? options : { title: options, color: colored };
   const c = paint(color);
   const lines: string[] = ["", `  ${c.seal("印")} ${c.bold("inkan check")}${title ? c.dim("  ·  " + title) : ""}`, ""];
   const gaps = (route: string) => {

@@ -14,6 +14,7 @@
 // `Store` (./store.ts), whose publish/subscribe carries progress and cancels between them.
 
 import { randomBytes } from "node:crypto";
+import { deprecate } from "./deprecate.ts";
 import { HttpProblem, problem, type ProblemBody } from "./problem.ts";
 import { EventsSchema, t, type Issue, type Schema } from "../schema/schema.ts";
 import { sse } from "./stream.ts";
@@ -22,9 +23,13 @@ import { Cron, type CronZone } from "./cron.ts";
 import { memoryStore, type Store } from "./store.ts";
 import { joinPath, reply, type Context, type DecoOf, type Example, type JoinPath, type PathParams, type RawHeaders, type RawQuery, type Security, type WithRoutes } from "./route.ts";
 
+/** @experimental */
 export type JobState = "queued" | "running" | "done" | "failed" | "canceled";
 
-/** A job as the store keeps it. */
+/**
+ * A job as the store keeps it.
+ * @experimental
+ */
 export type JobRecord = {
   id: string;
   /** The job's kind: the path it was started at, as it was defined (`/exports`). */
@@ -57,6 +62,7 @@ type Maybe<T> = T | Promise<T>;
  *
  * Where jobs were kept in 0.7. A store several processes share (`shared: true`) lets an app
  * with jobs run with `workers`.
+ * @experimental
  */
 export interface JobStore {
   /** Whether every process sees the same jobs. The memory store does not. */
@@ -84,7 +90,7 @@ const jobKey = (id: string) => `inkan:job:${id}`;
 const asRecord = (raw: unknown): JobRecord | undefined => (raw && typeof raw === "object" ? (raw as JobRecord) : undefined);
 
 /**
- * The jobs' view of a {@link Store}: one key per job, forgotten `keep` seconds after it ends
+ * The jobs' view of a {@link Store}: one key per job, forgotten `retain` milliseconds after it ends
  * by the store's TTL. This process hears of a change at once; the store gets the latest
  * version of each job, one write at a time (a hundred quick progress updates are a few
  * writes), and reads here see what is not written yet. When the store is shared, changes
@@ -187,7 +193,10 @@ function onStore(store: Store, report: (err: unknown) => void): JobStore {
 
 // ---------- types ----------
 
-/** A job as the routes answer with it. */
+/**
+ * A job as the routes answer with it.
+ * @experimental
+ */
 export type JobBody<P = unknown> = {
   id: string;
   state: JobState;
@@ -199,7 +208,10 @@ export type JobBody<P = unknown> = {
   finishedAt?: Date;
 };
 
-/** What the function that does the work gets. */
+/**
+ * What the function that does the work gets.
+ * @experimental
+ */
 export type Job<B = unknown, P = unknown, Deco = {}> = {
   id: string;
   /** The checked body it was started with. */
@@ -215,6 +227,7 @@ export type Job<B = unknown, P = unknown, Deco = {}> = {
   ctx: Context<any, any, B, any, any> & Deco;
 };
 
+/** @experimental */
 export type JobOptions<B, P, R, Deco = {}> = {
   summary?: string;
   description?: string;
@@ -231,7 +244,9 @@ export type JobOptions<B, P, R, Deco = {}> = {
   concurrency?: number;
   /** How many may wait; past that, starting one is a 503. Default 100. */
   queue?: number;
-  /** Seconds a finished job is kept for its result. Default 3600. */
+  /** Milliseconds a finished job is kept for its result. Default 3600000 (an hour). */
+  retain?: number;
+  /** @deprecated Seconds a finished job is kept; use `retain`, in milliseconds. */
   keep?: number;
   /** Milliseconds a job may run before it fails and `job.signal` is aborted. Default: no limit. */
   timeout?: number;
@@ -256,13 +271,18 @@ export type JobOptions<B, P, R, Deco = {}> = {
    * run is a context of no real request: a POST to the job's path, no headers, its input as
    * the body.
    */
+  schedule?: string | { cron: string; input?: B; timezone?: CronZone };
+  /** @deprecated Use `schedule`, which it is. */
   every?: string | { cron: string; input?: B; timezone?: CronZone };
 };
 
 type ProblemSchema = Schema<ProblemBody>;
 type JobSchema<P> = Schema<JobBody<P>>;
 
-/** The five routes of a job, as the typed client knows them. */
+/**
+ * The five routes of a job, as the typed client knows them.
+ * @experimental
+ */
 export type JobRoutes<Path extends string, B, P, R> = {
   [K in `POST ${Path}`]: { params: PathParams<Path>; query: RawQuery; body: B; headers: RawHeaders; response: { 202: JobSchema<P>; 503: ProblemSchema } };
 } & {
@@ -293,7 +313,10 @@ export type JobRoutes<Path extends string, B, P, R> = {
   };
 };
 
-/** `job` as a property, so its type can name the app or scope it returns. */
+/**
+ * `job` as a property, so its type can name the app or scope it returns.
+ * @experimental
+ */
 export type JobMethod<Self> = <Path extends string, B = undefined, P = unknown, R = unknown>(
   path: Path,
   options: JobOptions<B, P, R, DecoOf<Self>>,
@@ -302,15 +325,21 @@ export type JobMethod<Self> = <Path extends string, B = undefined, P = unknown, 
 
 // ---------- running them ----------
 
-/** What the jobs need from the app. */
+/**
+ * What the jobs need from the app.
+ * @internal
+ */
 export interface JobHost {
   dev: boolean;
-  options: { validateResponses?: boolean; onError?: (error: unknown, ctx: Context<any, any, any, any, any>) => void };
+  options: { validateResponses?: boolean; onError?: (error: unknown, ctx: Context<any, any, any, any, any> | undefined) => void };
 }
 
 const newId = () => randomBytes(16).toString("base64url"); // not the request id: that one is a counter, easy to guess
 
-/** Every kind of job of one app: their store, the sweep, and the shutdown. */
+/**
+ * Every kind of job of one app: their store, the sweep, and the shutdown.
+ * @internal
+ */
 export class JobHub {
   host: JobHost;
   kinds: JobKind[] = [];
@@ -368,7 +397,7 @@ export class JobHub {
   }
 
   report(err: unknown, ctx?: Context<any, any, any, any, any>) {
-    if (this.host.options.onError) this.host.options.onError(err, ctx as never);
+    if (this.host.options.onError) this.host.options.onError(err, ctx);
     else console.error(err);
   }
 
@@ -416,7 +445,7 @@ const TIMEOUT = Symbol("timeout");
 /** The longest delay a timer takes: 2^31 - 1 ms, almost 25 days. Longer waits go in hops. */
 const LONGEST = 2 ** 31 - 1;
 
-/** A kind's schedule, from `every`. */
+/** A kind's schedule, from `schedule`. */
 type Schedule = {
   cron: Cron;
   zone: CronZone;
@@ -430,7 +459,10 @@ type Schedule = {
   last?: string;
 };
 
-/** One kind of job: its queue, its slots, and the routes' work. */
+/**
+ * One kind of job: its queue, its slots, and the routes' work.
+ * @internal
+ */
 export class JobKind {
   hub: JobHub;
   path: string;
@@ -454,7 +486,7 @@ export class JobKind {
     this.opts = opts;
     this.run = run;
     this.store = opts.store ? hub.board(opts.store) : hub.defaultStore();
-    this.keep = (opts.keep ?? 3600) * 1000;
+    this.keep = opts.retain ?? (opts.keep === undefined ? 3_600_000 : (deprecate("app.job({ keep }) in seconds", "{ retain } in milliseconds"), opts.keep * 1000));
     this.concurrency = Math.max(1, opts.concurrency ?? 1);
     this.limit = Math.max(0, opts.queue ?? 100);
   }
@@ -840,11 +872,12 @@ function paramsOf(path: string) {
 
 type Define = (method: string, path: string, spec: object, handler: (ctx: any) => unknown) => void;
 
-/** A job's `every`, read and checked when the job is defined, so a wrong one stops the start. */
+/** A job's `schedule`, read and checked when the job is defined, so a wrong one stops the start. */
 function scheduleOf(path: string, full: string, opts: JobOptions<any, any, any, any>, ctxFor: (path: string) => Context<any, any, any, any, any>): Schedule {
-  const every = typeof opts.every === "string" ? { cron: opts.every } : opts.every!;
+  const given = opts.schedule ?? opts.every!;
+  const every = typeof given === "string" ? { cron: given } : given;
   const where = `app.job("${path}")`;
-  if (/:\w/.test(full)) throw new Error(`${where}: every needs a path without parameters, since no request names them`);
+  if (/:\w/.test(full)) throw new Error(`${where}: schedule needs a path without parameters, since no request names them`);
   let cron: Cron;
   try {
     cron = new Cron(every.cron);
@@ -852,13 +885,13 @@ function scheduleOf(path: string, full: string, opts: JobOptions<any, any, any, 
     throw new Error(`${where}: ${(err as Error).message}`);
   }
   const zone = every.timezone ?? "UTC";
-  if (zone !== "UTC" && zone !== "local") throw new Error(`${where}: every.timezone is "UTC" or "local", not "${zone}"`);
+  if (zone !== "UTC" && zone !== "local") throw new Error(`${where}: schedule.timezone is "UTC" or "local", not "${zone}"`);
   if (!cron.next(Date.now(), zone)) throw new Error(`${where}: the cron "${every.cron}" never matches`);
   let input = every.input;
   if (opts.body) {
-    if (!("input" in every)) throw new Error(`${where}: the job takes a body, so every needs { cron, input } with the input to start it with`);
+    if (!("input" in every)) throw new Error(`${where}: the job takes a body, so schedule needs { cron, input } with the input to start it with`);
     const r = opts.body.safeParse(input);
-    if (!r.ok) throw new Error(`${where}: every.input does not match the body: ${r.issues.map((i) => `${i.path || "(body)"} ${i.message}`).join("; ")}`);
+    if (!r.ok) throw new Error(`${where}: schedule.input does not match the body: ${r.issues.map((i) => `${i.path || "(body)"} ${i.message}`).join("; ")}`);
     input = r.value;
   }
   return { cron, zone, input, ctx: () => ctxFor(full) };
@@ -867,6 +900,7 @@ function scheduleOf(path: string, full: string, opts: JobOptions<any, any, any, 
 /**
  * Defines a job's five routes on a scope. `prefix` is the scope's, `path` the job's own; the
  * routes go through `define`, so they are routes like any other.
+ * @internal
  */
 export function defineJob(
   hub: JobHub,
@@ -884,7 +918,8 @@ export function defineJob(
     console.warn("inkan: background jobs run in the process that started them; on a serverless platform it may be frozen or gone before they finish.");
   }
   const kind = new JobKind(hub, full, opts, run);
-  if (opts.every !== undefined) kind.schedule = scheduleOf(path, full, opts, ctxFor);
+  if (opts.schedule === undefined && opts.every !== undefined) deprecate("app.job({ every })", "app.job({ schedule })");
+  if ((opts.schedule ?? opts.every) !== undefined) kind.schedule = scheduleOf(path, full, opts, ctxFor);
   hub.kinds.push(kind);
 
   const name = opts.name ?? nameOf(full);

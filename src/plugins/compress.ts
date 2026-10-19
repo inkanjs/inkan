@@ -63,7 +63,7 @@ export const compress = (options: CompressOptions = {}) =>
         }
         const zip = encoding === "br" ? createBrotliCompress(BROTLI) : createGzip();
         return { ...out, stream: Readable.from(out.stream!).pipe(zip) };
-      }, { last: true }); // after every other onSend hook: an ETag or a signature hashes the bytes before they are packed
+      }, { order: "last" }); // after every other onSend hook: an ETag or a signature hashes the bytes before they are packed
     },
     { name: "compress", shared: true },
   );

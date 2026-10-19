@@ -7,7 +7,7 @@ import { HttpProblem, problem, type ProblemBody } from "./problem.ts";
 import { type Match, Router } from "./router.ts";
 import { EventsSchema, RawBodySchema, StreamSchema, t, type Infer, type Issue, type Schema, type UploadedFile } from "../schema/schema.ts";
 import { encodeEvents, EventStream, hasFiles, isStream, parseEvents, toFormData, type SseEvent } from "./stream.ts";
-import { buildOpenAPI, type OpenAPIInfo } from "../openapi/openapi.ts";
+import { openAPIDocument, routeView, type OpenAPIInfo } from "../openapi/openapi.ts";
 import { docsPage } from "../pages/docs.ts";
 import { inspectorPage } from "../pages/inspector.ts";
 import { exampleFrom } from "../testing/record.ts";
@@ -15,16 +15,17 @@ import { runChecks, type CheckOptions, type CheckReport } from "../testing/check
 import { paint, useColor } from "./color.ts";
 import type { Seal } from "../seal/compile.ts";
 import { applySeal, type SealState } from "../seal/seal.ts";
-import { Reply, type Context, type Example, type Middleware, type RawQuery, type RouteRecord, type Responses, type RouteDefs } from "./route.ts";
+import { Reply, type Context, type Example, type Middleware, type OperationRoute, type RawQuery, type RouteRecord, type Responses, type RouteDefs } from "./route.ts";
 import { target, queryObject, trustingContext, type Exchange, type RawRequest, type RawResponse, type Target, type TrustProxy } from "./context.ts";
-import { NO_HOOKS, runHooks, Scope, type Hooks, type Root } from "./scope.ts";
+import { NO_HOOKS, runHooks, Scope, type Hooks } from "./scope.ts";
 import { nextId } from "./request-id.ts";
 import { JobHub } from "./jobs.ts";
 import { jsonRows, SafeHtml } from "./helpers.ts";
 import { cached } from "./cache.ts";
 import { ArraySchema } from "../schema/schema.ts";
 import { readRequestBody, requestStream, TOO_LARGE, validateInput } from "./input.ts";
-import { Connection, originAllowed, UPGRADING, writeAnswer, writeSwitch, type Upgrading, type WsOrigins, type WsSpec } from "./ws.ts";
+import { Connection, originAllowed, UPGRADING, writeAnswer, writeSwitch, type Origins, type Upgrading, type WsDefaults, type WsSpec } from "./ws.ts";
+import { deprecate } from "./deprecate.ts";
 import { Gauge, type PressureOptions, type PressureSample } from "./pressure.ts";
 import { contextStorage, type Cell } from "./request-context.ts";
 import { Buffer } from "node:buffer"; // explicit, for runtimes without a global Buffer
@@ -62,6 +63,7 @@ export type AppOptions = OpenAPIInfo & {
    * Run one process per core (`"auto"`) or this many, sharing the port. The first process
    * only looks after them: it starts them, starts another when one dies, and on SIGINT or
    * SIGTERM lets every one finish its open requests. Default: one process, no cluster.
+   * @experimental
    */
   workers?: number | "auto";
   /**
@@ -71,14 +73,28 @@ export type AppOptions = OpenAPIInfo & {
    * since anyone can send these headers.
    */
   trustProxy?: TrustProxy;
-  /** The pages that may open the app's WebSockets, for every route without `origins` of its own. Default: the app's own origin. See `WsSpec.origins`. */
-  wsOrigins?: WsOrigins;
+  /**
+   * Defaults for every WebSocket route that does not set its own: `origins` (the pages that
+   * may open them; default the app's own origin, see `WsSpec.origins`), `maxMessage` (1 MiB),
+   * `heartbeat` (30 000 ms) and `handshakeTimeout` (10 000 ms).
+   */
+  ws?: WsDefaults;
+  /** @deprecated Use `ws: { origins }`. */
+  wsOrigins?: Origins;
   /** Development mode. Default: NODE_ENV is not "production". */
   dev?: boolean;
-  onError?: (error: unknown, ctx: Context<any, any, any, any, any>) => void;
+  /**
+   * Hears about every error that is a bug, not an answer: whatever a handler or hook throws
+   * that is not a problem, a broken onResponse hook, a stream that fails midway. `ctx` is the
+   * request's context where there is one, and undefined where the error came from outside any
+   * request's handling (the socket, a stream after its answer started, inkan itself).
+   * Default: `console.error`.
+   */
+  onError?: (error: unknown, ctx: Context<any, any, any, any, any> | undefined) => void;
   /**
    * The contracts stamped into code by `inkan seal`: `import seal from "./inkan.seal.js"`.
    * Each one is used only while it matches its contract; the rest run as without a seal.
+   * @experimental
    */
   seal?: Seal;
   /**
@@ -89,16 +105,18 @@ export type AppOptions = OpenAPIInfo & {
    * and before hooks, the log and the inspector; the pages inkan serves itself and the
    * `exempt` paths still answer. `app.pressure()` hands back the last sample, for a health
    * route. Default off: no timer, and a request reads nothing for it.
+   * @experimental
    */
   pressure?: PressureOptions;
   /**
    * Answers every request inside an AsyncLocalStorage that holds its context, so code far
-   * from the handler reads it with `context()`: `context()?.id` in a logger, `context()?.user`
+   * from the handler reads it with `currentContext()`: `currentContext()?.id` in a logger, `currentContext()?.user`
    * in a database helper. Background jobs run with their own (`job.ctx`), not the store of
-   * the request that started them. Default off: a request pays nothing, and `context()` throws
+   * the request that started them. Default off: a request pays nothing, and `currentContext()` throws
    * unless another app in the process turned it on. On, it costs about 0.5-1 µs a request
    * (bench/inproc.mjs: 113 % of the time without it, geomean; 10-25 % on the smallest
    * requests, a few % where a request does real work).
+   * @experimental
    */
   context?: boolean;
 };
@@ -113,14 +131,14 @@ export type InjectOptions = {
   events?: number;
 };
 
-export type InjectResponse = {
+export type InjectResponse<T = any> = {
   status: number;
   headers: Record<string, string>;
   /** The Set-Cookie headers, one per cookie. */
   cookies: string[];
   text: string;
-  /** Parsed JSON when the answer was JSON, the events of an event stream, otherwise the text. */
-  body: any;
+  /** Parsed JSON when the answer was JSON, the events of an event stream, otherwise the text. `inject<T>()` types it. */
+  body: T;
 };
 
 /** A request as an adapter hands it to `app.exchange`. */
@@ -139,6 +157,8 @@ export type AdapterRequest = {
   remote?: string;
   /** Whether the request came over TLS; `ctx.secure` and `ctx.protocol` say so. Default: no. */
   secure?: boolean;
+  /** The HTTP version, for `ctx.httpVersion`: "1.1", "2.0". Default "1.1". */
+  httpVersion?: string;
 };
 
 /** The answer `app.exchange` hands back for the adapter to write. */
@@ -196,11 +216,15 @@ const SAFE_ID = /^[\w.:@-]{1,128}$/; // anything else could smuggle into logs, s
 const REDACT = new Set(["authorization", "cookie", "set-cookie", "proxy-authorization", "x-api-key"]);
 const CLIP = 4096;
 const clip = (s: string, n = CLIP) => (s.length > n ? s.slice(0, n) + `… (${s.length - n} more)` : s);
-const isLoopback = (addr?: string) =>
-  !addr || addr === "127.0.0.1" || addr === "::1" || addr === "::ffff:127.0.0.1";
+/**
+ * Whether an address is this machine's own. No address is not: an adapter that names none gets no inspector.
+ * @internal
+ */
+export const isLoopback = (addr?: string) => addr === "127.0.0.1" || addr === "::1" || addr === "::ffff:127.0.0.1";
 
-export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, Deco> implements Root {
-  options: AppOptions;
+export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, Deco> {
+  /** The options the app was made with, the defaults filled in. Read them; they are fixed once the app is made. */
+  readonly options: Readonly<AppOptions>;
   /** @internal */
   _dev: boolean;
   private router = new Router<RouteRecord>();
@@ -208,8 +232,10 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
   private log: LogEntry[] = [];
   private logId = 0;
   private spec?: Record<string, unknown>;
-  private _onListen: (() => void | Promise<void>)[] = [];
-  private _onClose: (() => void | Promise<void>)[] = [];
+  /** What `routes()` hands out, made once until a route is added. */
+  private views?: readonly OperationRoute[];
+  private listenHooks: (() => void | Promise<void>)[] = [];
+  private closeHooks: (() => void | Promise<void>)[] = [];
   /** Plugins still loading, in order; undefined when everything registered so far has run. */
   private loading?: Promise<void>;
   /** Whether every route has its hooks joined; adding a route or a hook undoes it. */
@@ -223,6 +249,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
   constructor(options: AppOptions = {}) {
     super();
     this._dev = options.dev ?? process.env.NODE_ENV !== "production";
+    this.devGuessed = options.dev === undefined;
     this.options = {
       docs: "/docs",
       openapi: "/openapi.json",
@@ -237,21 +264,30 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     // before any plugin: every scope's context class extends this one
     if (options.trustProxy) this._box.Ctx = trustingContext(this._box.Ctx, options.trustProxy);
     if (options.pressure) this._gauge = new Gauge(options.pressure);
+    if (options.wsOrigins !== undefined) deprecate("the wsOrigins option", "ws: { origins }");
+    this.wsDefaults = { ...options.ws, origins: options.ws?.origins ?? options.wsOrigins };
     if (options.context) {
       const als = contextStorage();
       const handle = this.handle.bind(this);
       // handle() puts the request's context into the cell, synchronously, the moment it has one
       this.handle = (raw, url, matched) => {
         const cell: Cell = { ctx: undefined };
-        this._cell = cell;
+        this.cell = cell;
         return als.run(cell, handle, raw, url, matched);
       };
     }
   }
   /** The store of the request being handled, with `context: true`, until its context is in it. */
-  private _cell?: Cell;
+  private cell?: Cell;
+  /** What every WebSocket route without its own takes: the `ws` option, `wsOrigins` folded in. */
+  private wsDefaults: WsDefaults;
+  /** Whether development mode came from NODE_ENV, not from the `dev` option. */
+  private devGuessed: boolean;
 
-  /** The last overload sample (see `pressure`), for a health route; undefined without `pressure`. */
+  /**
+   * The last overload sample (see `pressure`), for a health route; undefined without `pressure`.
+   * @experimental
+   */
   pressure(): PressureSample | undefined {
     return this._gauge && { ...this._gauge.sample };
   }
@@ -277,12 +313,12 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
   }
 
   onListen(fn: () => void | Promise<void>): this {
-    this._onListen.push(fn);
+    this.listenHooks.push(fn);
     return this;
   }
 
   onClose(fn: () => void | Promise<void>): this {
-    this._onClose.push(fn);
+    this.closeHooks.push(fn);
     return this;
   }
 
@@ -293,12 +329,16 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     this.router.add(r.method, r.path, r);
     this._records.push(r);
     this.spec = undefined;
+    this.views = undefined;
     this.built = false;
     this.sealState = undefined; // a new route: its contracts get sealed on the next request
   }
 
   private sealState?: SealState;
-  /** How the seal went: how many contracts run on it, and which changed since it was made. */
+  /**
+   * How the seal went: how many contracts run on it, and which changed since it was made.
+   * @experimental
+   */
   sealed(): SealState | undefined {
     if (!this.options.seal) return undefined;
     if (!this.sealState) {
@@ -348,6 +388,8 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
   private build() {
     for (const r of this._records) {
       r.hooks = r.box!.flatten();
+      const around = r.box!.arounds();
+      r.mw = around.length ? [...around, ...r.use] : r.use;
       const { body, bodyLimit, params, query, headers } = r.spec;
       r.streamsBody = body instanceof StreamSchema;
       // a stream has no limit unless it says so: it never sits in memory
@@ -372,22 +414,29 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
   /** The docs path with a slash at the end, which answers too. */
   private docsSlash?: string;
 
-  routes(): RouteRecord[] {
-    return [...this._records];
+  /** Every route of the app and of the scopes inside it, as written: method, path, security, meta and spec. Read-only. */
+  routes(): readonly OperationRoute[] {
+    return (this.views ??= Object.freeze(this._records.map(routeView)));
   }
 
   openapi(): Record<string, unknown> {
-    return (this.spec ??= buildOpenAPI(this._records, this.options));
+    return (this.spec ??= openAPIDocument(this._records, this.options));
   }
 
-  /** Runs every route's examples against the app, without a socket. */
+  /**
+   * Runs every route's examples against the app, without a socket.
+   * @experimental
+   */
   async check(opts?: CheckOptions): Promise<CheckReport> {
     await this.ready();
     return runChecks(this, opts);
   }
 
-  /** Sends a request straight into the app. Good for tests: no port, no network. */
-  async inject(opts: InjectOptions): Promise<InjectResponse> {
+  /**
+   * Sends a request straight into the app. Good for tests: no port, no network.
+   * `inject<Tea>(…)` types the body; it is not checked against `Tea`.
+   */
+  async inject<T = any>(opts: InjectOptions): Promise<InjectResponse<T>> {
     if (this.loading) await this.ready();
     const headers: Record<string, string> = {};
     for (const [k, v] of Object.entries(opts.headers ?? {})) headers[k.toLowerCase()] = v;
@@ -405,7 +454,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
         headers["content-type"] ??= "application/json";
       }
     }
-    const res = await this.handle({ method: (opts.method ?? "GET").toUpperCase(), url: opts.url, headers, body });
+    const res = await this.handle({ method: (opts.method ?? "GET").toUpperCase(), url: opts.url, headers, body, local: true });
     const type = res.headers["content-type"] ?? "";
     let text = "";
     if (res.stream && type.startsWith("text/event-stream")) {
@@ -415,7 +464,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
       }
       res.abort?.abort();
       res.done?.();
-      return { status: res.status, headers: res.headers, cookies: res.cookies ?? [], text, body: parseEvents(text) };
+      return { status: res.status, headers: res.headers, cookies: res.cookies ?? [], text, body: parseEvents(text) as T };
     }
     const parts: Buffer[] = res.body === undefined ? [] : [Buffer.from(res.body)];
     if (res.stream) {
@@ -423,7 +472,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
         for await (const chunk of res.stream) parts.push(Buffer.from(chunk));
       } catch (err) {
         // as over a socket: what was written stays, the answer ends there, and the error is reported
-        if (this.options.onError) this.options.onError(err, undefined as never);
+        if (this.options.onError) this.options.onError(err, undefined);
         else console.error(err);
       }
       res.abort?.abort();
@@ -434,19 +483,18 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     const bytes = Buffer.concat(parts);
     text = (encoding === "br" ? brotliDecompressSync(bytes) : encoding === "gzip" ? gunzipSync(bytes) : bytes).toString();
     const json = /(^|\/|\+)json\b/.test(type); // application/json, problem+json; not NDJSON, which is lines
-    return { status: res.status, headers: res.headers, cookies: res.cookies ?? [], text, body: json && text ? parsedOr(text) : text };
+    return { status: res.status, headers: res.headers, cookies: res.cookies ?? [], text, body: (json && text ? parsedOr(text) : text) as T };
   }
 
   // ----- the request path -----
 
   /**
-   * @internal
    * Synchronous as long as nothing on the way is asynchronous: a promise only for a body
    * that has to be read, middleware, or a handler that returns one. Everything else answers
    * in the same turn, without a promise, a closure per step or an extra trip through the
    * microtask queue.
    */
-  handle(raw: RawRequest, url: Target = target(raw.url), matched?: Match<RouteRecord>): RawResponse | Promise<RawResponse> {
+  private handle(raw: RawRequest, url: Target = target(raw.url), matched?: Match<RouteRecord>): RawResponse | Promise<RawResponse> {
     if (!this.built) this.build();
     if (this.options.seal && !this.sealState) this.sealed();
     const timed = Boolean(this.options.log || this.options.inspector); // read each time: check() turns the log off for a while
@@ -478,9 +526,9 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     // A request no route takes never reads one on the plain path, so it gets none there.
     const ctx = (route || !plain ? new (route ? route.box! : this._box).Ctx(raw, url, id, headers, out) : undefined) as Context<any, any, any, any, any>;
     const x: Exchange = { raw, url, ctx, out, notes, headers, started, timed, id: idHeader ? id : undefined, route: undefined, hooks };
-    if (this._cell) {
-      this._cell.ctx = ctx;
-      this._cell = undefined;
+    if (this.cell) {
+      this.cell.ctx = ctx;
+      this.cell = undefined;
     }
 
     if (!plain) return this.full(x, m);
@@ -493,7 +541,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
         const r = (x.route = route);
         ctx.route = r.info;
         const reading = validateInput(ctx, r, (m as { params: Record<string, string> }).params, raw); // a promise only when a body has to be parsed
-        if (reading || r.use.length) return this.later(x, r, reading);
+        if (reading || r.mw!.length) return this.later(x, r, reading);
         const result = r.run!(ctx);
         if (result instanceof Promise) return this.settle(x, this.deadline(x, result));
         res = this.respond(result, x);
@@ -538,7 +586,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
       else {
         // the same as work(), in this frame: a route without a time limit needs no second one
         if (reading) await reading;
-        if (r.use.length) await chain(r.use, x.ctx, () => then(r.run!(x.ctx), (v) => void (result = v)));
+        if (r.mw!.length) await chain(r.mw!, x.ctx, () => then(r.run!(x.ctx), (v) => void (result = v)));
         else {
           const y = r.run!(x.ctx);
           result = y instanceof Promise ? await y : y;
@@ -555,7 +603,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
   private async work(x: Exchange, r: RouteRecord, reading: void | Promise<void>): Promise<unknown> {
     if (reading) await reading;
     let result: unknown;
-    if (r.use.length) await chain(r.use, x.ctx, () => then(r.run!(x.ctx), (v) => void (result = v)));
+    if (r.mw!.length) await chain(r.mw!, x.ctx, () => then(r.run!(x.ctx), (v) => void (result = v)));
     else {
       const y = r.run!(x.ctx);
       result = y instanceof Promise ? await y : y;
@@ -619,8 +667,8 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
             const early = await runHooks(hooks.preHandler, ctx);
             if (early !== undefined) return void (result = early);
           }
-          if (r.use.length) {
-            await chain(r.use, ctx, () => {
+          if (r.mw!.length) {
+            await chain(r.mw!, ctx, () => {
               const y = r.run!(ctx);
               return y instanceof Promise ? y.then((v) => void (result = v)) : void (result = y);
             });
@@ -719,7 +767,12 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     return res;
   }
 
-  private logRequest(entry: RequestLog) {
+  /**
+   * Writes one request's log line the way the app's `log` and `logger` options say: for an
+   * adapter that answers some requests itself. Requests through `exchange`, `fetch` or
+   * `listen` are logged already.
+   */
+  logRequest(entry: RequestLog): void {
     const { log, logger } = this.options;
     if (!log) return;
     if (logger) return logger(entry);
@@ -872,7 +925,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
       return encode(fresh({ "content-type": "text/html; charset=utf-8" }), 200, page);
     }
     if (inspector && (p === inspector || p.startsWith(inspector + "/"))) {
-      if (!isLoopback(raw.remote ?? raw.req?.socket.remoteAddress)) return; // a plain 404 for everybody else
+      if (!raw.local && !isLoopback(raw.remote ?? raw.req?.socket.remoteAddress)) return; // a plain 404 for everybody else
       if (p === inspector + "/log.json") {
         const since = Number(url.searchParams.get("since") ?? 0);
         return encode(fresh({ "cache-control": "no-store" }), 200, this.log.filter((e) => e.id > since));
@@ -924,6 +977,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
    * A Node `upgrade` listener, for `server.on("upgrade", app.upgradeListener)` on a server
    * made by hand; `listen` adds it by itself when the app has a WebSocket route. An upgrade
    * to a path without one is a 404.
+   * @experimental
    */
   get upgradeListener() {
     return (req: IncomingMessage, socket: Duplex, head: Buffer) => void this.upgrade(req, socket, head);
@@ -948,7 +1002,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     const m = this.router.match("WS", url.pathname);
     const route = m.kind === "found" ? m.route : undefined;
     // a handshake that never gets its answer (a hook that hangs) does not hold the socket forever
-    const limit = (route?.spec as WsSpec<unknown, unknown, unknown, unknown, unknown> | undefined)?.handshakeTimeout ?? HANDSHAKE_TIMEOUT;
+    const limit = (route?.spec as WsSpec<unknown, unknown, unknown, unknown, unknown> | undefined)?.handshakeTimeout ?? this.wsDefaults.handshakeTimeout ?? HANDSHAKE_TIMEOUT;
     const deadline = setTimeout(() => socket.destroy(), limit);
     deadline.unref();
     socket.once("close", () => clearTimeout(deadline));
@@ -1005,7 +1059,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     }
     if (!route) return;
     const spec = route.spec as WsSpec<unknown, unknown, unknown, unknown, unknown>;
-    const rule = spec.origins ?? this.options.wsOrigins;
+    const rule = spec.origins ?? this.wsDefaults.origins;
     if (rule !== "*" && (h.origin !== undefined || typeof rule === "function")) {
       let ctx: Context<any, any, any, any, any> | undefined;
       const early = () => (ctx ??= new route.box!.Ctx({ method: "GET", url: req.url ?? "/", headers: h, req }, url, "", h as Record<string, string>, fresh()) as Context<any, any, any, any, any>);
@@ -1026,8 +1080,8 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     const spec = route.spec as WsSpec<unknown, unknown, unknown, unknown, unknown>;
     const report = (err: unknown) => (this.options.onError ? this.options.onError(err, ctx) : console.error(err));
     const ws = new Connection(socket, {
-      maxMessage: spec.maxMessage ?? 1024 * 1024,
-      heartbeat: spec.heartbeat ?? 30_000,
+      maxMessage: spec.maxMessage ?? this.wsDefaults.maxMessage ?? 1024 * 1024,
+      heartbeat: spec.heartbeat ?? this.wsDefaults.heartbeat ?? 30_000,
       message: spec.message,
       send: spec.send,
       check: Boolean(this.options.validateResponses),
@@ -1130,16 +1184,20 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     if (body && body.byteLength > limit) return tooLargeAnswer(request.url, limit);
     const buf = body === undefined || body.byteLength === 0 ? undefined : Buffer.isBuffer(body) ? body : Buffer.from(body.buffer, body.byteOffset, body.byteLength);
     const stream = request.stream && asBuffers(request.stream);
-    return this.handle({ method: request.method, url: request.url, headers: request.headers, body: buf, stream, remote: request.remote, secure: request.secure });
+    return this.handle({ method: request.method, url: request.url, headers: request.headers, body: buf, stream, remote: request.remote, secure: request.secure, httpVersion: request.httpVersion });
   }
 
-  /** For adapters: runs the onListen hooks, once the adapter's server listens. */
+  /**
+   * For adapters, a trigger rather than an event: call it once the server listens. It runs
+   * the onListen hooks and starts the jobs' schedules, as `listen` does by itself. An app
+   * served through `exchange` or `fetch` without it runs neither.
+   */
   async started(): Promise<void> {
-    for (const hook of this._onListen) await hook();
+    for (const hook of this.listenHooks) await hook();
     this.schedule();
   }
 
-  /** Starts the jobs' schedules (`every`): in one process only, the first worker of a cluster. */
+  /** Starts the jobs' schedules (`schedule`): in one process only, the first worker of a cluster. */
   private schedule() {
     if (!this._jobs) return;
     const slot = process.env.INKAN_WORKER;
@@ -1147,11 +1205,15 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     this._jobs.schedule();
   }
 
-  /** For adapters: runs the onClose hooks, once the adapter's server has stopped taking requests. */
+  /**
+   * For adapters, a trigger rather than an event: call it once the server has stopped taking
+   * requests. It stops the pressure sampler, the jobs and the WebSockets, then runs the
+   * onClose hooks, as `listen`'s shutdown does by itself.
+   */
   async stopped(): Promise<void> {
     this._gauge?.stop();
     await Promise.all([this._jobs?.stop(), this.closeSockets()]);
-    for (const hook of this._onClose) await hook();
+    for (const hook of this.closeHooks) await hook();
   }
 
   // ----- web standard -----
@@ -1192,7 +1254,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
 
   /** Something failed outside every handler (the socket, inkan itself): log it and answer 500. */
   private broken(req: IncomingMessage, res: ServerResponse | Duplex, err: unknown) {
-    if (this.options.onError) this.options.onError(err, { req, res } as never);
+    if (this.options.onError) this.options.onError(err, undefined);
     else console.error(err);
     if (!(res instanceof ServerResponse)) {
       const body = JSON.stringify({ type: "internal", title: "Internal Server Error", status: 500, instance: req.url });
@@ -1232,7 +1294,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
         if (!res.write(chunk)) await new Promise((resolve) => res.once("drain", resolve));
       }
     } catch (err) {
-      if (this.options.onError) this.options.onError(err, { req: res.req, res } as never);
+      if (this.options.onError) this.options.onError(err, undefined);
       else console.error(err);
     } finally {
       res.off("close", stop);
@@ -1242,10 +1304,25 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
   }
 
   /**
-   * Starts listening. The port comes from the argument, then $PORT, then 3000,
-   * so it runs under warden, a PaaS or a container without changes.
+   * Starts listening, once every plugin has loaded, and resolves with the server. The port
+   * comes from the argument, then $PORT, then 3000, the host from the argument, then $HOST,
+   * then every interface, so it runs under warden, a PaaS or a container without changes.
+   * `signal` stops it when aborted: the server stops taking requests, then the app stops as
+   * on SIGTERM (jobs, sockets, onClose hooks), without ending the process.
+   *
+   *   await app.listen({ port: 8080, host: "127.0.0.1", signal: ac.signal });
+   *
+   * With `workers`, the promise of the first process never resolves: it only looks after the
+   * workers, and each worker's `listen` resolves with its own server.
+   *
+   * Two environment variables steer it, set by inkan itself: `INKAN_NO_LISTEN=1` (the CLI
+   * loads an app to read its routes) makes it resolve with a server that does not listen,
+   * and `INKAN_WORKER` is a worker's slot, 1 to `workers`; slot 1 runs the jobs' schedules.
    */
-  listen(port?: number, host?: string): Promise<Server> {
+  listen(options?: ListenOptions): Promise<Server>;
+  listen(port?: number, host?: string): Promise<Server>;
+  listen(a?: number | ListenOptions, b?: string): Promise<Server> {
+    const { port, host, signal } = typeof a === "object" ? a : { port: a, host: b, signal: undefined };
     const { workers } = this.options;
     const count = workers === "auto" ? availableParallelism() : (workers ?? 1);
     if (count > 1 && this._jobs?.local() && !process.env.INKAN_NO_LISTEN) {
@@ -1254,7 +1331,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     // in a cluster the first process only looks after the workers; listen() there does not return
     if (workers && cluster.isPrimary && !process.env.INKAN_NO_LISTEN) return this.supervise(count);
     // every plugin first: a route a plugin adds must be there for the first request, and one that fails stops the start
-    return this.ready().then(() => this.open(port, host));
+    return this.ready().then(() => this.open(port, host, signal));
   }
 
   /** The first process of a cluster: starts the workers, replaces one that dies, and stops them all together. */
@@ -1305,7 +1382,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     return new Promise<never>(() => {});
   }
 
-  private open(port?: number, host?: string): Promise<Server> {
+  private open(port?: number, host?: string, signal?: AbortSignal): Promise<Server> {
     const server = createServer(this.listener);
     // only an app with a WebSocket route listens for upgrades; one without answers them as plain requests
     if (this._records.some((r) => r.method === "WS")) server.on("upgrade", this.upgradeListener);
@@ -1316,8 +1393,9 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
       server.once("error", reject);
       server.listen(p, h, () => {
         server.off("error", reject);
+        if (this.devGuessed && this._dev) warnIfExposed(server);
         (async () => {
-          for (const hook of this._onListen) await hook();
+          for (const hook of this.listenHooks) await hook();
           this.schedule();
           const { log, logger } = this.options;
           if (log && !logger) {
@@ -1327,7 +1405,16 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
               console.log(JSON.stringify({ time: new Date().toISOString(), msg: "listening", port, worker: WORKER }));
             } else this.banner(server);
           }
-          if (this.options.gracefulShutdown) shutdownOnSignal(server, this._onClose, [() => this._jobs?.stop(), () => this.closeSockets(), () => this._gauge?.stop()]);
+          if (this.options.gracefulShutdown) shutdownOnSignal(server, this.closeHooks, [() => this._jobs?.stop(), () => this.closeSockets(), () => this._gauge?.stop()]);
+          if (signal) {
+            const stop = () => {
+              server.close();
+              server.closeIdleConnections();
+              void this.stopped();
+            };
+            if (signal.aborted) stop();
+            else signal.addEventListener("abort", stop, { once: true });
+          }
           resolve(server);
         })().catch((err) => server.close(() => reject(err)));
       });
@@ -1352,6 +1439,16 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
 }
 
 export const inkan = (options?: AppOptions): App<{}, {}> => new App(options);
+
+/** What `listen` takes besides a port number. */
+export type ListenOptions = {
+  /** Default: $PORT, then 3000. 0 picks a free one. */
+  port?: number;
+  /** Default: $HOST, then every interface. */
+  host?: string;
+  /** Stops the server and the app when aborted. */
+  signal?: AbortSignal;
+};
 
 /** Milliseconds an upgrade request has to get its answer, for a route without `handshakeTimeout`. */
 const HANDSHAKE_TIMEOUT = 10_000;
@@ -1379,10 +1476,10 @@ function isRows(v: unknown): boolean {
 const INPUT_PROBLEM = t.problem();
 
 /**
- * The schema a status answers with. A route that takes input also promises
+ * @internal The schema a status answers with. A route that takes input also promises
  * a 400 problem for input that breaks the contract, without saying so.
  */
-export function contractFor(route: RouteRecord, status: number): Schema<any> | undefined {
+export function contractFor(route: { readonly spec: RouteRecord["spec"] }, status: number): Schema<any> | undefined {
   const { spec } = route;
   const declared = spec.response?.[status];
   if (declared) return declared;
@@ -1530,6 +1627,24 @@ function toWebResponse(out: RawResponse): Response {
     },
   });
   return new Response(body, { status: out.status, headers });
+}
+
+let warnedExposed = false;
+/**
+ * Development mode that nobody chose, on an address other machines reach: most likely a
+ * deploy without NODE_ENV=production, which answers with error messages and runs the
+ * response checks. Said once per process, loudly; `dev: true` or a loopback host quiets it.
+ */
+function warnIfExposed(server: Server) {
+  const addr = server.address();
+  if (warnedExposed || !addr || typeof addr === "string" || isLoopback(addr.address) || addr.address === "::ffff:127.0.0.1") return;
+  warnedExposed = true;
+  const c = paint(useColor());
+  console.warn(
+    `\n  ${c.warn("! inkan runs in development mode on " + (addr.address === "::" || addr.address === "0.0.0.0" ? "every network interface" : addr.address))}` +
+      `\n    NODE_ENV is not "production", so errors are answered with their messages and every answer is checked.` +
+      `\n    In production set NODE_ENV=production. Running it this way on purpose? Say so with inkan({ dev: true }), or listen on 127.0.0.1.\n`,
+  );
 }
 
 let shuttingDown = false;

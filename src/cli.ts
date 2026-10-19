@@ -89,7 +89,7 @@ switch (command) {
     const { app, beforeEach } = await load(args[0]);
     const report = await app.check({ only, beforeEach, strict });
     if (json) console.log(JSON.stringify(report, null, 2));
-    else console.log(formatReport(report, [app.options.title, app.options.version].filter(Boolean).join(" "), color));
+    else console.log(formatReport(report, { title: [app.options.title, app.options.version].filter(Boolean).join(" "), color }));
     process.exit(report.ok ? 0 : 1);
   }
   case "openapi": {
@@ -145,7 +145,7 @@ switch (command) {
     };
     const changes = diffOpenAPI(await read(before), await read(after));
     if (json) console.log(JSON.stringify(changes, null, 2));
-    else console.log(formatDiff(changes, `${before} → ${after}`, color));
+    else console.log(formatDiff(changes, { title: `${before} → ${after}`, color }));
     process.exit(changes.some((x) => x.breaking) ? 1 : 0);
   }
   case "learn": {

@@ -40,10 +40,11 @@ export function functionName(pkg: string): string {
   return fn;
 }
 
-/** `>=0.7.0 <0.8.0`: the minor that runs, which is what a plugin is built and tested on. */
-export function minorRange(version: string): string {
+/** `>=0.8.0 <1.0.0`: from the minor that runs up to the next major, as the stability policy promises. */
+export function pluginRange(version: string): string {
   const [major, minor] = version.split(".").map(Number);
-  return `>=${major}.${minor}.0 <${major}.${minor + 1}.0`;
+  // from 0.8 on, a minor release keeps what is stable (docs/STABILITY.md): up to the next major
+  return `>=${major}.${minor}.0 <${major! + 1}.0.0`;
 }
 
 export type CreatedPlugin = { dir: string; files: string[]; fn: string; range: string };
@@ -59,7 +60,7 @@ export function createPlugin(name: string, target: string | undefined, opts: { v
   const to = resolve(target ?? name.replace(/^@[^/]+\//, ""));
   if (existsSync(to)) throw new CreateError(`${relative(process.cwd(), to) || "."} is already there. Pick another folder: inkan create plugin ${name} <folder>`);
   const fn = functionName(name);
-  const range = minorRange(opts.version);
+  const range = pluginRange(opts.version);
   const from = join(templatesDir(), "plugin");
   const fill = (text: string) =>
     text

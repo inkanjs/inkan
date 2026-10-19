@@ -63,6 +63,7 @@ const HOUR = 3_600_000;
 /** How far ahead to look before calling an expression one that never matches (`0 0 30 2 *`). */
 const YEARS = 30;
 
+/** @internal */
 export class Cron {
   readonly source: string;
   private minute: boolean[];

@@ -21,7 +21,7 @@ if (own && cluster.isPrimary) {
     process.on("message", (m: any) => m?.crash && process.exit(3));
   }
   const store = { ...memoryStore(), shared: true };
-  const app = inkan({ log: false, dev: false, workers: own ? undefined : 2 }).job("/tick", { store, every: "* * * * *" }, () => null);
+  const app = inkan({ log: false, dev: false, workers: own ? undefined : 2 }).job("/tick", { store, schedule: "* * * * *" }, () => null);
   const server = await app.listen(0, "127.0.0.1");
   const address = server.address();
   const armed = app._jobs!.kinds.some((k) => k.schedule?.timer !== undefined);

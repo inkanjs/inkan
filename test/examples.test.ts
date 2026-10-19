@@ -61,7 +61,7 @@ for (const { name } of EXAMPLES) {
     const mod = await import(pathToFileURL(join(dir, "src/app.ts")).href);
     delete process.env.INKAN_NO_LISTEN;
     const app = mod.app as App;
-    app.options.log = false;
+    (app.options as { log?: unknown }).log = false;
     const report = await app.check({ beforeEach: mod.beforeEach, strict: true });
     const broken = report.results.filter((r) => !r.ok).map((r) => `${r.method} ${r.path} "${r.example}": ${r.problems.join("; ")}`);
     assert.deepEqual(broken, []);

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { inkan, problem, reply, routes, t } from "../src/index.ts";
+import { inkan, joinPath, problem, reply, routes, t, type RequestLog } from "../src/index.ts";
 import { Router } from "../src/core/router.ts";
 
 const quiet = { log: false, gracefulShutdown: false } as const;
@@ -209,4 +209,92 @@ test("a real socket: listen, body limit, loopback inspector", async () => {
     server.closeAllConnections();
     server.close();
   }
+});
+
+test("app.routes() hands out each route as written, read-only, without the app's insides", () => {
+  const app = inkan({ log: false }).security("bearer").get("/teas/:id", { meta: { cached: true }, summary: "One tea" }, () => ({}));
+  const routes = app.routes();
+  assert.equal(routes, app.routes(), "the same list until a route is added");
+  assert.ok(Object.isFrozen(routes) && Object.isFrozen(routes[0]));
+  const [r] = routes;
+  assert.deepEqual({ method: r!.method, path: r!.path, security: [...r!.security], meta: r!.meta, summary: r!.spec.summary }, { method: "GET", path: "/teas/:id", security: ["bearer"], meta: { cached: true }, summary: "One tea" });
+  assert.deepEqual(Object.keys(r!).sort(), ["meta", "method", "path", "security", "spec"]);
+  app.get("/more", () => ({}));
+  assert.equal(app.routes().length, 2);
+});
+
+test("onError gets the context of the request, or undefined outside one", async () => {
+  const seen: [string, string | undefined][] = [];
+  const app = inkan({ log: false, onError: (err, ctx) => void seen.push([(err as Error).message, ctx?.path]) })
+    .get("/bug", () => {
+      throw new Error("in the handler");
+    })
+    .get("/bytes", () =>
+      (async function* () {
+        yield new Uint8Array([1]);
+        throw new Error("midway");
+      })(),
+    );
+  assert.equal((await app.inject({ url: "/bug" })).status, 500);
+  await app.inject({ url: "/bytes" });
+  assert.deepEqual(seen, [
+    ["in the handler", "/bug"],
+    ["midway", undefined],
+  ]);
+});
+
+test("app.all answers every method with one handler, and lists each", async () => {
+  const app = inkan({ log: false }).all("/echo/:id", { response: { 200: t.object({ method: t.string(), id: t.string() }) } }, (ctx) => ({ method: ctx.method, id: ctx.params.id }));
+  for (const method of ["GET", "POST", "PUT", "PATCH", "DELETE"]) assert.deepEqual((await app.inject({ method, url: "/echo/7" })).body, { method, id: "7" });
+  assert.equal((await app.inject({ method: "HEAD", url: "/echo/7" })).status, 200);
+  assert.deepEqual(Object.keys((app.openapi().paths as Record<string, object>)["/echo/{id}"]!), ["get", "post", "put", "patch", "delete"]);
+});
+
+test("ctx.httpVersion: the socket's, the adapter's, or 1.1", async () => {
+  const app = inkan({ log: false }).get("/v", (ctx) => ({ v: ctx.httpVersion }));
+  assert.equal((await app.inject({ url: "/v" })).body.v, "1.1");
+  const res = await app.exchange({ method: "GET", url: "/v", headers: {}, httpVersion: "2.0" });
+  assert.equal(JSON.parse(String(res.body)).v, "2.0");
+  const server = await app.listen(0, "127.0.0.1");
+  try {
+    const { port } = server.address() as { port: number };
+    assert.deepEqual(await (await fetch(`http://127.0.0.1:${port}/v`)).json(), { v: "1.1" });
+  } finally {
+    server.close();
+  }
+});
+
+test("joinPath and logRequest are there for plugins and adapters", () => {
+  assert.equal(joinPath("/v1/", "/teas/"), "/v1/teas");
+  assert.equal(joinPath("", "/"), "/");
+  const lines: RequestLog[] = [];
+  const app = inkan({ logger: (e) => void lines.push(e) });
+  const entry: RequestLog = { time: "t", method: "GET", path: "/x", status: 200, ms: 1, notes: [] };
+  app.logRequest(entry);
+  assert.deepEqual(lines, [entry]);
+  inkan({ log: false, logger: () => assert.fail("no log, no line") }).logRequest(entry);
+});
+
+test("listen takes { port, host, signal }; aborting stops the server and the app", async () => {
+  let closed = 0;
+  const ac = new AbortController();
+  const app = inkan({ log: false, gracefulShutdown: false })
+    .onClose(() => void closed++)
+    .get("/x", () => ({ ok: true }));
+  const server = await app.listen({ port: 0, host: "127.0.0.1", signal: ac.signal });
+  const { port } = server.address() as { port: number };
+  assert.equal((await fetch(`http://127.0.0.1:${port}/x`)).status, 200);
+  const gone = new Promise((resolve) => server.once("close", resolve));
+  ac.abort();
+  await gone;
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(server.listening, false);
+  assert.equal(closed, 1, "the onClose hooks ran");
+});
+
+test("inject<T>() types the body", async () => {
+  const app = inkan({ log: false }).get("/tea", () => ({ name: "Sencha" }));
+  const res = await app.inject<{ name: string }>({ url: "/tea" });
+  const name: string = res.body.name;
+  assert.equal(name, "Sencha");
 });

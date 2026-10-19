@@ -8,6 +8,7 @@ import type { Context, RouteRecord, Security } from "./route.ts";
 import { queryObject, type RawRequest } from "./context.ts";
 import { Buffer } from "node:buffer"; // explicit, for runtimes without a global Buffer
 
+/** @internal */
 export type Body = { kind: "none" | "json" | "form" | "multipart" | "text" | "binary"; value: unknown };
 
 /** The body of every request that has none. */
@@ -28,7 +29,10 @@ function presented(s: Security, ctx: Context<any, any, any, any, any>): boolean 
   });
 }
 
-/** What a scheme asks for, in words a caller can act on. */
+/**
+ * What a scheme asks for, in words a caller can act on.
+ * @internal
+ */
 export function describeSecurity(s: Security): string {
   if (s === "bearer") return "a bearer token in authorization";
   if (s === "basic") return "basic credentials in authorization";
@@ -43,6 +47,7 @@ function missingCredentials(schemes: Security[]): HttpProblem {
   return p;
 }
 
+/** @internal */
 export async function readMultipart(raw: RawRequest, contentType: string): Promise<Body> {
   let form: FormData;
   try {
@@ -63,7 +68,10 @@ export async function readMultipart(raw: RawRequest, contentType: string): Promi
   return { kind: "multipart", value };
 }
 
-/** A promise only for multipart, which the platform parses asynchronously; everything else is read at once. */
+/**
+ * A promise only for multipart, which the platform parses asynchronously; everything else is read at once.
+ * @internal
+ */
 export function readBody(raw: RawRequest, contentType: string): Body | Promise<Body> {
   if (!raw.body?.length) return NO_BODY;
   const ct = contentType === "application/json" ? contentType : contentType.split(";")[0].trim().toLowerCase();
@@ -107,7 +115,10 @@ function checkBody(ctx: Context<any, any, any, any, any>, schema: Schema<any> | 
   if (errors.length) throw invalid(errors);
 }
 
-/** Checks params, query, headers and body together. Returns a promise only when a body had to be read asynchronously. */
+/**
+ * Checks params, query, headers and body together. Returns a promise only when a body had to be read asynchronously.
+ * @internal
+ */
 export function validateInput(
   ctx: Context<any, any, any, any, any>,
   route: RouteRecord,
@@ -157,6 +168,7 @@ export function validateInput(
   checkBody(ctx, spec.body, body, found, errors);
 }
 
+/** @internal */
 export const TOO_LARGE = Symbol("too large");
 
 /** How much of a body nobody reads is still taken in and let go, so the answer reaches the client; past it the connection is cut. */
@@ -167,6 +179,7 @@ const DRAIN = 16 * 1024 * 1024;
  * rather than the request's own iterator: that one destroys the socket when the reader
  * stops, and the answer (a 413, a problem the handler threw) would never arrive. Here a
  * reader that stops early leaves the rest to be read and let go.
+ * @internal
  */
 export function requestStream(req: IncomingMessage): AsyncIterable<Buffer> {
   return {
@@ -217,7 +230,10 @@ async function* limited(source: AsyncIterable<Buffer>, limit: number): AsyncIter
   }
 }
 
-/** Reads a request body with plain events, and calls back once: no promise, no extra turn. */
+/**
+ * Reads a request body with plain events, and calls back once: no promise, no extra turn.
+ * @internal
+ */
 export function readRequestBody(req: IncomingMessage, limit: number, done: (err: unknown, read?: Buffer | typeof TOO_LARGE) => void): void {
   let chunks: Buffer[] | undefined;
   let first: Buffer | undefined;

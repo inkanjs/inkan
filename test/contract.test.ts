@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { formatReport, inkan, partialMatch, t } from "../src/index.ts";
+import { formatDiff, formatReport, inkan, partialMatch, t } from "../src/index.ts";
 
 process.env.INKAN_NO_LISTEN = "1"; // the example calls listen(); here it only gets read
 const { app: shop, beforeEach } = await import("../examples/shop.ts");
@@ -129,4 +129,14 @@ test("types follow the contract", () => {
     },
   );
   assert.ok(true);
+});
+
+test("formatReport and formatDiff take { title, color }, and the old positional form", async () => {
+  const app = inkan({ log: false }).get("/x", { examples: [{}] }, () => ({}));
+  const report = await app.check();
+  assert.match(formatReport(report, { title: "Teas 1.0" }), /inkan check {2}· {2}Teas 1\.0/);
+  assert.equal(formatReport(report, { title: "T", color: true }), formatReport(report, "T", true));
+  const changes = [{ breaking: true, where: "GET /x", message: "is gone" }];
+  assert.match(formatDiff(changes, { title: "a → b" }), /inkan diff {2}· {2}a → b[\s\S]*✗ GET \/x {2}is gone/);
+  assert.equal(formatDiff(changes, { title: "a → b", color: true }), formatDiff(changes, "a → b", true));
 });

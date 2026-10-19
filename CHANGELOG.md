@@ -20,11 +20,44 @@
   present. `wait` can move a store's own clock instead of waiting in real time.
 - **`rateLimit({ store, prefix })`** counts in a `Store` the processes share, with one atomic
   `increment` per request in fixed windows. Without a store it counts in memory as before.
+- **A frozen API.** From 0.8.0, what is marked stable is not removed or changed in meaning in
+  a minor release; a rename ships as a deprecated alias for at least two minors and six
+  months first, with a one-time warning in development. Experimental parts (jobs,
+  WebSockets, seals, `check`, a few hooks) are marked `@experimental` and may change, named
+  here when they do. The policy and both lists are in `docs/STABILITY.md`; the public types
+  are committed in `api/inkan.d.ts.txt`, and a test fails when they change unnoticed
+  (`npm run api:update`).
+- **`scope.around((ctx, next) => …)`** wraps the handler of every route of a scope and the
+  scopes inside it, those defined before the call too, where route middleware runs.
+- **Every hook takes `{ order: "last" }`**: after the other hooks of its kind on the route.
+- **`register(plugin, options, { prefix })`**: where a plugin is mounted, apart from what it
+  is handed.
+- **`ws: { origins, maxMessage, heartbeat, handshakeTimeout }`** on the app sets the defaults
+  of every WebSocket route. One `Origins` type serves WebSockets and `cors({ origins })`:
+  `"*"`, a list, or `(origin, ctx) => boolean`, where `ctx` is a `PreContext` (method,
+  path, headers, protocol, ip).
+- **`cors` is a shared plugin**: `app.register(cors(…))`, or `scope.register(cors(…))` for
+  the routes of one scope.
+- **`problem(status, type, { detail, extra, headers })`**; the positional form stays.
+- **`stateKey<T>(name)`**: a typed slot in `ctx.state`, `key.get(ctx)` and `key.set(ctx, v)`,
+  under a symbol no string key reaches.
+- **`ctx.httpVersion`**, **`app.all(path, spec, handler)`** (GET, POST, PUT, PATCH and DELETE),
+  **`joinPath`** for plugins, and **`app.logRequest(entry)`** for adapters that answer
+  some requests themselves. `AdapterRequest` takes an `httpVersion`.
+- **`listen({ port, host, signal })`**: aborting the signal stops the server and the app as a
+  SIGTERM would, without ending the process. `listen(port, host)` stays.
+- **A warning when development mode was guessed** (no `dev` option, NODE_ENV is not
+  "production") and `listen` binds an address other machines reach: most likely a deploy
+  without NODE_ENV=production. `dev: true` or a loopback host quiets it.
+- `currentContext()`, `inject<T>()` typing the body, a `signal` for the typed client's
+  calls, and `formatReport`/`formatDiff` taking `{ title, color }`.
+- `ctx.log` and `ctx.startedAt` are reserved for inkan: a decoration of either name still
+  works, with a warning in development.
 
 ### Changed
 
 - `app.job({ store })` takes a `Store`. Jobs keep one key per job, forgotten by the store's
-  TTL `keep` seconds after the job ends; on a `shared` store, progress and cancels reach
+  TTL `retain` milliseconds after the job ends; on a `shared` store, progress and cancels reach
   the other processes through `publish`/`subscribe` (a shared store without them is polled
   once a second while someone follows a job). Writes of one job are coalesced, latest wins.
 - `memoryStore()` returns the generic `Store` instead of the jobs-only store of 0.7. Passing
@@ -32,7 +65,49 @@
   oldest finished job.
 - `JobRecord` keeps `createdAt`, `startedAt` and `finishedAt` as epoch milliseconds, since
   records go through JSON. The job routes still answer with dates.
-- `JobStore` is deprecated. One passed to `app.job` still works as in 0.7.
+- Milliseconds everywhere, except where an option mirrors a header in seconds (`maxAge`,
+  `retryAfter`): a job's `retain` and a route's `cache: { ttl }` are milliseconds.
+- `app.routes()` hands out `readonly OperationRoute[]`: each route as written (method, path,
+  security, meta, spec), frozen. The app's own records are not API any more.
+- `app.options` is `Readonly<AppOptions>`: read it, it is fixed once the app is made.
+- `onError(error, ctx)` is typed `ctx: Context | undefined`, as it always was at runtime:
+  an error from outside any request (the socket, a stream after its answer started) gets
+  `undefined`, where before it got a stand-in object.
+- The public types hold no internals any more: no `_`-prefixed members, no `RouteRecord`
+  (no longer exported), `app.handle` is private, and the helpers inside modules are out of
+  the `.d.ts` files. Code that reached for them was reaching past the API.
+- `inkan create plugin` declares `inkan: ">=0.8.0 <1.0.0"`: from the minor that runs up to
+  the next major, as the stability policy allows.
+- `app.use(cors())` still works and is deprecated; preflights to a path without an OPTIONS
+  route are answered by the plugin as they were by the middleware.
+
+### Deprecated
+
+Each still works, says so once in development, and is listed with its replacement in
+`docs/STABILITY.md`.
+
+- `scope.describe(fn)` → `scope.onOperation(fn)`.
+- `decorateRequest(…, { before: "handler" })` → `{ resolve: "preHandler" }`.
+- `onSend(fn, { last: true })` → `onSend(fn, { order: "last" })`.
+- `register(plugin, { prefix })` → `register(plugin, options, { prefix })`; a plugin that reads
+  `options.prefix` still finds it there, and should read `scope.prefix`.
+- `app.job(path, { keep })` in seconds → `{ retain }` in milliseconds; `{ every }` → `{ schedule }`.
+- `cache: { seconds }` → `cache: { ttl }` in milliseconds.
+- The `wsOrigins` option → `ws: { origins }`; the `WsOrigins` type → `Origins`.
+- `cors({ origin })` → `cors({ origins })`; `app.use(cors())` → `app.register(cors())`.
+- `context()` → `currentContext()`.
+- `buildOpenAPI(routes)` → `app.openapi()`.
+- `JobStore` → `Store`.
+
+### Fixed
+
+- **Security:** the request inspector (`/_inkan`, development only) answered requests that came
+  through `app.exchange()` without a `remote` address, because a missing address counted as
+  loopback. An adapter that left `remote` out exposed the inspector, and the request log in it,
+  to every client. A request without an address is now never served the inspector; `inject`
+  still is, since it comes from inside the process.
+- Tests that write modules into a temporary folder mark it as ES modules, so they pass on a
+  machine with a `package.json` of `"type": "commonjs"` above the temp folder.
 
 ## 0.7.0
 

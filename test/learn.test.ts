@@ -48,11 +48,13 @@ function solved(done: number, seal?: Seal): App {
     app.mount("/admin", admin);
   }
   if (done >= 7) app.onSend((_ctx, answer) => void (answer.headers["x-tea"] = "yes"));
-  if (done >= 11) app.register(plugin((p) => void p.get("/ping", () => ({ pong: true }))), { prefix: "/v2" });
+  if (done >= 11) app.register(plugin((p) => void p.get("/ping", () => ({ pong: true }))), {}, { prefix: "/v2" });
   return app;
 }
 
 const dir = mkdtempSync(join(tmpdir(), "inkan-learn-"));
+// ES modules wherever the temp folder is, whatever package.json sits above it
+writeFileSync(join(dir, "package.json"), '{"type":"module"}');
 
 test("every quest has a solution, and its check tells the solution from the step before", async () => {
   // quest 10 compares with the document saved before the change it asks for
