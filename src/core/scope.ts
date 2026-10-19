@@ -133,6 +133,19 @@ export const NO_HOOKS: Hooks = Object.freeze({
 const RESERVED = new Set(["httpVersion", "method", "path", "id", "ip", "remote", "params", "query", "headers", "body", "state", "route", "req", "res", "status", "header", "target", "host", "out", "_query", "_state", "_status", "_header", "text", "html", "redirect", "notFound", "render", "cookies", "setCookie", "clearCookie", "rawCookie", "_cookies", "_setCookie", "_clearCookie", "_render", "_layout", "_forwarded", "raw", "rawHeaders", "secure", "protocol"]);
 
 /**
+ * Names inkan means to give the context in a later minor release. A decoration may still
+ * take one, with a warning in development: once inkan adds it, the decoration is refused.
+ * The policy (docs/STABILITY.md) announces every new ctx member this way first.
+ */
+const UPCOMING = new Set(["log", "startedAt"]);
+const warnedUpcoming = new Set<string>();
+function upcoming(name: string) {
+  if (!UPCOMING.has(name) || warnedUpcoming.has(name)) return;
+  warnedUpcoming.add(name);
+  console.warn(`inkan: ctx.${name} is reserved for inkan itself; a later minor release adds it, and this decoration will clash then. Pick another name.`);
+}
+
+/**
  * @internal What a scope holds. Its context class extends the one of the scope around it, so a
  * decoration made outside is seen inside, even when it is made later, and never the
  * other way round.
@@ -407,6 +420,7 @@ export class Scope<Defs extends RouteDefs = any, Deco = any> extends Routes<Defs
   decorate: DecorateMethod<this> = ((name: string, value: unknown) => {
     const proto = this._box.Ctx.prototype;
     if (RESERVED.has(name) || name in proto) throw new Error(`Cannot decorate ctx.${name}: the context already has a ${name}`);
+    if (this._root._dev) upcoming(name);
     Object.defineProperty(proto, name, { value, writable: true, enumerable: true, configurable: true });
     return this;
   }) as never;
@@ -440,6 +454,7 @@ export class Scope<Defs extends RouteDefs = any, Deco = any> extends Routes<Defs
   decorateRequest: DecorateRequestMethod<this> = ((name: string, init: (ctx: any) => unknown, options?: ResolveOptions) => {
     const proto = this._box.Ctx.prototype;
     if (RESERVED.has(name) || name in proto) throw new Error(`Cannot decorate ctx.${name}: the context already has a ${name}`);
+    if (this._root._dev) upcoming(name);
     if (options && "before" in options) deprecate('decorateRequest(…, { before: "handler" })', 'decorateRequest(…, { resolve: "preHandler" })');
     const keep = (ctx: object, value: unknown) => Object.defineProperty(ctx, name, { value, writable: true, enumerable: true, configurable: true });
     const wants = options && wantedBy(options.when);

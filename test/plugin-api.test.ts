@@ -534,3 +534,20 @@ test('every hook takes { order: "last" }: after the others of its kind, outermos
   await app.inject({ url: "/x" });
   assert.deepEqual(seen, ["req inner", "req app last", "pre app", "pre inner", "pre inner last", "problem inner", "problem app last", "response app", "response app last"]);
 });
+
+test("decorating a name inkan reserves for later works, with one warning in development", () => {
+  const seen: string[] = [];
+  const warn = console.warn;
+  console.warn = (msg: string) => void seen.push(msg);
+  try {
+    inkan({ ...quiet, dev: true }).decorate("log", console).decorateRequest("startedAt", () => Date.now());
+    inkan({ ...quiet, dev: true }).decorate("log", console);
+    inkan({ ...quiet, dev: false }).decorate("startedAt", 1);
+  } finally {
+    console.warn = warn;
+  }
+  assert.equal(seen.length, 2);
+  assert.match(seen[0]!, /ctx\.log is reserved for inkan/);
+  assert.match(seen[1]!, /ctx\.startedAt is reserved/);
+  assert.throws(() => inkan(quiet).decorate("httpVersion", "2"), /already has a httpVersion/);
+});
