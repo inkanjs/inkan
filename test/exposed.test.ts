@@ -27,6 +27,6 @@ test("listening in guessed development mode on every interface warns once", { sk
   assert.deepEqual(await warnsOn(inkan({ ...quiet, dev: false })), [], "production");
   const said = await warnsOn(inkan(quiet));
   assert.equal(said.length, 1);
-  assert.match(said[0]!, /development mode on every network interface[\s\S]*NODE_ENV=production[\s\S]*dev: true/);
+  assert.match(said[0]!, /development mode[\s\S]*every network interface[\s\S]*NODE_ENV=production[\s\S]*dev: true/);
   assert.deepEqual(await warnsOn(inkan(quiet)), [], "once per process");
 });
