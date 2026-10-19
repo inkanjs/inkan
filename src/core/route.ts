@@ -232,6 +232,8 @@ export type RouteRecord = {
   box?: Box;
   /** @internal Every hook from the app down to this route, joined once before the first request. */
   hooks?: Hooks;
+  /** @internal Its middleware as it runs: the `around` hooks of its scopes, outermost first, then its own. */
+  mw?: Middleware[];
   /** @internal Its body limit in bytes, worked out once before the first request. */
   bodyLimit?: number;
   /** @internal Whether its body goes to the handler as a stream, unread. */

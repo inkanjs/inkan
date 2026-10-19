@@ -359,6 +359,8 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
   private build() {
     for (const r of this._records) {
       r.hooks = r.box!.flatten();
+      const around = r.box!.arounds();
+      r.mw = around.length ? [...around, ...r.use] : r.use;
       const { body, bodyLimit, params, query, headers } = r.spec;
       r.streamsBody = body instanceof StreamSchema;
       // a stream has no limit unless it says so: it never sits in memory
@@ -504,7 +506,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
         const r = (x.route = route);
         ctx.route = r.info;
         const reading = validateInput(ctx, r, (m as { params: Record<string, string> }).params, raw); // a promise only when a body has to be parsed
-        if (reading || r.use.length) return this.later(x, r, reading);
+        if (reading || r.mw!.length) return this.later(x, r, reading);
         const result = r.run!(ctx);
         if (result instanceof Promise) return this.settle(x, this.deadline(x, result));
         res = this.respond(result, x);
@@ -549,7 +551,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
       else {
         // the same as work(), in this frame: a route without a time limit needs no second one
         if (reading) await reading;
-        if (r.use.length) await chain(r.use, x.ctx, () => then(r.run!(x.ctx), (v) => void (result = v)));
+        if (r.mw!.length) await chain(r.mw!, x.ctx, () => then(r.run!(x.ctx), (v) => void (result = v)));
         else {
           const y = r.run!(x.ctx);
           result = y instanceof Promise ? await y : y;
@@ -566,7 +568,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
   private async work(x: Exchange, r: RouteRecord, reading: void | Promise<void>): Promise<unknown> {
     if (reading) await reading;
     let result: unknown;
-    if (r.use.length) await chain(r.use, x.ctx, () => then(r.run!(x.ctx), (v) => void (result = v)));
+    if (r.mw!.length) await chain(r.mw!, x.ctx, () => then(r.run!(x.ctx), (v) => void (result = v)));
     else {
       const y = r.run!(x.ctx);
       result = y instanceof Promise ? await y : y;
@@ -630,8 +632,8 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
             const early = await runHooks(hooks.preHandler, ctx);
             if (early !== undefined) return void (result = early);
           }
-          if (r.use.length) {
-            await chain(r.use, ctx, () => {
+          if (r.mw!.length) {
+            await chain(r.mw!, ctx, () => {
               const y = r.run!(ctx);
               return y instanceof Promise ? y.then((v) => void (result = v)) : void (result = y);
             });

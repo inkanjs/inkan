@@ -486,3 +486,29 @@ test("scope.dev and scope.prefix: the app's mode and each scope's prefix, read-o
   assert.equal(inkan({ ...quiet, dev: true }).dev, true);
   assert.throws(() => ((app as any).prefix = "/x"), TypeError);
 });
+
+test("around wraps every route of its scope, those defined before it too, outer scopes outside", async () => {
+  const seen: string[] = [];
+  const app = inkan({ log: false }).get("/early", { use: [async (_ctx, next) => (seen.push("own"), await next())] }, () => (seen.push("handler"), { ok: true }));
+  app.around(async (ctx, next) => {
+    seen.push(`app ${ctx.path}`);
+    await next();
+    seen.push("app after");
+  });
+  app.register(
+    plugin((p) => {
+      p.get("/inner", () => (seen.push("inner handler"), { ok: true }));
+      p.around(async (_ctx, next) => (seen.push("plugin"), await next()));
+    }),
+  );
+  app.get("/late", () => ({ ok: true }));
+  await app.ready();
+  assert.equal((await app.inject({ url: "/early" })).status, 200);
+  assert.deepEqual(seen.splice(0), ["app /early", "own", "handler", "app after"]);
+  await app.inject({ url: "/inner" });
+  assert.deepEqual(seen.splice(0), ["app /inner", "plugin", "inner handler", "app after"]);
+  await app.inject({ url: "/late" });
+  assert.deepEqual(seen.splice(0), ["app /late", "app after"]);
+  await app.inject({ url: "/nowhere" });
+  assert.deepEqual(seen, [], "a request no route takes has no handler to wrap");
+});

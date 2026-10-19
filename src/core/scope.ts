@@ -17,7 +17,7 @@ import { defineJob, type JobHub, type JobMethod } from "./jobs.ts";
 import type { JsonSchema, Schema } from "../schema/schema.ts";
 import { parseRange } from "./semver.ts";
 import { checkInkan } from "./version.ts";
-import { joinPath, Routes, type Context, type DecoOf, type DefsOf, type OperationRoute, type Prefixed, type RouteDefs, type RouteInfo, type RouteRecord, type WithDeco, type WithRoutes } from "./route.ts";
+import { joinPath, Routes, type Context, type DecoOf, type DefsOf, type Middleware, type OperationRoute, type Prefixed, type RouteDefs, type RouteInfo, type RouteRecord, type WithDeco, type WithRoutes } from "./route.ts";
 
 type Ctx<Deco> = Context<any, any, any, any, any> & Deco;
 /** `decorate` as a property, so its type can name the app or scope it returns. */
@@ -116,6 +116,8 @@ export class Box {
   resolvers: RequestHook<any>[] = [];
   /** What this scope adds to the OpenAPI operations of its routes: `describe(fn)`. */
   describers: OperationHook[] = [];
+  /** Middleware around the handler of every route in this scope and the scopes inside it: `around(fn)`. */
+  around: Middleware[] = [];
   Ctx: typeof RequestContext;
   constructor(parent?: Box) {
     this.parent = parent;
@@ -127,6 +129,13 @@ export class Box {
     const chain: Box[] = [];
     for (let b: Box | undefined = this; b; b = b.parent) chain.unshift(b);
     return chain;
+  }
+
+  /** Every `around` from the app down to here, outermost first. */
+  arounds(): Middleware[] {
+    const out: Middleware[] = [];
+    for (const b of this.chain()) out.push(...b.around);
+    return out;
   }
 
   /**
@@ -325,6 +334,27 @@ export class Scope<Defs extends RouteDefs = any, Deco = any> extends Routes<Defs
   /** Sees every problem before it becomes an answer, and may change it or return another. */
   onProblem(fn: ProblemHook<Deco>): this {
     return this.hook("onProblem", fn);
+  }
+
+  /**
+   * Wraps the handler of every route in this scope and the scopes inside it, those defined
+   * before the call too: `fn(ctx, next)` runs where a route's own middleware runs (after the
+   * input is checked and the preHandler hooks), outside that middleware, and `await next()`
+   * runs the rest. Outer scopes' wrap inner ones'. Joined into each route once, before the
+   * first request.
+   *
+   *   app.around(async (ctx, next) => {
+   *     const t0 = performance.now();
+   *     await next();
+   *     metrics.observe(ctx.route!.path, performance.now() - t0);
+   *   });
+   *
+   * @experimental
+   */
+  around(fn: (ctx: Ctx<Deco>, next: () => Promise<void>) => unknown): this {
+    this._box.around.push(fn as Middleware);
+    this._root._changed();
+    return this;
   }
 
   /**
