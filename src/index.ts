@@ -23,7 +23,7 @@ export { html, raw, SafeHtml, parseCookies, serializeCookie } from "./core/helpe
 export type { CookieOptions, CsvOptions, RedirectStatus } from "./core/helpers.ts";
 export type { CacheRule } from "./core/cache.ts";
 export type { Layout, TrustProxy } from "./core/context.ts";
-export type { ProblemBody } from "./core/problem.ts";
+export type { ProblemBody, ProblemOptions } from "./core/problem.ts";
 export { buildOpenAPI } from "./openapi/openapi.ts";
 export { diffOpenAPI, formatDiff } from "./openapi/diff.ts";
 export type { Change } from "./openapi/diff.ts";

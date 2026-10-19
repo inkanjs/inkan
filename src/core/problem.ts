@@ -58,13 +58,25 @@ export class HttpProblem implements Error {
 
 Object.setPrototypeOf(HttpProblem.prototype, Error.prototype);
 
+/** What `problem()` takes besides the status and the type. */
+export type ProblemOptions = {
+  /** For people: what went wrong, this time. */
+  detail?: string;
+  /** More members of the problem document: `{ errors: [...] }`, `{ balance: 30 }`. */
+  extra?: Record<string, unknown>;
+  /** Headers of the answer: `{ "retry-after": "10" }`. */
+  headers?: Record<string, string>;
+};
+
 /**
- * Stops the handler with an error response.
+ * Stops the handler with an error response: an RFC 9457 problem document.
  *
  *   throw problem(404, "user-not-found", `No user with id ${id}`)
+ *   throw problem(429, "slow-down", { detail: "Ten a minute", headers: { "retry-after": "60" } })
  */
-export function problem(status: number, type: string, detail?: string, extra?: Record<string, unknown>) {
-  return new HttpProblem(status, type, detail, extra);
+export function problem(status: number, type: string, detail?: string | ProblemOptions, extra?: Record<string, unknown>): HttpProblem {
+  if (typeof detail !== "object") return new HttpProblem(status, type, detail, extra);
+  return new HttpProblem(status, type, detail.detail, detail.extra ?? extra, detail.headers);
 }
 
 export const validationProblem = (where: string, issues: Issue[]) =>

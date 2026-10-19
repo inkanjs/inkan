@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { AddressInfo } from "node:net";
-import { html, inkan, raw, t, type Middleware } from "../src/index.ts";
+import { html, inkan, problem, raw, t, type Middleware } from "../src/index.ts";
 
 const quiet = { log: false, gracefulShutdown: false } as const;
 
@@ -278,4 +278,21 @@ test("cache keeps a handler's answer per input and per caller, and asks once for
   });
   assert.equal((await flaky.inject({ url: "/f" })).status, 500);
   assert.equal((await flaky.inject({ url: "/f" })).status, 200, "a failure is not kept");
+});
+
+test("problem takes its detail, extra members and headers as options too", async () => {
+  const app = inkan({ log: false })
+    .get("/slow", () => {
+      throw problem(429, "slow-down", { detail: "Ten a minute", extra: { limit: 10 }, headers: { "retry-after": "60" } });
+    })
+    .get("/old", () => {
+      throw problem(402, "pay", "Top up first", { balance: 3 });
+    });
+  const slow = await app.inject({ url: "/slow" });
+  assert.equal(slow.status, 429);
+  assert.equal(slow.headers["retry-after"], "60");
+  assert.deepEqual({ detail: slow.body.detail, limit: slow.body.limit }, { detail: "Ten a minute", limit: 10 });
+  const old = await app.inject({ url: "/old" });
+  assert.deepEqual({ detail: old.body.detail, balance: old.body.balance }, { detail: "Top up first", balance: 3 });
+  assert.equal(problem(404, "gone", {}).detail, undefined);
 });
