@@ -4,7 +4,7 @@ export { route } from "./core/files.ts";
 export type { FileRoute } from "./core/files.ts";
 export type { HookOptions, OperationHook, Outgoing, Plugin, PluginOptions, ProblemHook, RegisterOptions, RequestHook, ResolveOptions, ResponseHook, SendHook } from "./core/scope.ts";
 export type { AdapterRequest, AdapterResponse, AppOptions, InjectOptions, InjectResponse, LogEntry, RequestLog } from "./core/app.ts";
-export { Routes, routes, reply, Reply } from "./core/route.ts";
+export { Routes, routes, reply, Reply, joinPath } from "./core/route.ts";
 export type { ReplyHeaders } from "./core/route.ts";
 export type { Context, Example, Handler, Middleware, OperationRoute, PathParams, Responses, RouteInfo, RouteMeta, RouteSpec, Security } from "./core/route.ts";
 export type { Origins, PreContext, WsDefaults, WsHandler, WsOrigins, WsSocket, WsSpec } from "./core/ws.ts";

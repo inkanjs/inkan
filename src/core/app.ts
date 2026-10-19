@@ -153,6 +153,8 @@ export type AdapterRequest = {
   remote?: string;
   /** Whether the request came over TLS; `ctx.secure` and `ctx.protocol` say so. Default: no. */
   secure?: boolean;
+  /** The HTTP version, for `ctx.httpVersion`: "1.1", "2.0". Default "1.1". */
+  httpVersion?: string;
 };
 
 /** The answer `app.exchange` hands back for the adapter to write. */
@@ -1159,7 +1161,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     if (body && body.byteLength > limit) return tooLargeAnswer(request.url, limit);
     const buf = body === undefined || body.byteLength === 0 ? undefined : Buffer.isBuffer(body) ? body : Buffer.from(body.buffer, body.byteOffset, body.byteLength);
     const stream = request.stream && asBuffers(request.stream);
-    return this.handle({ method: request.method, url: request.url, headers: request.headers, body: buf, stream, remote: request.remote, secure: request.secure });
+    return this.handle({ method: request.method, url: request.url, headers: request.headers, body: buf, stream, remote: request.remote, secure: request.secure, httpVersion: request.httpVersion });
   }
 
   /**

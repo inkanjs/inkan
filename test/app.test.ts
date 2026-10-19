@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { inkan, problem, reply, routes, t } from "../src/index.ts";
+import { inkan, joinPath, problem, reply, routes, t, type RequestLog } from "../src/index.ts";
 import { Router } from "../src/core/router.ts";
 
 const quiet = { log: false, gracefulShutdown: false } as const;
@@ -241,4 +241,36 @@ test("onError gets the context of the request, or undefined outside one", async 
     ["in the handler", "/bug"],
     ["midway", undefined],
   ]);
+});
+
+test("app.all answers every method with one handler, and lists each", async () => {
+  const app = inkan({ log: false }).all("/echo/:id", { response: { 200: t.object({ method: t.string(), id: t.string() }) } }, (ctx) => ({ method: ctx.method, id: ctx.params.id }));
+  for (const method of ["GET", "POST", "PUT", "PATCH", "DELETE"]) assert.deepEqual((await app.inject({ method, url: "/echo/7" })).body, { method, id: "7" });
+  assert.equal((await app.inject({ method: "HEAD", url: "/echo/7" })).status, 200);
+  assert.deepEqual(Object.keys((app.openapi().paths as Record<string, object>)["/echo/{id}"]!), ["get", "post", "put", "patch", "delete"]);
+});
+
+test("ctx.httpVersion: the socket's, the adapter's, or 1.1", async () => {
+  const app = inkan({ log: false }).get("/v", (ctx) => ({ v: ctx.httpVersion }));
+  assert.equal((await app.inject({ url: "/v" })).body.v, "1.1");
+  const res = await app.exchange({ method: "GET", url: "/v", headers: {}, httpVersion: "2.0" });
+  assert.equal(JSON.parse(String(res.body)).v, "2.0");
+  const server = await app.listen(0, "127.0.0.1");
+  try {
+    const { port } = server.address() as { port: number };
+    assert.deepEqual(await (await fetch(`http://127.0.0.1:${port}/v`)).json(), { v: "1.1" });
+  } finally {
+    server.close();
+  }
+});
+
+test("joinPath and logRequest are there for plugins and adapters", () => {
+  assert.equal(joinPath("/v1/", "/teas/"), "/v1/teas");
+  assert.equal(joinPath("", "/"), "/");
+  const lines: RequestLog[] = [];
+  const app = inkan({ logger: (e) => void lines.push(e) });
+  const entry: RequestLog = { time: "t", method: "GET", path: "/x", status: 200, ms: 1, notes: [] };
+  app.logRequest(entry);
+  assert.deepEqual(lines, [entry]);
+  inkan({ log: false, logger: () => assert.fail("no log, no line") }).logRequest(entry);
 });

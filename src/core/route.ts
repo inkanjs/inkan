@@ -159,6 +159,8 @@ export type Context<P = Record<string, string>, Q = RawQuery, B = unknown, H = R
   method: string;
   path: string;
   url: URL;
+  /** The HTTP version of the request: "1.1", "2.0", "1.0". "1.1" where the platform does not say (`fetch`). */
+  httpVersion: string;
   /** The request id: taken from the request id header when it looks safe, otherwise a fresh one, unique per process and worker. */
   id: string;
   /**
@@ -309,7 +311,11 @@ export type RouteMethod<Self, M extends string> = {
 export const securityList = (s: Security | Security[] | false | undefined): Security[] | undefined =>
   s === undefined ? undefined : s === false ? [] : Array.isArray(s) ? s : [s];
 
-export const joinPath = (a: string, b: string) => "/" + [a, b].join("/").split("/").filter(Boolean).join("/");
+/** Two paths as one, with one slash between the parts: `joinPath("/v1/", "/teas")` is `/v1/teas`. For plugins that mount routes under `scope.prefix`. */
+export const joinPath = (a: string, b: string): string => "/" + [a, b].join("/").split("/").filter(Boolean).join("/");
+
+/** The methods `all()` defines a route for. */
+const ALL = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
 
 /**
  * A set of routes that can be mounted under a prefix. Its type remembers every route
@@ -365,6 +371,15 @@ export class Routes<Defs extends RouteDefs = any, Deco = {}> {
   put: RouteMethod<this, "PUT"> = ((p: string, a: unknown, b?: unknown) => this.define("PUT", p, a, b)) as never;
   patch: RouteMethod<this, "PATCH"> = ((p: string, a: unknown, b?: unknown) => this.define("PATCH", p, a, b)) as never;
   delete: RouteMethod<this, "DELETE"> = ((p: string, a: unknown, b?: unknown) => this.define("DELETE", p, a, b)) as never;
+  /**
+   * One handler for GET, POST, PUT, PATCH and DELETE at `path` (HEAD comes with GET, OPTIONS
+   * answers by itself): five routes with the same contract, each in the docs and the typed
+   * client. `ctx.method` says which one came.
+   */
+  all: RouteMethod<this, (typeof ALL)[number]> = ((p: string, a: unknown, b?: unknown) => {
+    for (const m of ALL) this.define(m, p, a, b);
+    return this;
+  }) as never;
 
   /**
    * A WebSocket at `path`. The upgrade request goes through the hooks, the security and the

@@ -20,6 +20,8 @@ export type RawRequest = {
   remote?: string;
   /** Sent from inside the process (`inject`): the inspector answers it without an address. */
   local?: boolean;
+  /** The HTTP version, where an adapter says it. */
+  httpVersion?: string;
   /** Whether the request came over TLS, where the platform says so (`fetch`: the URL's scheme). Otherwise the socket tells. */
   secure?: boolean;
   req?: IncomingMessage;
@@ -148,6 +150,10 @@ export class RequestContext {
   }
   get header(): (name: string, value: string) => void {
     return (this._header ??= (name, value) => void (this.out.headers[name.toLowerCase()] = value));
+  }
+  /** The HTTP version: the socket's, or the adapter's word for it; "1.1" where nobody says. */
+  get httpVersion(): string {
+    return this.req?.httpVersion ?? this.raw.httpVersion ?? "1.1";
   }
   /** The client's address: the platform's word for it, or the socket's. */
   get ip(): string | undefined {
