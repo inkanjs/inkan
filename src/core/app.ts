@@ -1281,10 +1281,25 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
   }
 
   /**
-   * Starts listening. The port comes from the argument, then $PORT, then 3000,
-   * so it runs under warden, a PaaS or a container without changes.
+   * Starts listening, once every plugin has loaded, and resolves with the server. The port
+   * comes from the argument, then $PORT, then 3000, the host from the argument, then $HOST,
+   * then every interface, so it runs under warden, a PaaS or a container without changes.
+   * `signal` stops it when aborted: the server stops taking requests, then the app stops as
+   * on SIGTERM (jobs, sockets, onClose hooks), without ending the process.
+   *
+   *   await app.listen({ port: 8080, host: "127.0.0.1", signal: ac.signal });
+   *
+   * With `workers`, the promise of the first process never resolves: it only looks after the
+   * workers, and each worker's `listen` resolves with its own server.
+   *
+   * Two environment variables steer it, set by inkan itself: `INKAN_NO_LISTEN=1` (the CLI
+   * loads an app to read its routes) makes it resolve with a server that does not listen,
+   * and `INKAN_WORKER` is a worker's slot, 1 to `workers`; slot 1 runs the jobs' schedules.
    */
-  listen(port?: number, host?: string): Promise<Server> {
+  listen(options?: ListenOptions): Promise<Server>;
+  listen(port?: number, host?: string): Promise<Server>;
+  listen(a?: number | ListenOptions, b?: string): Promise<Server> {
+    const { port, host, signal } = typeof a === "object" ? a : { port: a, host: b, signal: undefined };
     const { workers } = this.options;
     const count = workers === "auto" ? availableParallelism() : (workers ?? 1);
     if (count > 1 && this._jobs?.local() && !process.env.INKAN_NO_LISTEN) {
@@ -1293,7 +1308,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     // in a cluster the first process only looks after the workers; listen() there does not return
     if (workers && cluster.isPrimary && !process.env.INKAN_NO_LISTEN) return this.supervise(count);
     // every plugin first: a route a plugin adds must be there for the first request, and one that fails stops the start
-    return this.ready().then(() => this.open(port, host));
+    return this.ready().then(() => this.open(port, host, signal));
   }
 
   /** The first process of a cluster: starts the workers, replaces one that dies, and stops them all together. */
@@ -1344,7 +1359,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     return new Promise<never>(() => {});
   }
 
-  private open(port?: number, host?: string): Promise<Server> {
+  private open(port?: number, host?: string, signal?: AbortSignal): Promise<Server> {
     const server = createServer(this.listener);
     // only an app with a WebSocket route listens for upgrades; one without answers them as plain requests
     if (this._records.some((r) => r.method === "WS")) server.on("upgrade", this.upgradeListener);
@@ -1367,6 +1382,15 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
             } else this.banner(server);
           }
           if (this.options.gracefulShutdown) shutdownOnSignal(server, this.closeHooks, [() => this._jobs?.stop(), () => this.closeSockets(), () => this._gauge?.stop()]);
+          if (signal) {
+            const stop = () => {
+              server.close();
+              server.closeIdleConnections();
+              void this.stopped();
+            };
+            if (signal.aborted) stop();
+            else signal.addEventListener("abort", stop, { once: true });
+          }
           resolve(server);
         })().catch((err) => server.close(() => reject(err)));
       });
@@ -1391,6 +1415,16 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
 }
 
 export const inkan = (options?: AppOptions): App<{}, {}> => new App(options);
+
+/** What `listen` takes besides a port number. */
+export type ListenOptions = {
+  /** Default: $PORT, then 3000. 0 picks a free one. */
+  port?: number;
+  /** Default: $HOST, then every interface. */
+  host?: string;
+  /** Stops the server and the app when aborted. */
+  signal?: AbortSignal;
+};
 
 /** Milliseconds an upgrade request has to get its answer, for a route without `handshakeTimeout`. */
 const HANDSHAKE_TIMEOUT = 10_000;

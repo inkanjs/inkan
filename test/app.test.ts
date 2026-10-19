@@ -274,3 +274,20 @@ test("joinPath and logRequest are there for plugins and adapters", () => {
   assert.deepEqual(lines, [entry]);
   inkan({ log: false, logger: () => assert.fail("no log, no line") }).logRequest(entry);
 });
+
+test("listen takes { port, host, signal }; aborting stops the server and the app", async () => {
+  let closed = 0;
+  const ac = new AbortController();
+  const app = inkan({ log: false, gracefulShutdown: false })
+    .onClose(() => void closed++)
+    .get("/x", () => ({ ok: true }));
+  const server = await app.listen({ port: 0, host: "127.0.0.1", signal: ac.signal });
+  const { port } = server.address() as { port: number };
+  assert.equal((await fetch(`http://127.0.0.1:${port}/x`)).status, 200);
+  const gone = new Promise((resolve) => server.once("close", resolve));
+  ac.abort();
+  await gone;
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(server.listening, false);
+  assert.equal(closed, 1, "the onClose hooks ran");
+});
