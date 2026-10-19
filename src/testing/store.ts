@@ -169,6 +169,14 @@ export function storeConformance(make: () => Store | Promise<Store>, options: St
       assert.equal(await store.increment(k, 3), 3);
     });
 
+    check("increment refuses a step that is not a finite number, and a value that is not a number", async (store) => {
+      const k = key();
+      await assert.rejects(store.increment(k, Number.NaN), TypeError);
+      await store.set(k, "5");
+      await assert.rejects(store.increment(k), TypeError, "a string is not a number, not even \"5\"");
+      assert.equal(await store.get(k), "5", "and it is left as it was");
+    });
+
     check("add is atomic: of 50 at once on one key, exactly one wins", async (store) => {
       const k = key();
       const won = await Promise.all(Array.from({ length: 50 }, (_, i) => store.add(k, i, 60_000)));

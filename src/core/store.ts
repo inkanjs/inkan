@@ -133,13 +133,16 @@ export function memoryStore(options: MemoryStoreOptions = {}): Store {
       return e?.value as T | undefined;
     },
     async increment(key, by = 1, ttl) {
+      if (typeof by !== "number" || !Number.isFinite(by)) throw new TypeError(`increment needs a finite number, got ${String(by)}`);
       const now = clock();
       const e = live(key, now);
       if (!e) {
         put(key, by, ttl, now);
         return by;
       }
-      e.value = (Number(e.value) || 0) + by;
+      // as every adapter does: a value that is not a JSON number is left alone, never counted as 0
+      if (typeof e.value !== "number") throw new TypeError(`${key} does not hold a number`);
+      e.value = e.value + by;
       touch(key, e);
       return e.value as number;
     },
