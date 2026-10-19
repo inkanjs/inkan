@@ -32,6 +32,10 @@
       "types": "./dist/client.d.ts",
       "default": "./dist/client.js"
     },
+    "./testing": {
+      "types": "./dist/testing.d.ts",
+      "default": "./dist/testing.js"
+    },
     "./package.json": "./package.json"
   },
   "main": "./dist/index.js",
