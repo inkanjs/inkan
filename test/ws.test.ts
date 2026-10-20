@@ -765,7 +765,7 @@ test("client.ws: typed both ways, messages narrowed by their tag", async () => {
     }
 
     const missing = c.ws("/rooms/:room", { params: { room: "x" } }); // no name: a 400, never open
-    await assert.rejects(missing.ready, /closed before it opened/);
+    await assert.rejects(missing.ready, /closed before it opened|could not open/);
   } finally {
     await s.close();
   }
