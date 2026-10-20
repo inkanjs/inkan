@@ -251,3 +251,21 @@ test("client calls take a signal", async () => {
   await assert.rejects(() => api.get("/slow", { signal: ac.signal }));
   assert.ok(seen[0] instanceof AbortSignal);
 });
+
+test("client.ws: a refused handshake rejects ready, and a good one opens", async () => {
+  const app = inkan({ log: false }).ws("/rooms/:room", { params: t.object({ room: t.string().min(3) }) }, () => {});
+  const server = await app.listen({ port: 0, host: "127.0.0.1" });
+  try {
+    const { port } = server.address() as { port: number };
+    const api = client<typeof app>(`http://127.0.0.1:${port}`);
+    const refused = api.ws("/rooms/:room", { params: { room: "x" } });
+    await assert.rejects(refused.ready, /could not open|closed before it opened/);
+    const good = api.ws("/rooms/:room", { params: { room: "tea" } });
+    await good.ready;
+    good.close();
+  } finally {
+    await app.stopped();
+    server.closeAllConnections();
+    await new Promise((r) => server.close(r));
+  }
+});

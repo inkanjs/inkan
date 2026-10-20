@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.1
+
+### Fixed
+
+- `client.ws()`: a handshake the server refuses now rejects `ready` on Node 22 too. Its built-in
+  WebSocket tells a refused handshake only by an `error` event, never a `close`, so `ready` waited
+  for ever there.
+
 ## 0.8.0
 
 ### New

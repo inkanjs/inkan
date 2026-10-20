@@ -290,6 +290,8 @@ function typedSocket(raw: WebSocket): TypedSocket<unknown, unknown> {
   const ready = new Promise<void>((resolve, reject) => {
     raw.addEventListener("open", () => resolve(), { once: true });
     raw.addEventListener("close", (e) => reject(new Error(`The WebSocket closed before it opened (${e.code})`)), { once: true });
+    // Node 22's WebSocket tells a refused handshake only by an error, never a close
+    raw.addEventListener("error", () => reject(new Error("The WebSocket could not open")), { once: true });
   });
   ready.catch(() => {}); // nobody has to wait for it
   const socket: TypedSocket<unknown, unknown> = {
