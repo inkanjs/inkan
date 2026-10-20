@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.8.0 (unreleased)
+## 0.8.0
 
 ### New
 
@@ -53,6 +53,15 @@
   calls, and `formatReport`/`formatDiff` taking `{ title, color }`.
 - `ctx.log` and `ctx.startedAt` are reserved for inkan: a decoration of either name still
   works, with a warning in development.
+
+### Faster
+
+- **An async handler's answer is written where its promise settles**, in the one `then` on
+  it, as Fastify does: no async frame, no second promise. On the runner the async handler is
+  now level with plain node:http (100 %, from 98 %).
+- As fast as 0.7.0 everywhere else: the CPU per request is the same, scenario by scenario.
+  On the runner inkan scores 91.0 against Fastify's 89.9 (median of three runs), level to
+  slightly ahead. The numbers are in [`bench/reports/0.8.0.md`](bench/reports/0.8.0.md).
 
 ### Changed
 
