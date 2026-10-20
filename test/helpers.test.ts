@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import type { AddressInfo } from "node:net";
-import { html, inkan, raw, t, type Middleware } from "../src/index.ts";
+import { html, inkan, problem, raw, t, type Middleware } from "../src/index.ts";
 
 const quiet = { log: false, gracefulShutdown: false } as const;
 
@@ -250,7 +250,7 @@ test("ctx.signal aborts when the client goes away over a socket", async () => {
 
 test("cache keeps a handler's answer per input and per caller, and asks once for many at the same time", async () => {
   let asked = 0;
-  const app = inkan(quiet).get("/stock/:id", { params: t.object({ id: t.int() }), cache: { seconds: 60 } }, async ({ params, header }) => {
+  const app = inkan(quiet).get("/stock/:id", { params: t.object({ id: t.int() }), cache: { ttl: 60_000 } }, async ({ params, header }) => {
     asked++;
     header("x-from", "db");
     await new Promise((r) => setTimeout(r, 20));
@@ -267,15 +267,32 @@ test("cache keeps a handler's answer per input and per caller, and asks once for
   assert.equal(asked, 3, "another caller asks again");
 
   let shared = 0;
-  const open = inkan(quiet).get("/menu", { cache: { seconds: 60, shared: true } }, () => ({ n: ++shared }));
+  const open = inkan(quiet).get("/menu", { cache: { ttl: 60_000, shared: true } }, () => ({ n: ++shared }));
   await open.inject({ url: "/menu", headers: { cookie: "sid=a" } });
   assert.equal((await open.inject({ url: "/menu", headers: { cookie: "sid=b" } })).body.n, 1, "shared: the same for everybody");
 
   let failing = 0;
-  const flaky = inkan({ ...quiet, onError: () => {} }).get("/f", { cache: { seconds: 60 } }, () => {
+  const flaky = inkan({ ...quiet, onError: () => {} }).get("/f", { cache: { ttl: 60_000 } }, () => {
     if (++failing === 1) throw new Error("db down");
     return { ok: true };
   });
   assert.equal((await flaky.inject({ url: "/f" })).status, 500);
   assert.equal((await flaky.inject({ url: "/f" })).status, 200, "a failure is not kept");
+});
+
+test("problem takes its detail, extra members and headers as options too", async () => {
+  const app = inkan({ log: false })
+    .get("/slow", () => {
+      throw problem(429, "slow-down", { detail: "Ten a minute", extra: { limit: 10 }, headers: { "retry-after": "60" } });
+    })
+    .get("/old", () => {
+      throw problem(402, "pay", "Top up first", { balance: 3 });
+    });
+  const slow = await app.inject({ url: "/slow" });
+  assert.equal(slow.status, 429);
+  assert.equal(slow.headers["retry-after"], "60");
+  assert.deepEqual({ detail: slow.body.detail, limit: slow.body.limit }, { detail: "Ten a minute", limit: 10 });
+  const old = await app.inject({ url: "/old" });
+  assert.deepEqual({ detail: old.body.detail, balance: old.body.balance }, { detail: "Top up first", balance: 3 });
+  assert.equal(problem(404, "gone", {}).detail, undefined);
 });

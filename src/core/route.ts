@@ -75,6 +75,7 @@ export type RouteInfo = {
 /**
  * The route a `describe` hook adds to: what `ctx.route` holds, plus the spec it was
  * written with (summary, tags, schemas, examples, ...). Read-only: change the operation instead.
+ * @experimental
  */
 export type OperationRoute = Readonly<RouteInfo> & {
   readonly spec: Readonly<RouteSpec<any, any, any, any, Responses>>;
@@ -159,6 +160,8 @@ export type Context<P = Record<string, string>, Q = RawQuery, B = unknown, H = R
   method: string;
   path: string;
   url: URL;
+  /** The HTTP version of the request: "1.1", "2.0", "1.0". "1.1" where the platform does not say (`fetch`). */
+  httpVersion: string;
   /** The request id: taken from the request id header when it looks safe, otherwise a fresh one, unique per process and worker. */
   id: string;
   /**
@@ -219,6 +222,7 @@ export type Result<R extends Responses> = SuccessBody<R> | Rows<SuccessBody<R>> 
 export type Handler<P, Q, B, H, R extends Responses, Deco = {}> = (ctx: Context<P, Q, B, H, R> & Deco) => Result<R> | Promise<Result<R>>;
 export type Middleware = (ctx: Context<any, any, any, any, any>, next: () => Promise<void>) => unknown;
 
+/** @internal A route as the app keeps it. Not API: `app.routes()` hands out `OperationRoute`s. */
 export type RouteRecord = {
   method: string;
   path: string;
@@ -231,6 +235,8 @@ export type RouteRecord = {
   box?: Box;
   /** @internal Every hook from the app down to this route, joined once before the first request. */
   hooks?: Hooks;
+  /** @internal Its middleware as it runs: the `around` hooks of its scopes, outermost first, then its own. */
+  mw?: Middleware[];
   /** @internal Its body limit in bytes, worked out once before the first request. */
   bodyLimit?: number;
   /** @internal Whether its body goes to the handler as a stream, unread. */
@@ -265,7 +271,7 @@ export type WithRoutes<Self, More extends RouteDefs> =
         : Self;
 
 /** What `decorate` has put on the context so far. */
-export type DecoOf<Self> = Self extends { readonly _deco: infer X } ? X : {};
+export type DecoOf<Self> = Self extends { readonly [DECO]: infer X } ? X : {};
 /** The same app or scope, with one more decoration on its context. */
 export type WithDeco<Self, More> =
   Self extends App<infer D, infer X> ? App<D, X & More> : Self extends Scope<infer D, infer X> ? Scope<D, X & More> : Self;
@@ -302,21 +308,34 @@ export type RouteMethod<Self, M extends string> = {
 
 // ---------- route tables ----------
 
-/** `security` as a list: undefined to take the group's, empty for none. */
+/**
+ * `security` as a list: undefined to take the group's, empty for none.
+ * @internal
+ */
 export const securityList = (s: Security | Security[] | false | undefined): Security[] | undefined =>
   s === undefined ? undefined : s === false ? [] : Array.isArray(s) ? s : [s];
 
-export const joinPath = (a: string, b: string) => "/" + [a, b].join("/").split("/").filter(Boolean).join("/");
+/** Two paths as one, with one slash between the parts: `joinPath("/v1/", "/teas")` is `/v1/teas`. For plugins that mount routes under `scope.prefix`. */
+export const joinPath = (a: string, b: string): string => "/" + [a, b].join("/").split("/").filter(Boolean).join("/");
+
+/** The methods `all()` defines a route for. */
+const ALL = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
 
 /**
  * A set of routes that can be mounted under a prefix. Its type remembers every route
  * defined on it in a chain, which is what the typed client reads.
  */
+/** Only types: the keys of what a table of routes remembers in its type. */
+declare const DEFS: unique symbol;
+declare const DECO: unique symbol;
+/** The routes a table knows, as its type remembers them; `{}` for one typed `any`. */
+export type DefsOf<R> = R extends { readonly [DEFS]: infer D extends RouteDefs } ? (0 extends 1 & D ? {} : D) : {};
+
 export class Routes<Defs extends RouteDefs = any, Deco = {}> {
   /** Only a type: the routes this table knows. There is nothing here at runtime. */
-  declare readonly _defs: Defs;
+  declare readonly [DEFS]: Defs;
   /** Only a type: what `decorate` put on the context its handlers get. */
-  declare readonly _deco: Deco;
+  declare readonly [DECO]: Deco;
   /** @internal */
   _records: RouteRecord[] = [];
   /** @internal */
@@ -356,6 +375,15 @@ export class Routes<Defs extends RouteDefs = any, Deco = {}> {
   put: RouteMethod<this, "PUT"> = ((p: string, a: unknown, b?: unknown) => this.define("PUT", p, a, b)) as never;
   patch: RouteMethod<this, "PATCH"> = ((p: string, a: unknown, b?: unknown) => this.define("PATCH", p, a, b)) as never;
   delete: RouteMethod<this, "DELETE"> = ((p: string, a: unknown, b?: unknown) => this.define("DELETE", p, a, b)) as never;
+  /**
+   * One handler for GET, POST, PUT, PATCH and DELETE at `path` (HEAD comes with GET, OPTIONS
+   * answers by itself): five routes with the same contract, each in the docs and the typed
+   * client. `ctx.method` says which one came.
+   */
+  all: RouteMethod<this, (typeof ALL)[number]> = ((p: string, a: unknown, b?: unknown) => {
+    for (const m of ALL) this.define(m, p, a, b);
+    return this;
+  }) as never;
 
   /**
    * A WebSocket at `path`. The upgrade request goes through the hooks, the security and the
@@ -366,6 +394,7 @@ export class Routes<Defs extends RouteDefs = any, Deco = {}> {
    *   app.ws("/rooms/:room", { query: t.object({ name: t.string() }), message: Say, send: Said }, (socket, ctx) => {
    *     socket.on("message", (m) => socket.send({ text: m.text, from: ctx.query.name }));
    *   });
+   * @experimental
    */
   ws: WsMethod<this> = ((path: string, spec: WsSpec<any, any, any, any, any>, handler: WsHandler<any, any, any, any, any>) => {
     const s = spec as RouteRecord["spec"];

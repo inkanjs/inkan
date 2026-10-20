@@ -13,7 +13,10 @@ export class SafeHtml {
 
 const ESCAPES: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
 
-/** Text as HTML: every character that could open a tag or leave an attribute is escaped. */
+/**
+ * Text as HTML: every character that could open a tag or leave an attribute is escaped.
+ * @internal
+ */
 export function escapeHtml(text: string): string {
   return text.replace(/[&<>"']/g, (c) => ESCAPES[c]!);
 }
@@ -96,6 +99,7 @@ export function parseCookies(header: string | undefined): Record<string, string>
 /** The statuses a redirect can have. */
 export type RedirectStatus = 301 | 302 | 303 | 307 | 308;
 const REDIRECTS = new Set([301, 302, 303, 307, 308]);
+/** @internal */
 export const isRedirect = (status: number): status is RedirectStatus => REDIRECTS.has(status);
 
 // ---------- rows: as CSV, and as JSON written row by row ----------
@@ -127,7 +131,10 @@ function cell(v: unknown, sep: string, guard: boolean): string {
   return s.includes(sep) || s.includes('"') || s.includes("\n") || s.includes("\r") ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
-/** Rows as CSV, as they come: a heading, then a line per row, in chunks of about 16 KB. */
+/**
+ * Rows as CSV, as they come: a heading, then a line per row, in chunks of about 16 KB.
+ * @internal
+ */
 export async function* csvChunks(rows: Iterable<Record<string, unknown>> | AsyncIterable<Record<string, unknown>>, o: CsvOptions = {}): AsyncIterable<string> {
   const sep = o.separator ?? ",";
   const guard = o.guardFormulas ?? true;
@@ -157,6 +164,7 @@ export async function* csvChunks(rows: Iterable<Record<string, unknown>> | Async
  * Rows as one JSON array, or as one JSON line each (NDJSON), as they come: each row written
  * by its schema's writer, so it holds only what the contract lists, and checked first when
  * `check` is given. In chunks of about 16 KB, so the socket is not asked once per row.
+ * @internal
  */
 export async function* jsonRows(rows: Iterable<unknown> | AsyncIterable<unknown>, write: (v: unknown) => string, ndjson: boolean, check?: (row: unknown, index: number) => void): AsyncIterable<string> {
   let buf = ndjson ? "" : "[";

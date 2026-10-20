@@ -1,0 +1,2520 @@
+// ---- client.d.ts
+import type { Responses, RouteDef, Routes } from "./core/route.ts";
+import type { ProblemBody } from "./core/problem.ts";
+import type { EventsSchema, Infer } from "./schema/schema.ts";
+type DefsOf<A> = A extends Routes<infer D> ? D : never;
+/** What a value looks like after a trip through JSON: a Date arrives as a string. */
+export type Jsonify<T> = T extends Date ? string : T extends (infer U)[] ? Jsonify<U>[] : T extends object ? {
+    [K in keyof T]: Jsonify<T[K]>;
+} : T;
+type PathsOf<D, M extends string> = {
+    [K in keyof D & string]: K extends `${M} ${infer P}` ? P : never;
+}[keyof D & string];
+type Field<R, K extends keyof RouteDef> = R extends {
+    [P in K]: infer V;
+} ? V : unknown;
+type DefAt<D, K> = K extends keyof D ? D[K] : never;
+type ParamsInput<P> = keyof P extends never ? {
+    params?: undefined;
+} : {
+    params: P;
+};
+/** What a body taken as it comes (`t.binary()`, `t.stream()`) is sent as: bytes, as they are. */
+export type RawBody = Blob | ArrayBuffer | Uint8Array | ReadableStream<Uint8Array>;
+type BodyInput<B> = unknown extends B ? {
+    body?: unknown;
+} : [B] extends [undefined] ? {
+    body?: undefined;
+} : [B] extends [Uint8Array | AsyncIterable<Uint8Array>] ? {
+    body: RawBody;
+} : {
+    body: B | FormData;
+};
+export type Input<R> = ParamsInput<Field<R, "params">> & BodyInput<Field<R, "body">> & {
+    query?: Partial<Field<R, "query">>;
+    headers?: Record<string, string>;
+    /** Aborts the request: `AbortSignal.timeout(5000)`, or a controller's. */
+    signal?: AbortSignal;
+};
+type InputArgs<R> = {} extends Input<R> ? [input?: Input<R>] : [input: Input<R>];
+type Success = 200 | 201 | 202 | 203 | 204 | 206 | 207;
+type Failure<S, P> = {
+    ok: false;
+    status: S;
+    problem: P;
+    headers: Headers;
+};
+/**
+ * One answer. `ok` tells success from failure; `status` narrows it further. Every status
+ * the contract does not list arrives as a problem too: a 400 for bad input, a 500, a 502
+ * from a proxy on the way.
+ */
+export type Answer<R extends Responses> = ({} extends R ? {
+    ok: true;
+    status: number;
+    data: unknown;
+    headers: Headers;
+} : {
+    [K in keyof R & number]: K extends Success ? {
+        ok: true;
+        status: K;
+        data: K extends 204 ? undefined : Jsonify<Infer<R[K]>>;
+        headers: Headers;
+    } : Failure<K, Jsonify<Infer<R[K]>>>;
+}[keyof R & number]) | Failure<number, ProblemBody>;
+type ResponseOf<X> = X extends {
+    response: infer R extends Responses;
+} ? R : {};
+type Call<D, M extends string> = <P extends PathsOf<D, M>>(path: P, ...input: InputArgs<DefAt<D, `${M} ${P}`>>) => Promise<Answer<ResponseOf<DefAt<D, `${M} ${P}`>>>>;
+/** One event of a stream the contract lists, after a trip through JSON; `event` narrows `data`. */
+export type EventOf<R> = R extends {
+    200: EventsSchema<infer E>;
+} ? {
+    [K in keyof E & string]: {
+        event: K;
+        data: Jsonify<Infer<E[K]>>;
+        id?: string;
+    };
+}[keyof E & string] : never;
+type EventPaths<D> = {
+    [K in keyof D & string]: K extends `GET ${infer P}` ? (ResponseOf<D[K]> extends {
+        200: EventsSchema<any>;
+    } ? P : never) : never;
+}[keyof D & string];
+type EventInput<R> = ParamsInput<Field<R, "params">> & {
+    query?: Partial<Field<R, "query">>;
+    headers?: Record<string, string>;
+    /** Stops reading and closes the stream. Leaving the loop does too. */
+    signal?: AbortSignal;
+};
+type EventArgs<R> = {} extends EventInput<R> ? [input?: EventInput<R>] : [input: EventInput<R>];
+type Events<D> = <P extends EventPaths<D>>(path: P, ...input: EventArgs<DefAt<D, `GET ${P}`>>) => AsyncIterable<EventOf<ResponseOf<DefAt<D, `GET ${P}`>>>>;
+type WsInput<R> = ParamsInput<Field<R, "params">> & {
+    query?: Partial<Field<R, "query">>;
+    /** Headers for the upgrade request. Only where the WebSocket takes them (Node); a browser sends none. */
+    headers?: Record<string, string>;
+};
+type WsArgs<R> = {} extends WsInput<R> ? [input?: WsInput<R>] : [input: WsInput<R>];
+/**
+ * A WebSocket opened with `client.ws`: what it sends is what the route's `message` asks for,
+ * what arrives is what its `send` promises, after a trip through JSON.
+ */
+export type TypedSocket<In, Out> = {
+    /** The platform's socket underneath. */
+    readonly raw: WebSocket;
+    /** Resolves once the socket is open; rejects when it closes before that (a 401, a 404). */
+    readonly ready: Promise<void>;
+    /** Sends a value as JSON. */
+    send(value: In): void;
+    close(code?: number, reason?: string): void;
+    on(event: "message", fn: (message: Jsonify<Out>) => void): TypedSocket<In, Out>;
+    on(event: "close", fn: (code: number, reason: string) => void): TypedSocket<In, Out>;
+    /** The messages as they come, until the socket closes. Leaving the loop closes it. */
+    [Symbol.asyncIterator](): AsyncIterator<Jsonify<Out>>;
+};
+type WsPaths<D> = PathsOf<D, "WS">;
+type Part<R, K extends string> = R extends {
+    [P in K]: infer V;
+} ? V : unknown;
+type WsCall<D> = <P extends WsPaths<D>>(path: P, ...input: WsArgs<DefAt<D, `WS ${P}`>>) => TypedSocket<Part<DefAt<D, `WS ${P}`>, "message">, Part<DefAt<D, `WS ${P}`>, "send">>;
+/** What `client.events` throws when the stream does not open: the status and its problem. */
+export declare class StreamError extends Error {
+    status: number;
+    problem: ProblemBody;
+    constructor(status: number, problem: ProblemBody);
+}
+export type Client<A> = {
+    get: Call<DefsOf<A>, "GET">;
+    post: Call<DefsOf<A>, "POST">;
+    put: Call<DefsOf<A>, "PUT">;
+    patch: Call<DefsOf<A>, "PATCH">;
+    delete: Call<DefsOf<A>, "DELETE">;
+    /**
+     * The events of a route that answers with `t.events(...)`, as they come. A stream that does
+     * not open throws a StreamError with its problem.
+     *
+     *   for await (const e of api.events("/exports/:id/events", { params: { id } }))
+     *     if (e.event === "progress") e.data.done;
+     * @experimental
+     */
+    events: Events<DefsOf<A>>;
+    /**
+     * Opens a WebSocket route: `http` becomes `ws`, `https` `wss`. Messages are sent and read
+     * as JSON, typed from the route's `message` and `send`.
+     *
+     *   const room = api.ws("/rooms/:room", { params: { room: "tea" }, query: { name: "ana" } });
+     *   room.on("message", (m) => m.type === "said" && show(m.text));
+     *   await room.ready;
+     *   room.send({ type: "say", text: "hello" });
+     * @experimental
+     */
+    ws: WsCall<DefsOf<A>>;
+};
+export type ClientOptions = {
+    /** Another fetch: one with retries, a test double, or undici with a proxy. */
+    fetch?: typeof fetch;
+    /** Headers for every request, or a function that makes them, e.g. to put in a fresh token. */
+    headers?: Record<string, string> | (() => Record<string, string> | Promise<Record<string, string>>);
+    /** Another WebSocket class for `client.ws`; default the platform's. */
+    WebSocket?: typeof WebSocket;
+};
+/** A client for the app `A`, typed from its routes. Define the routes in a chain, so the type sees them. */
+export declare function client<A extends Routes<any>>(base: string, options?: ClientOptions): Client<A>;
+export {};
+
+// ---- core/app.d.ts
+import { ServerResponse, type IncomingMessage, type Server } from "node:http";
+import type { Duplex } from "node:stream";
+import { type OpenAPIInfo } from "../openapi/openapi.ts";
+import { type CheckOptions, type CheckReport } from "../testing/check.ts";
+import type { Seal } from "../seal/compile.ts";
+import { type SealState } from "../seal/seal.ts";
+import { type Context, type Middleware, type OperationRoute, type RouteDefs } from "./route.ts";
+import { type TrustProxy } from "./context.ts";
+import { Scope } from "./scope.ts";
+import { type Origins, type WsDefaults } from "./ws.ts";
+import { type PressureOptions, type PressureSample } from "./pressure.ts";
+import { Buffer } from "node:buffer";
+export type AppOptions = OpenAPIInfo & {
+    /** Where the docs page lives, or false. Default `/docs`. */
+    docs?: string | false;
+    /** Where the OpenAPI document lives, or false. Default `/openapi.json`. */
+    openapi?: string | false;
+    /** The request inspector. On by default in development, and it only answers loopback addresses. */
+    inspector?: string | false;
+    /** Checks what handlers return against `response`. Default: on in development. */
+    validateResponses?: boolean;
+    /** Largest accepted request body in bytes. Default 1 MiB. */
+    bodyLimit?: number;
+    /**
+     * One line per request: "pretty" for people, "json" for log collectors, false for none.
+     * Default: "pretty" in development, "json" in production.
+     */
+    log?: boolean | "pretty" | "json";
+    /** Takes every request log entry instead of the console, e.g. to hand it to pino or winston. */
+    logger?: (entry: RequestLog) => void;
+    /** The header that carries the request id, in and out, or false. Default `x-request-id`. */
+    requestId?: string | false;
+    /**
+     * Milliseconds a handler may take before the answer is a 504 problem and `ctx.signal` is
+     * aborted; a route's own `timeout` wins. Default: no limit.
+     */
+    timeout?: number;
+    /** Close in-flight requests cleanly on SIGINT and SIGTERM. Default true. */
+    gracefulShutdown?: boolean;
+    /**
+     * Run one process per core (`"auto"`) or this many, sharing the port. The first process
+     * only looks after them: it starts them, starts another when one dies, and on SIGINT or
+     * SIGTERM lets every one finish its open requests. Default: one process, no cluster.
+     * @experimental
+     */
+    workers?: number | "auto";
+    /**
+     * Believe the proxies in front of the app about who the client is: `ctx.ip` then reads
+     * x-forwarded-for (or forwarded). `true` trusts every proxy, a number that many hops,
+     * a function the addresses it says yes to. Default off: `ctx.ip` is the socket's address,
+     * since anyone can send these headers.
+     */
+    trustProxy?: TrustProxy;
+    /**
+     * Defaults for every WebSocket route that does not set its own: `origins` (the pages that
+     * may open them; default the app's own origin, see `WsSpec.origins`), `maxMessage` (1 MiB),
+     * `heartbeat` (30 000 ms) and `handshakeTimeout` (10 000 ms).
+     */
+    ws?: WsDefaults;
+    /** @deprecated Use `ws: { origins }`. */
+    wsOrigins?: Origins;
+    /** Development mode. Default: NODE_ENV is not "production". */
+    dev?: boolean;
+    /**
+     * Hears about every error that is a bug, not an answer: whatever a handler or hook throws
+     * that is not a problem, a broken onResponse hook, a stream that fails midway. `ctx` is the
+     * request's context where there is one, and undefined where the error came from outside any
+     * request's handling (the socket, a stream after its answer started, inkan itself).
+     * Default: `console.error`.
+     */
+    onError?: (error: unknown, ctx: Context<any, any, any, any, any> | undefined) => void;
+    /**
+     * The contracts stamped into code by `inkan seal`: `import seal from "./inkan.seal.js"`.
+     * Each one is used only while it matches its contract; the rest run as without a seal.
+     * @experimental
+     */
+    seal?: Seal;
+    /**
+     * Overload protection. A timer samples the process every second (unref'd): the event
+     * loop's delay (99th percentile, ms), the V8 heap in use (bytes, or `"90%"` of its limit),
+     * resident memory, and your own `check()`. While a limit is passed, every request is
+     * answered with a 503 `under-pressure` problem and `retry-after` before its body is read,
+     * and before hooks, the log and the inspector; the pages inkan serves itself and the
+     * `exempt` paths still answer. `app.pressure()` hands back the last sample, for a health
+     * route. Default off: no timer, and a request reads nothing for it.
+     * @experimental
+     */
+    pressure?: PressureOptions;
+    /**
+     * Answers every request inside an AsyncLocalStorage that holds its context, so code far
+     * from the handler reads it with `currentContext()`: `currentContext()?.id` in a logger, `currentContext()?.user`
+     * in a database helper. Background jobs run with their own (`job.ctx`), not the store of
+     * the request that started them. Default off: a request pays nothing, and `currentContext()` throws
+     * unless another app in the process turned it on. On, it costs about 0.5-1 µs a request
+     * (bench/inproc.mjs: 113 % of the time without it, geomean; 10-25 % on the smallest
+     * requests, a few % where a request does real work).
+     * @experimental
+     */
+    context?: boolean;
+};
+export type InjectOptions = {
+    method?: string;
+    url: string;
+    headers?: Record<string, string>;
+    /** Objects are sent as JSON, a FormData (or an object holding a `fileExample`) as multipart. */
+    body?: unknown;
+    /** For a server-sent event stream: stop reading after this many events. Endless streams need it. */
+    events?: number;
+};
+export type InjectResponse<T = any> = {
+    status: number;
+    headers: Record<string, string>;
+    /** The Set-Cookie headers, one per cookie. */
+    cookies: string[];
+    text: string;
+    /** Parsed JSON when the answer was JSON, the events of an event stream, otherwise the text. `inject<T>()` types it. */
+    body: T;
+};
+/** A request as an adapter hands it to `app.exchange`. */
+export type AdapterRequest = {
+    /** Upper case: GET, POST, … */
+    method: string;
+    /** The path and the query, as the request line had them: `/teas?page=2`. */
+    url: string;
+    /** Names in lower case. */
+    headers: Record<string, string | string[] | undefined>;
+    /** The whole body, or undefined for none. */
+    body?: Uint8Array;
+    /** The body unread, for a route that takes it as a stream (`app.bodyFor(…).stream`); instead of `body`. */
+    stream?: AsyncIterable<Uint8Array>;
+    /** The client's address; the inspector only answers a loopback one. Leave it out and the inspector stays shut. */
+    remote?: string;
+    /** Whether the request came over TLS; `ctx.secure` and `ctx.protocol` say so. Default: no. */
+    secure?: boolean;
+    /** The HTTP version, for `ctx.httpVersion`: "1.1", "2.0". Default "1.1". */
+    httpVersion?: string;
+};
+/** The answer `app.exchange` hands back for the adapter to write. */
+export type AdapterResponse = {
+    status: number;
+    /** Names in lower case; `content-length` is set when the body is whole. */
+    headers: Record<string, string>;
+    /** The whole body; undefined when there is none or when `stream` is the body. */
+    body?: string | Uint8Array;
+    /** A body that goes out piece by piece: server-sent events, files. */
+    stream?: AsyncIterable<Uint8Array | string>;
+    /** Abort it when the client goes away, so the stream's source stops. */
+    abort?: AbortController;
+    /** Call it once the answer is written: onResponse hooks run then. */
+    done?: () => void;
+    /** Set-Cookie headers, one per cookie; write each as a header of its own. */
+    cookies?: string[];
+};
+/** What gets logged for every request. */
+export type RequestLog = {
+    time: string;
+    id?: string;
+    method: string;
+    path: string;
+    route?: string;
+    status: number;
+    ms: number;
+    notes: string[];
+    /** The cluster worker that answered, when the app runs with `workers`. */
+    worker?: number;
+};
+export type LogEntry = {
+    requestId?: string;
+    id: number;
+    at: string;
+    method: string;
+    path: string;
+    route?: string;
+    status: number;
+    ms: number;
+    notes: string[];
+    worker?: number;
+    /** `clipped` is true when the body was too long to keep whole; such a request cannot be replayed. */
+    request: {
+        headers: Record<string, string>;
+        body?: string;
+        clipped?: boolean;
+    };
+    response: {
+        body?: string;
+    };
+    /** The request written as an `examples: [...]` entry, when a route answered it. */
+    example?: string;
+};
+export declare class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, Deco> {
+    /** The options the app was made with, the defaults filled in. Read them; they are fixed once the app is made. */
+    readonly options: Readonly<AppOptions>;
+    private router;
+    private global;
+    private log;
+    private logId;
+    private spec?;
+    /** What `routes()` hands out, made once until a route is added. */
+    private views?;
+    private listenHooks;
+    private closeHooks;
+    /** Plugins still loading, in order; undefined when everything registered so far has run. */
+    private loading?;
+    /** Whether every route has its hooks joined; adding a route or a hook undoes it. */
+    private built;
+    /** The app's own hooks, for requests no route matched. */
+    private rootHooks;
+    constructor(options?: AppOptions);
+    /** The store of the request being handled, with `context: true`, until its context is in it. */
+    private cell?;
+    /** What every WebSocket route without its own takes: the `ws` option, `wsOrigins` folded in. */
+    private wsDefaults;
+    /** Whether development mode came from NODE_ENV, not from the `dev` option. */
+    private devGuessed;
+    /**
+     * The last overload sample (see `pressure`), for a health route; undefined without `pressure`.
+     * @experimental
+     */
+    pressure(): PressureSample | undefined;
+    /** The 503 for a request while the app is under pressure, or nothing for a path that answers anyway. */
+    private shed;
+    /** Middleware for every request, before routing. */
+    use(...mw: Middleware[]): this;
+    onListen(fn: () => void | Promise<void>): this;
+    onClose(fn: () => void | Promise<void>): this;
+    private sealState?;
+    /**
+     * How the seal went: how many contracts run on it, and which changed since it was made.
+     * @experimental
+     */
+    sealed(): SealState | undefined;
+    /** Resolves once every plugin registered so far has loaded; rejects with the error of one that failed. */
+    ready(): Promise<void>;
+    /** Joins every route's hooks, from the app down to its scope, once instead of per request. */
+    private build;
+    /** Whether any route has an onResponse hook, which needs the time a request took. */
+    private timeAll;
+    /** The request id header in lower case, or undefined for none. */
+    private idHeader?;
+    /** The docs path with a slash at the end, which answers too. */
+    private docsSlash?;
+    /** Every route of the app and of the scopes inside it, as written: method, path, security, meta and spec. Read-only. */
+    routes(): readonly OperationRoute[];
+    openapi(): Record<string, unknown>;
+    /**
+     * Runs every route's examples against the app, without a socket.
+     * @experimental
+     */
+    check(opts?: CheckOptions): Promise<CheckReport>;
+    /**
+     * Sends a request straight into the app. Good for tests: no port, no network.
+     * `inject<Tea>(…)` types the body; it is not checked against `Tea`.
+     */
+    inject<T = any>(opts: InjectOptions): Promise<InjectResponse<T>>;
+    /**
+     * Synchronous as long as nothing on the way is asynchronous: a promise only for a body
+     * that has to be read, middleware, or a handler that returns one. Everything else answers
+     * in the same turn, without a promise, a closure per step or an extra trip through the
+     * microtask queue. On a Node server (`raw.res`) an async handler's answer is written where
+     * its promise settles, and nothing comes back.
+     */
+    private handle;
+    /** No route for the path, or not for this method. A problem to answer with, or nothing for an OPTIONS. */
+    private unmatched;
+    /** The rest of a request once something on its way returned a promise. */
+    private later;
+    /** What a request with a time limit races against the clock: its body, its middleware, its handler. */
+    private work;
+    /**
+     * The work of a request, or a 504 problem once the route's time is up; then `ctx.signal`
+     * is aborted, so the work can stop. Without a limit the work is handed back as it is.
+     */
+    private deadline;
+    /**
+     * An async handler's answer, made in the one `then` on its promise, without an async frame
+     * of its own. On a Node server it is written there too (as Fastify does), so no second
+     * promise is made for pass() to wait on, and the answer leaves a turn of the microtask
+     * queue sooner.
+     */
+    private settle;
+    private settled;
+    /** settled() and send() for a Node server: what pass() does with a promise, without one. */
+    private deliver;
+    /**
+     * The whole way, for a request with hooks or app-wide middleware on it: onRequest,
+     * middleware, the input, preHandler, the handler, onSend; onProblem for every problem.
+     */
+    private full;
+    /** onSend: every hook sees the answer and may change it, or hand back another. */
+    private sending;
+    /** onProblem: every hook sees the problem and may change it, or return another, before it becomes the answer. */
+    private failWithHooks;
+    /** onResponse, once the answer is written. Nothing can change the answer now, so a hook that breaks is only logged. */
+    private responded;
+    /** HEAD, the log line and the inspector: what every answer goes through last. */
+    private finish;
+    /**
+     * Writes one request's log line the way the app's `log` and `logger` options say: for an
+     * adapter that answers some requests itself. Requests through `exchange`, `fetch` or
+     * `listen` are logged already.
+     */
+    logRequest(entry: RequestLog): void;
+    private respond;
+    /** The headers a status promises: there, unless optional, and of the shape promised. A broken promise is a 500 in development. */
+    private checkHeaders;
+    private fail;
+    /** A problem as it is, or a 500 for anything else thrown, which gets logged: it is a bug, not an answer. */
+    private problemOf;
+    /** A problem written as an RFC 9457 document. */
+    private answer;
+    private builtin;
+    private remember;
+    /** A plain Node request listener, for `http.createServer` or anything that takes one. */
+    get listener(): (req: IncomingMessage, res: ServerResponse) => undefined;
+    /**
+     * A Node `upgrade` listener, for `server.on("upgrade", app.upgradeListener)` on a server
+     * made by hand; `listen` adds it by itself when the app has a WebSocket route. An upgrade
+     * to a path without one is a 404.
+     * @experimental
+     */
+    get upgradeListener(): (req: IncomingMessage, socket: Duplex, head: Buffer) => undefined;
+    /** Sockets and handshakes per WebSocket route with `maxConnections`. */
+    private wsCount;
+    /**
+     * An upgrade request: routed among the WebSocket routes, checked for what costs nothing
+     * (`refuse`), then the same way as any request (hooks, security, input, middleware). An
+     * answer other than the 101 the route's acceptor gives is written onto the socket as it
+     * is, and the connection ends.
+     */
+    private upgrade;
+    /**
+     * The checks that cost next to nothing, made before any hook, security or middleware: a
+     * handshake that cannot be one (not a GET, not HTTP/1.1, a body), a page from another
+     * origin, a route that holds as many sockets as it may. A problem to answer with, or none.
+     */
+    private refuse;
+    /** The upgrade went through: the socket, and the route's handler with it. */
+    private accept;
+    /** Closes every open WebSocket with 1001 and resolves once they are gone: part of a shutdown. */
+    private closeSockets;
+    /**
+     * For adapters: how the body of a request to this method and target is to be read. `limit`
+     * is the most bytes it may have, the route's own or the app's; with `stream` the adapter
+     * hands the body over unread, as `AdapterRequest.stream`.
+     */
+    bodyFor(method: string, url: string): {
+        limit: number;
+        stream: boolean;
+    };
+    private matchFor;
+    private serve;
+    private pass;
+    private tooLarge;
+    /**
+     * The app for any server: a request in plain values, the answer in plain values. This is
+     * all `listen` and `fetch` use, and all an adapter for another server needs (see
+     * adapters/ in the repository). The adapter reads the body itself, up to the limit
+     * `app.bodyFor(method, url)` names, and answers 413 past it, or hands it over unread as
+     * `stream` when that says so; it writes `body` or every chunk of `stream`, calls
+     * `abort.abort()` when the client goes away, and `done()` once the answer is out.
+     */
+    exchange(request: AdapterRequest): Promise<AdapterResponse>;
+    /**
+     * For adapters, a trigger rather than an event: call it once the server listens. It runs
+     * the onListen hooks and starts the jobs' schedules, as `listen` does by itself. An app
+     * served through `exchange` or `fetch` without it runs neither.
+     */
+    started(): Promise<void>;
+    /** Starts the jobs' schedules (`schedule`): in one process only, the first worker of a cluster. */
+    private schedule;
+    /**
+     * For adapters, a trigger rather than an event: call it once the server has stopped taking
+     * requests. It stops the pressure sampler, the jobs and the WebSockets, then runs the
+     * onClose hooks, as `listen`'s shutdown does by itself.
+     */
+    stopped(): Promise<void>;
+    /**
+     * The app as a web-standard handler, Request in and Response out, for Bun, Deno and
+     * serverless platforms. `remote` is the client's address where the platform knows it;
+     * the inspector answers only a loopback address, so without one it stays shut.
+     *
+     *   Bun.serve({ fetch: (req, server) => app.fetch(req, { remote: server.requestIP(req)?.address }) })
+     *   Deno.serve((req, info) => app.fetch(req, { remote: info.remoteAddr.hostname }))
+     */
+    fetch(request: Request, info?: {
+        remote?: string;
+    }): Promise<Response>;
+    /** Something failed outside every handler (the socket, inkan itself): log it and answer 500. */
+    private broken;
+    private send;
+    private pipe;
+    /**
+     * Starts listening, once every plugin has loaded, and resolves with the server. The port
+     * comes from the argument, then $PORT, then 3000, the host from the argument, then $HOST,
+     * then every interface, so it runs under warden, a PaaS or a container without changes.
+     * `signal` stops it when aborted: the server stops taking requests, then the app stops as
+     * on SIGTERM (jobs, sockets, onClose hooks), without ending the process.
+     *
+     *   await app.listen({ port: 8080, host: "127.0.0.1", signal: ac.signal });
+     *
+     * With `workers`, the promise of the first process never resolves: it only looks after the
+     * workers, and each worker's `listen` resolves with its own server.
+     *
+     * Two environment variables steer it, set by inkan itself: `INKAN_NO_LISTEN=1` (the CLI
+     * loads an app to read its routes) makes it resolve with a server that does not listen,
+     * and `INKAN_WORKER` is a worker's slot, 1 to `workers`; slot 1 runs the jobs' schedules.
+     */
+    listen(options?: ListenOptions): Promise<Server>;
+    listen(port?: number, host?: string): Promise<Server>;
+    /** The first process of a cluster: starts the workers, replaces one that dies, and stops them all together. */
+    private supervise;
+    private open;
+    private banner;
+}
+export declare const inkan: (options?: AppOptions) => App<{}, {}>;
+/** What `listen` takes besides a port number. */
+export type ListenOptions = {
+    /** Default: $PORT, then 3000. 0 picks a free one. */
+    port?: number;
+    /** Default: $HOST, then every interface. */
+    host?: string;
+    /** Stops the server and the app when aborted. */
+    signal?: AbortSignal;
+};
+
+// ---- core/cache.d.ts
+export type CacheRule = {
+    /** Milliseconds an answer is kept. */
+    ttl?: number;
+    /** @deprecated How long an answer is kept, in seconds; use `ttl`, in milliseconds. */
+    seconds?: number;
+    /**
+     * Answers are kept per caller unless this is true: the request's authorization and cookie
+     * headers are part of the key, so one user never gets another's answer. Set it only for
+     * answers that are the same for everybody.
+     */
+    shared?: boolean;
+    /** At most this many answers are kept; past it the oldest goes. Default 1000. */
+    max?: number;
+};
+
+// ---- core/context.d.ts
+import { type Context } from "./route.ts";
+import { SafeHtml } from "./helpers.ts";
+/** How a scope wraps the pages its handlers render: `app.layout(...)`. */
+export type Layout = (content: SafeHtml, props: Record<string, unknown>, ctx: Context<any, any, any, any, any>) => SafeHtml | string | Promise<SafeHtml | string>;
+/**
+ * Which proxies to believe about the client's address: `true` for every one (the address
+ * the request was first forwarded for), a number for that many hops in front of the app,
+ * or a function that says whether an address is a proxy of yours.
+ */
+export type TrustProxy = boolean | number | ((ip: string) => boolean);
+
+// ---- core/cron.d.ts
+export type CronZone = "UTC" | "local";
+
+// ---- core/env.d.ts
+import type { InferShape, ObjectSchema, Shape } from "../schema/schema.ts";
+/**
+ * Reads the environment through a `t.object` schema, coerced as a query string is: numbers,
+ * booleans (`true`/`false`/`1`/`0`), enums, defaults and optional fields. An empty variable
+ * (`PORT=`) counts as unset, so its default applies. Hands back the typed, frozen value, or
+ * throws one error that lists every problem at once; the value of a variable whose name looks
+ * secret (SECRET, TOKEN, KEY, PASSWORD) is never part of it.
+ *
+ *   export const config = env(t.object({
+ *     PORT: t.int().default(3000),
+ *     DATABASE_URL: t.string(),
+ *     LOG: t.enum(["pretty", "json"]).optional(),
+ *   }));
+ */
+export declare function env<S extends Shape>(schema: ObjectSchema<S>, source?: Record<string, string | undefined>): Readonly<InferShape<S>>;
+
+// ---- core/files.d.ts
+import type { Handler, Responses, RouteSpec } from "./route.ts";
+/** A route as a file exports it: its contract and its handler. */
+export type FileRoute = {
+    readonly spec: RouteSpec<any, any, any, any, any>;
+    readonly handler: Handler<any, any, any, any, any>;
+};
+/**
+ * A route for a file in a routes folder: `export const GET = route({ params: … }, handler)`.
+ * The handler is typed from the contract, as it is with `app.get`. Path params come from the
+ * file name, so give them a `params` schema to have them typed.
+ */
+export declare function route<P = Record<string, string>, Q = Record<string, string | string[]>, B = undefined, H = Record<string, string | undefined>, R extends Responses = {}>(spec: RouteSpec<P, Q, B, H, R>, handler: Handler<P, Q, B, H, R>): FileRoute;
+
+// ---- core/helpers.d.ts
+/** HTML that is known to be safe: written by the `html` tag, or let through on purpose with `raw()`. */
+export declare class SafeHtml {
+    readonly value: string;
+    constructor(value: string);
+    toString(): string;
+}
+/**
+ * HTML from a template, with every `${…}` escaped: `` html`<h1>${name}</h1>` `` is safe
+ * whatever `name` holds. Lists are joined, so `${items.map((i) => html`<li>${i}</li>`)}`
+ * works, and null, undefined and false write nothing, for `${admin && html`…`}`.
+ */
+export declare function html(strings: TemplateStringsArray, ...values: unknown[]): SafeHtml;
+/** Lets HTML through unescaped. Only for markup you made yourself, never for what a user sent. */
+export declare const raw: (markup: string) => SafeHtml;
+export type CookieOptions = {
+    /** Seconds until it expires; 0 deletes it. Without this or `expires` it lasts until the browser closes. */
+    maxAge?: number;
+    expires?: Date;
+    /** Default `/`. */
+    path?: string;
+    domain?: string;
+    /** Only sent over HTTPS. Default false, so it works on plain HTTP too; turn it on behind TLS. */
+    secure?: boolean;
+    /** Out of reach of the page's scripts. Default true. */
+    httpOnly?: boolean;
+    /** Default `Lax`: sent on links into the site, not on requests other sites make. */
+    sameSite?: "Strict" | "Lax" | "None";
+    partitioned?: boolean;
+};
+/** A Set-Cookie header value. The value is percent-encoded, so it can hold anything. */
+export declare function serializeCookie(name: string, value: string, o?: CookieOptions): string;
+/** The cookies of a request, by name; the first one wins when a name comes twice, as browsers send the most specific first. */
+export declare function parseCookies(header: string | undefined): Record<string, string>;
+/** The statuses a redirect can have. */
+export type RedirectStatus = 301 | 302 | 303 | 307 | 308;
+export type CsvOptions = {
+    /** The columns, in order: keys, or key → heading. Default: the keys of the first row. */
+    columns?: string[] | Record<string, string>;
+    /** Default `,`; `;` is what a German Excel expects. */
+    separator?: string;
+    /** Starts the file with a byte order mark, so Excel reads it as UTF-8. Default false. */
+    bom?: boolean;
+    /** Offered for download under this name. */
+    filename?: string;
+    /**
+     * Cells that begin with `=`, `+`, `-`, `@`, a tab or a return get a `'` in front, so a
+     * spreadsheet shows them instead of running them as a formula. Default true; false writes
+     * them as they are, for numbers like -3 to stay numbers.
+     */
+    guardFormulas?: boolean;
+};
+
+// ---- core/jobs.d.ts
+import { type ProblemBody } from "./problem.ts";
+import { EventsSchema, type Schema } from "../schema/schema.ts";
+import { type CronZone } from "./cron.ts";
+import { type Store } from "./store.ts";
+import { type Context, type DecoOf, type Example, type JoinPath, type PathParams, type RawHeaders, type RawQuery, type Security, type WithRoutes } from "./route.ts";
+/** @experimental */
+export type JobState = "queued" | "running" | "done" | "failed" | "canceled";
+/**
+ * A job as the store keeps it.
+ * @experimental
+ */
+export type JobRecord = {
+    id: string;
+    /** The job's kind: the path it was started at, as it was defined (`/exports`). */
+    kind: string;
+    /** Whose job it is, as `owner(ctx)` said when it was started. */
+    owner?: string;
+    state: JobState;
+    /** What it was started with; dropped once it is over. */
+    input?: unknown;
+    progress?: unknown;
+    /** Its place in the queue, 1 for next, while it waits. */
+    position?: number;
+    result?: unknown;
+    error?: ProblemBody;
+    /** When it was started, in ms since the epoch, as every time here: records go through JSON. */
+    createdAt: number;
+    startedAt?: number;
+    finishedAt?: number;
+    /** When the store may forget it (ms since the epoch); set once it is over. */
+    expiresAt?: number;
+    /** Someone asked to cancel it; whoever runs it stops it. */
+    cancelRequested?: boolean;
+};
+type Maybe<T> = T | Promise<T>;
+/**
+ * @deprecated Since 0.8: give `app.job` a {@link Store} (`memoryStore()`, or an adapter's),
+ * which jobs share with everything else that keeps state. A `JobStore` still works.
+ *
+ * Where jobs were kept in 0.7. A store several processes share (`shared: true`) lets an app
+ * with jobs run with `workers`.
+ * @experimental
+ */
+export interface JobStore {
+    /** Whether every process sees the same jobs. The memory store does not. */
+    readonly shared: boolean;
+    get(id: string): Maybe<JobRecord | undefined>;
+    /** Keeps the job as it is now and tells everyone watching it. */
+    set(job: JobRecord): Maybe<void>;
+    delete(id: string): Maybe<void>;
+    /** Forgets every job whose `expiresAt` is `now` or earlier. */
+    sweep(now: number): Maybe<void>;
+    /** Calls `fn` with the job each time it is set, until the function it returns is called. */
+    watch(id: string, fn: (job: JobRecord) => void): () => void;
+    /** Marks a job that is not over yet as to be canceled; watchers see `cancelRequested`. */
+    cancel(id: string): Maybe<void>;
+}
+/**
+ * A job as the routes answer with it.
+ * @experimental
+ */
+export type JobBody<P = unknown> = {
+    id: string;
+    state: JobState;
+    progress?: P;
+    position?: number;
+    error?: ProblemBody;
+    createdAt: Date;
+    startedAt?: Date;
+    finishedAt?: Date;
+};
+/**
+ * What the function that does the work gets.
+ * @experimental
+ */
+export type Job<B = unknown, P = unknown, Deco = {}> = {
+    id: string;
+    /** The checked body it was started with. */
+    input: B;
+    /** Aborted when the job is canceled, runs out of time, or the server stops. */
+    signal: AbortSignal;
+    /** Tells whoever follows the job how far it is. Only the latest is kept. */
+    progress(p: P): void;
+    /**
+     * The context of the request that started it, for decorations and `state`. That request is
+     * over: its `signal` throws, use `job.signal`.
+     */
+    ctx: Context<any, any, B, any, any> & Deco;
+};
+/** @experimental */
+export type JobOptions<B, P, R, Deco = {}> = {
+    summary?: string;
+    description?: string;
+    tags?: string[];
+    deprecated?: boolean;
+    hidden?: boolean;
+    security?: Security | Security[] | false;
+    /** The name of the job schema in OpenAPI is `<name>Job`. Default: the last part of the path, `/exports` is `Exports`. */
+    name?: string;
+    body?: Schema<B>;
+    progress?: Schema<P>;
+    result?: Schema<R>;
+    /** How many run at the same time, in this process. Default 1. */
+    concurrency?: number;
+    /** How many may wait; past that, starting one is a 503. Default 100. */
+    queue?: number;
+    /** Milliseconds a finished job is kept for its result. Default 3600000 (an hour). */
+    retain?: number;
+    /** @deprecated Seconds a finished job is kept; use `retain`, in milliseconds. */
+    keep?: number;
+    /** Milliseconds a job may run before it fails and `job.signal` is aborted. Default: no limit. */
+    timeout?: number;
+    /** Whose job it is. Anybody else gets a 404 for it. */
+    owner?: (ctx: Context<any, any, B, any, any> & Deco) => string | undefined;
+    /**
+     * Where jobs are kept: a `Store` (`memoryStore()`, or an adapter's). Default: one memory
+     * store for the app, holding 1000 jobs. With `workers`, one with `shared: true`, best with
+     * publish/subscribe (without it, a process following a job another one runs asks every second).
+     */
+    store?: Store | JobStore;
+    /** Examples for starting one. The routes around it get examples that build on the first. */
+    examples?: Example[];
+    /**
+     * Starts the job on a schedule as well, as a POST would: the same queue, concurrency and
+     * store, without an owner. A five-field cron expression (`"0 3 * * *"`, in UTC), or
+     * `{ cron, input, timezone }` with the input to start it with (needed when the job has a
+     * `body`, and checked against it) and `"local"` for the process's own time zone. A run
+     * is skipped while the one this schedule started before is still waiting or running.
+     * Schedules start once the app listens (`listen`, or `app.started()` for an adapter),
+     * stop on shutdown, and with `workers` run in worker 1 only. `job.ctx` of a scheduled
+     * run is a context of no real request: a POST to the job's path, no headers, its input as
+     * the body.
+     */
+    schedule?: string | {
+        cron: string;
+        input?: B;
+        timezone?: CronZone;
+    };
+    /** @deprecated Use `schedule`, which it is. */
+    every?: string | {
+        cron: string;
+        input?: B;
+        timezone?: CronZone;
+    };
+};
+type ProblemSchema = Schema<ProblemBody>;
+type JobSchema<P> = Schema<JobBody<P>>;
+/**
+ * The five routes of a job, as the typed client knows them.
+ * @experimental
+ */
+export type JobRoutes<Path extends string, B, P, R> = {
+    [K in `POST ${Path}`]: {
+        params: PathParams<Path>;
+        query: RawQuery;
+        body: B;
+        headers: RawHeaders;
+        response: {
+            202: JobSchema<P>;
+            503: ProblemSchema;
+        };
+    };
+} & {
+    [K in `GET ${JoinPath<Path, "/:id">}`]: {
+        params: PathParams<JoinPath<Path, "/:id">>;
+        query: RawQuery;
+        body: undefined;
+        headers: RawHeaders;
+        response: {
+            200: JobSchema<P>;
+            404: ProblemSchema;
+        };
+    };
+} & {
+    [K in `GET ${JoinPath<Path, "/:id/events">}`]: {
+        params: PathParams<JoinPath<Path, "/:id/events">>;
+        query: RawQuery;
+        body: undefined;
+        headers: RawHeaders;
+        response: {
+            200: EventsSchema<{
+                status: JobSchema<P>;
+                progress: Schema<P>;
+                end: JobSchema<P>;
+            }>;
+            404: ProblemSchema;
+        };
+    };
+} & {
+    [K in `GET ${JoinPath<Path, "/:id/result">}`]: {
+        params: PathParams<JoinPath<Path, "/:id/result">>;
+        query: {
+            wait?: number;
+        };
+        body: undefined;
+        headers: RawHeaders;
+        response: {
+            200: Schema<R>;
+            404: ProblemSchema;
+            409: ProblemSchema;
+        };
+    };
+} & {
+    [K in `DELETE ${JoinPath<Path, "/:id">}`]: {
+        params: PathParams<JoinPath<Path, "/:id">>;
+        query: RawQuery;
+        body: undefined;
+        headers: RawHeaders;
+        response: {
+            202: JobSchema<P>;
+            204: Schema<undefined>;
+            404: ProblemSchema;
+        };
+    };
+};
+/**
+ * `job` as a property, so its type can name the app or scope it returns.
+ * @experimental
+ */
+export type JobMethod<Self> = <Path extends string, B = undefined, P = unknown, R = unknown>(path: Path, options: JobOptions<B, P, R, DecoOf<Self>>, run: (job: Job<B, P, DecoOf<Self>>) => NoInfer<R> | Promise<NoInfer<R>>) => WithRoutes<Self, JobRoutes<Path, B, P, R>>;
+export {};
+
+// ---- core/pressure.d.ts
+/** @experimental */
+export type PressureOptions = {
+    /** Milliseconds the event loop may lag (the 99th percentile since the last sample). */
+    eventLoopDelay?: number;
+    /** Bytes of V8 heap in use, or a share of the heap's limit such as `"90%"`. */
+    heapUsed?: number | `${number}%`;
+    /** Bytes of resident memory. */
+    rss?: number;
+    /** Seconds the 503 asks the client to wait, as `retry-after`. Default 10. */
+    retryAfter?: number;
+    /** Your own measure, run with every sample: true means under pressure. */
+    check?: () => boolean;
+    /** Paths that answer however loaded the server is, such as a health route. Default: none. */
+    exempt?: string[];
+    /** Milliseconds between samples. Default 1000. */
+    interval?: number;
+};
+/**
+ * What the last sample found.
+ * @experimental
+ */
+export type PressureSample = {
+    /** Whether requests are turned away right now. */
+    under: boolean;
+    /** Which limit was passed: "eventLoopDelay", "heapUsed", "rss" or "check". */
+    reason?: string;
+    /** Milliseconds, the 99th percentile since the sample before. */
+    eventLoopDelay: number;
+    heapUsed: number;
+    rss: number;
+    at: Date;
+};
+
+// ---- core/problem.d.ts
+export type ProblemBody = {
+    type: string;
+    title: string;
+    status: number;
+    detail?: string;
+    instance?: string;
+    [extra: string]: unknown;
+};
+export declare class HttpProblem implements Error {
+    name: string;
+    message: string;
+    status: number;
+    type: string;
+    title: string;
+    detail?: string;
+    extra: Record<string, unknown>;
+    headers: Record<string, string>;
+    constructor(status: number, type: string, detail?: string, extra?: Record<string, unknown>, headers?: Record<string, string>);
+    /** The one line a stack would start with; there are no frames behind it. */
+    get stack(): string;
+    toJSON(): ProblemBody;
+}
+/** What `problem()` takes besides the status and the type. */
+export type ProblemOptions = {
+    /** For people: what went wrong, this time. */
+    detail?: string;
+    /** More members of the problem document: `{ errors: [...] }`, `{ balance: 30 }`. */
+    extra?: Record<string, unknown>;
+    /** Headers of the answer: `{ "retry-after": "10" }`. */
+    headers?: Record<string, string>;
+};
+/**
+ * Stops the handler with an error response: an RFC 9457 problem document.
+ *
+ *   throw problem(404, "user-not-found", `No user with id ${id}`)
+ *   throw problem(429, "slow-down", { detail: "Ten a minute", headers: { "retry-after": "60" } })
+ */
+export declare function problem(status: number, type: string, detail?: string | ProblemOptions, extra?: Record<string, unknown>): HttpProblem;
+
+// ---- core/request-context.d.ts
+import type { Context } from "./route.ts";
+/**
+ * The context of the request being answered, wherever the code is that asks: a database
+ * helper, a logger, a function three calls down from the handler. Needs an app made with
+ * `context: true`; without one anywhere in the process it throws, since it could only ever
+ * hand back undefined. Outside a request (at startup, in a timer started outside one) it is
+ * undefined. A background job runs with its own: `job.ctx`, not the request that started it.
+ *
+ *   const log = (msg: string) => console.log(`[${currentContext()?.id ?? "-"}] ${msg}`);
+ * @experimental
+ */
+export declare function currentContext<C = Context<any, any, any, any, any>>(): C | undefined;
+/** @deprecated Use `currentContext()`, which it is. */
+export declare function context<C = Context<any, any, any, any, any>>(): C | undefined;
+
+// ---- core/route.d.ts
+import type { IncomingMessage, ServerResponse } from "node:http";
+import type { CookieOptions, CsvOptions, RedirectStatus, SafeHtml } from "./helpers.ts";
+import type { CacheRule } from "./cache.ts";
+import type { Infer, Schema } from "../schema/schema.ts";
+import type { EventStream } from "./stream.ts";
+import type { App } from "./app.ts";
+import type { Scope } from "./scope.ts";
+import { type WsMethod } from "./ws.ts";
+export type Responses = {
+    [status: number]: Schema<any>;
+};
+export type Example = {
+    name?: string;
+    params?: Record<string, unknown>;
+    query?: Record<string, unknown>;
+    headers?: Record<string, string>;
+    body?: unknown;
+    /** The status this example has to answer with. Defaults to the first 2xx in `response`. */
+    status?: number;
+    /** A part of the response body that has to be in the answer, compared deeply. */
+    expect?: unknown;
+    /**
+     * Values to keep from this answer for examples that come after it, read from `body.<path>`,
+     * `headers.<name>`, `cookies.<name>` (a cookie the answer sets) or `status`:
+     * `{ id: "body.id", where: "headers.location", sid: "cookies.sid" }`.
+     */
+    keep?: Record<string, string>;
+    /**
+     * Another example that runs first, as `"POST /teas > a new oolong"`. What it keeps fills
+     * `{name}` placeholders in this example's params, query, headers and body. The examples of
+     * one chain share a cookie jar, as a browser would: a cookie an answer sets is sent with the
+     * requests after it that its Path covers, until an answer clears it (Max-Age=0, or an Expires
+     * gone by). Every chain starts with an empty jar, so cookies never cross from one to another.
+     */
+    after?: string;
+};
+/**
+ * How a caller proves who they are. inkan checks that the credentials are there and
+ * documents them; whether they are good is for your hook or middleware to say.
+ */
+export type Security = "bearer" | "basic" | {
+    apiKey: string;
+    in?: "header" | "query" | "cookie";
+};
+/**
+ * Free-form facts about a route for plugins to read in their hooks, as `ctx.route.meta`
+ * (and as `route.meta` in `describe`). A plugin names what it reads by adding to this interface:
+ *
+ *   declare module "@vxnsin/inkan" {
+ *     interface RouteMeta { auth?: { roles: string[] } }
+ *   }
+ *
+ * Keys may be symbols too: a plugin that keeps its key to itself cannot clash with another.
+ *
+ *   const AUTH = Symbol("auth");
+ *   app.get("/me", { meta: { [AUTH]: { roles: ["admin"] } } }, handler);
+ */
+export interface RouteMeta {
+    [key: string]: unknown;
+    [key: symbol]: unknown;
+}
+/** `ctx.route`: the route that matched, as it was written. One object per route, made before the first request. */
+export type RouteInfo = {
+    method: string;
+    path: string;
+    /** The credentials it asks for, its own or its group's; empty for none. */
+    security: readonly Security[];
+    /** Its `meta`, or an empty object. */
+    meta: Readonly<RouteMeta>;
+};
+/**
+ * The route a `describe` hook adds to: what `ctx.route` holds, plus the spec it was
+ * written with (summary, tags, schemas, examples, ...). Read-only: change the operation instead.
+ * @experimental
+ */
+export type OperationRoute = Readonly<RouteInfo> & {
+    readonly spec: Readonly<RouteSpec<any, any, any, any, Responses>>;
+};
+export type RouteSpec<P, Q, B, H, R extends Responses> = {
+    summary?: string;
+    description?: string;
+    tags?: string[];
+    operationId?: string;
+    deprecated?: boolean;
+    /** Keeps the route out of the docs and the OpenAPI document. */
+    hidden?: boolean;
+    params?: Schema<P>;
+    query?: Schema<Q>;
+    headers?: Schema<H>;
+    body?: Schema<B>;
+    /**
+     * The most bytes this route's request body may have, instead of the app's `bodyLimit`.
+     * A `t.binary().max(n)` or `t.stream().max(n)` body sets it by itself.
+     */
+    bodyLimit?: number;
+    response?: R;
+    /** Headers an answer carries, by status: `{ 201: { location: t.string() } }`. Checked in development, like the body. */
+    responseHeaders?: {
+        [status: number]: Record<string, Schema<any>>;
+    };
+    /**
+     * Who may call it: a request without these credentials is a 401 before anything else runs.
+     * Several are alternatives, any one will do. `false` opens a route in a secured group.
+     */
+    security?: Security | Security[] | false;
+    examples?: Example[];
+    /** Middleware for this route only. It runs after the input was validated. */
+    use?: Middleware[];
+    /**
+     * Milliseconds the handler may take; past them the answer is a 504 problem and
+     * `ctx.signal` is aborted, so the work behind it can stop. Instead of the app's `timeout`.
+     */
+    timeout?: number;
+    /** Keeps the handler's answers for a while: the same input gets the same answer without asking again. */
+    cache?: CacheRule;
+    /** Facts for plugins, read in hooks as `ctx.route.meta`: `{ auth: { roles: ["admin"] } }`. */
+    meta?: RouteMeta;
+};
+export type Simplify<T> = {
+    [K in keyof T]: T[K];
+} & {};
+export type ParamsOf<P extends string> = P extends `${string}:${infer Name}/${infer Rest}` ? {
+    [K in Name]: string;
+} & ParamsOf<`/${Rest}`> : P extends `${string}:${infer Name}` ? {
+    [K in Name]: string;
+} : P extends `${string}*${infer W}` ? {
+    [K in W extends "" ? "rest" : W]: string;
+} : {};
+export type PathParams<P extends string> = string extends P ? Record<string, string> : Simplify<ParamsOf<P>>;
+export type RawQuery = Record<string, string | string[]>;
+export type RawHeaders = Record<string, string | undefined>;
+export type SuccessStatus = 200 | 201 | 202 | 203 | 206 | 207;
+export type SuccessBody<R> = {} extends R ? unknown : {
+    [K in keyof R]: K extends SuccessStatus ? Infer<R[K]> : never;
+}[keyof R];
+/** Headers of an answer. A list goes out as one line per entry for `set-cookie`, joined with ", " for any other. */
+export type ReplyHeaders = Record<string, string | string[]>;
+export declare class Reply<S extends number = number, Body = unknown> {
+    status: S;
+    body: Body;
+    headers: ReplyHeaders;
+    constructor(status: S, body: Body, headers?: ReplyHeaders);
+}
+/** Answers with a status that is not the default one, or with extra headers. */
+export declare const reply: <S extends number, B>(status: S, body?: B, headers?: ReplyHeaders) => Reply<S, B | undefined>;
+export type Context<P = Record<string, string>, Q = RawQuery, B = unknown, H = RawHeaders, R extends Responses = {}> = {
+    method: string;
+    path: string;
+    url: URL;
+    /** The HTTP version of the request: "1.1", "2.0", "1.0". "1.1" where the platform does not say (`fetch`). */
+    httpVersion: string;
+    /** The request id: taken from the request id header when it looks safe, otherwise a fresh one, unique per process and worker. */
+    id: string;
+    /**
+     * The client's address, as the socket or the platform says it. Behind a proxy that is the
+     * proxy, unless the app's `trustProxy` says to believe what it forwards.
+     */
+    ip: string | undefined;
+    /** Whether the request came over TLS: the socket, the URL `fetch` got, or with `trustProxy` x-forwarded-proto. */
+    secure: boolean;
+    /** "https" when `secure`, otherwise "http". */
+    protocol: "http" | "https";
+    params: P;
+    query: Q;
+    headers: H;
+    /**
+     * The headers as they arrived, names in lower case, even where the route's header schema
+     * cut `headers` down to its contract. The request's own object: read it, do not change it.
+     */
+    rawHeaders: Readonly<Record<string, string | string[] | undefined>>;
+    body: B;
+    /** Free space for middleware to hand things to the handler. */
+    state: Record<string, unknown>;
+    /** The route that matched, as it was written, with its security and meta. Undefined when no route matched. */
+    route?: RouteInfo;
+    /** Sets the status used when the handler returns a plain value. */
+    status(code: number): void;
+    header(name: string, value: string): void;
+    reply<S extends keyof R & number>(status: S, body: Infer<R[S]>, headers?: ReplyHeaders): Reply<S>;
+    /** Plain text. The status is the one `status()` set, or the usual one, unless given here. */
+    text(body: string, status?: number): Reply;
+    /** HTML. Write it with the `html` tag, which escapes every value put into it. */
+    html(markup: SafeHtml | string, status?: number): Reply;
+    /** Sends the client elsewhere, 302 unless told otherwise. */
+    redirect(to: string, status?: RedirectStatus): Reply;
+    /** Ends the request with a 404 problem, the same one an unknown route gets. */
+    notFound(detail?: string): never;
+    /** HTML in the layout of this route's scope (`app.layout(...)`), or as it is when there is none. */
+    render(content: SafeHtml | string, props?: Record<string, unknown>): Reply | Promise<Reply>;
+    /** The request's cookies, by name. */
+    cookies: Record<string, string>;
+    /** Sets a cookie on the answer: HttpOnly and SameSite=Lax unless told otherwise. */
+    setCookie(name: string, value: string, options?: CookieOptions): void;
+    /** Tells the browser to forget a cookie. */
+    clearCookie(name: string, options?: Pick<CookieOptions, "path" | "domain">): void;
+    /** Aborted when the client goes away or the route's `timeout` runs out: hand it to the database or to `fetch`. */
+    signal: AbortSignal;
+    /** Rows as a CSV file, written as they come. */
+    csv(rows: Iterable<Record<string, unknown>> | AsyncIterable<Record<string, unknown>>, options?: CsvOptions): Reply;
+    /** Only there when the request came through a socket, not through `inject`. */
+    req?: IncomingMessage;
+    res?: ServerResponse;
+};
+/** The rows of a list answer, one by one: a generator over a database cursor goes out as it reads. */
+type Rows<T> = T extends readonly (infer E)[] ? AsyncIterable<E> | Iterable<E> : never;
+export type Result<R extends Responses> = SuccessBody<R> | Rows<SuccessBody<R>> | Reply | EventStream | AsyncIterable<Uint8Array | string> | void;
+/** A route's handler. `Deco` is what `decorate` put on the context of the app or plugin it belongs to. */
+export type Handler<P, Q, B, H, R extends Responses, Deco = {}> = (ctx: Context<P, Q, B, H, R> & Deco) => Result<R> | Promise<Result<R>>;
+export type Middleware = (ctx: Context<any, any, any, any, any>, next: () => Promise<void>) => unknown;
+/** What the type of an app remembers about one route, for the typed client. */
+export type RouteDef = {
+    params: unknown;
+    query: unknown;
+    body: unknown;
+    headers: unknown;
+    response: Responses;
+};
+/** Every route of an app or group, by `"METHOD /path"`. */
+export type RouteDefs = {
+    [route: string]: RouteDef;
+};
+export type WithRoutes<Self, More extends RouteDefs> = Self extends App<infer D, infer X> ? App<D & More, X> : Self extends Scope<infer D, infer X> ? Scope<D & More, X> : Self extends Routes<infer D, infer X> ? Routes<D & More, X> : Self;
+/** What `decorate` has put on the context so far. */
+export type DecoOf<Self> = Self extends {
+    readonly [DECO]: infer X;
+} ? X : {};
+/** The same app or scope, with one more decoration on its context. */
+export type WithDeco<Self, More> = Self extends App<infer D, infer X> ? App<D, X & More> : Self extends Scope<infer D, infer X> ? Scope<D, X & More> : Self;
+export type TrimEnd<S extends string> = S extends `${infer A}/` ? TrimEnd<A> : S;
+/** `/teas` + `/:id` is `/teas/:id`, `/teas` + `/` is `/teas`, `/` + `/me` is `/me`. */
+export type JoinPath<A extends string, B extends string> = `${TrimEnd<A>}${B extends "/" ? "" : B}` extends "" ? "/" : `${TrimEnd<A>}${B extends "/" ? "" : B}`;
+export type Prefixed<D extends RouteDefs, Pre extends string> = {
+    [K in keyof D & string as K extends `${infer M} ${infer P}` ? `${M} ${JoinPath<Pre, P>}` : never]: D[K];
+};
+export type MountMethod<Self> = <Pre extends string, G extends RouteDefs>(prefix: Pre, group: Routes<G>) => WithRoutes<Self, Prefixed<G, Pre>>;
+export type RouteMethod<Self, M extends string> = {
+    <Path extends string, P = PathParams<Path>, Q = RawQuery, B = undefined, H = RawHeaders, R extends Responses = {}>(path: Path, spec: RouteSpec<P, Q, B, H, R>, handler: Handler<P, Q, B, H, R, DecoOf<Self>>): WithRoutes<Self, {
+        [K in `${M} ${Path}`]: {
+            params: P;
+            query: Q;
+            body: B;
+            headers: H;
+            response: R;
+        };
+    }>;
+    <Path extends string>(path: Path, handler: Handler<PathParams<Path>, RawQuery, unknown, RawHeaders, {}, DecoOf<Self>>): WithRoutes<Self, {
+        [K in `${M} ${Path}`]: {
+            params: PathParams<Path>;
+            query: RawQuery;
+            body: unknown;
+            headers: RawHeaders;
+            response: {};
+        };
+    }>;
+};
+/** Two paths as one, with one slash between the parts: `joinPath("/v1/", "/teas")` is `/v1/teas`. For plugins that mount routes under `scope.prefix`. */
+export declare const joinPath: (a: string, b: string) => string;
+/** The methods `all()` defines a route for. */
+declare const ALL: readonly ["GET", "POST", "PUT", "PATCH", "DELETE"];
+/**
+ * A set of routes that can be mounted under a prefix. Its type remembers every route
+ * defined on it in a chain, which is what the typed client reads.
+ */
+/** Only types: the keys of what a table of routes remembers in its type. */
+declare const DEFS: unique symbol;
+declare const DECO: unique symbol;
+/** The routes a table knows, as its type remembers them; `{}` for one typed `any`. */
+export type DefsOf<R> = R extends {
+    readonly [DEFS]: infer D extends RouteDefs;
+} ? (0 extends 1 & D ? {} : D) : {};
+export declare class Routes<Defs extends RouteDefs = any, Deco = {}> {
+    /** Only a type: the routes this table knows. There is nothing here at runtime. */
+    readonly [DEFS]: Defs;
+    /** Only a type: what `decorate` put on the context its handlers get. */
+    readonly [DECO]: Deco;
+    /** For a group, middleware that every route in it gets. Add it before mounting. */
+    use(...mw: Middleware[]): this;
+    /**
+     * The credentials every route defined here afterwards asks for, unless it says
+     * otherwise in its own `security`. On the app it is the default for every route.
+     */
+    security(scheme: Security | Security[] | false): this;
+    protected define(method: string, path: string, a: unknown, b?: unknown): this;
+    get: RouteMethod<this, "GET">;
+    post: RouteMethod<this, "POST">;
+    put: RouteMethod<this, "PUT">;
+    patch: RouteMethod<this, "PATCH">;
+    delete: RouteMethod<this, "DELETE">;
+    /**
+     * One handler for GET, POST, PUT, PATCH and DELETE at `path` (HEAD comes with GET, OPTIONS
+     * answers by itself): five routes with the same contract, each in the docs and the typed
+     * client. `ctx.method` says which one came.
+     */
+    all: RouteMethod<this, (typeof ALL)[number]>;
+    /**
+     * A WebSocket at `path`. The upgrade request goes through the hooks, the security and the
+     * params, query and headers checks like a GET, and is answered with that status when one
+     * of them says no; only then does it become a socket. `message` is what the client sends,
+     * `send` what the server does: both JSON, both checked.
+     *
+     *   app.ws("/rooms/:room", { query: t.object({ name: t.string() }), message: Say, send: Said }, (socket, ctx) => {
+     *     socket.on("message", (m) => socket.send({ text: m.text, from: ctx.query.name }));
+     *   });
+     * @experimental
+     */
+    ws: WsMethod<this>;
+    /** Puts a group's routes under a prefix. In a chain, the type knows them under their new paths. */
+    mount: MountMethod<this>;
+}
+export declare const routes: () => Routes<{}>;
+export {};
+
+// ---- core/scope.d.ts
+import type { RequestLog } from "./app.ts";
+import { type Layout } from "./context.ts";
+import type { HttpProblem } from "./problem.ts";
+import { type JobMethod } from "./jobs.ts";
+import type { JsonSchema, Schema } from "../schema/schema.ts";
+import { Routes, type Context, type DecoOf, type DefsOf, type OperationRoute, type Prefixed, type RouteDefs, type RouteInfo, type WithDeco, type WithRoutes } from "./route.ts";
+type Ctx<Deco> = Context<any, any, any, any, any> & Deco;
+/** `decorate` as a property, so its type can name the app or scope it returns. */
+export type DecorateMethod<Self> = <K extends string, V>(name: K, value: V) => WithDeco<Self, {
+    [P in K]: V;
+}>;
+/** `decorateRequest` as a property, for the same reason. */
+export type DecorateRequestMethod<Self> = {
+    <K extends string, V>(name: K, init: (ctx: Ctx<DecoOf<Self>>) => V): WithDeco<Self, {
+        [P in K]: V;
+    }>;
+    <K extends string, V>(name: K, init: (ctx: Ctx<DecoOf<Self>>) => V, options: ResolveOptions): WithDeco<Self, {
+        [P in K]: Awaited<V>;
+    }>;
+};
+/**
+ * `decorateRequest(name, init, options)`: a value awaited before the handler, so the handler sees it without the promise.
+ * @experimental
+ */
+export type ResolveOptions = ({
+    /** Awaited after the input is checked, before the preHandler hooks and the handler. */
+    resolve: "preHandler";
+} | {
+    /** @deprecated Use `resolve: "preHandler"`. */
+    before: "handler";
+}) & {
+    /**
+     * The routes that need it, asked once per route: `(route) => route.security.length > 0`.
+     * Every route of the scope when left out. On a route it leaves out, reading it is an error.
+     */
+    when?: (route: RouteInfo) => boolean;
+};
+/** Where a hook runs among the others of its kind. */
+export type HookOptions = {
+    /**
+     * `"last"` runs it after every other hook of its kind on the route, wherever those were
+     * added (outermost scope first among the last ones too). Default: in the order added,
+     * outer scopes first.
+     * @experimental
+     */
+    order?: "last";
+};
+/**
+ * `register` as a property: the scope it returns knows what a shared plugin decorated, and
+ * the routes a plugin made with `plugin()` defined, under the prefix it is registered with.
+ */
+export type RegisterMethod<Self> = <O extends object = {}, A = {}, D extends RouteDefs = {}, Pre extends string = "", Old extends string = "">(p: Plugin<O, DecoOf<Self>, A, D> | ((app: Scope<{}, DecoOf<Self>>, options: O) => unknown), 
+/** What the plugin is handed. `prefix` here is deprecated: give it in the third argument. */
+options?: O & {
+    prefix?: Old;
+}, 
+/** Where the plugin is mounted: `{ prefix: "/v1" }` puts its routes under /v1. */
+mount?: RegisterOptions<Pre>) => WithRoutes<WithDeco<Self, A>, Prefixed<D, Pre extends "" ? Old : Pre>>;
+/** How `register` mounts a plugin, apart from the plugin's own options. */
+export type RegisterOptions<Pre extends string = string> = {
+    /** A path prefix for every route the plugin defines, under the prefix of the scope it is registered in. */
+    prefix?: Pre;
+};
+/** Only a type: the routes a plugin's setup defined in a chain on the scope it returns. */
+type RoutesOf<R> = DefsOf<R>;
+/** An answer on its way out, as onSend sees it. A hook may change it, or return another. */
+export type Outgoing = {
+    status: number;
+    headers: Record<string, string>;
+    /** The written body; undefined for no body, or while a stream is the body. */
+    body?: string | Buffer;
+    /** Set when the body is a stream, which goes out piece by piece. */
+    readonly stream?: AsyncIterable<Uint8Array | string>;
+    /** Set-Cookie headers, one per cookie. */
+    cookies?: string[];
+};
+/** Returns nothing to go on, or a value to answer with right away, as a handler would. Throws a problem to stop. */
+export type RequestHook<Deco = {}> = (ctx: Ctx<Deco>) => unknown;
+export type SendHook<Deco = {}> = (ctx: Ctx<Deco>, answer: Outgoing) => void | Outgoing | Promise<void | Outgoing>;
+export type ResponseHook<Deco = {}> = (ctx: Ctx<Deco>, done: RequestLog) => unknown;
+export type ProblemHook<Deco = {}> = (ctx: Ctx<Deco>, problem: HttpProblem) => void | HttpProblem | Promise<void | HttpProblem>;
+/**
+ * Adds to the OpenAPI operation of a route. `components` is the document's components
+ * object: its `securitySchemes` already hold the schemes the routes ask for, so a hook can
+ * fill in details such as `bearerFormat`, or add sections of its own (`responses`, `parameters`).
+ * `ref(schema, name?)` lists a `t.*` schema once under `components.schemas` and returns
+ * `{ $ref }` to it, as a route's named schemas are; an unnamed schema needs `name`.
+ * `route` is the route as written: `method`, `path`, `security`, `meta` and its `spec`.
+ * @experimental
+ */
+export type OperationHook = (operation: Record<string, any>, route: OperationRoute, components: Record<string, Record<string, any>>, ref: (schema: Schema<any>, name?: string) => JsonSchema) => void;
+declare const SHARED: unique symbol;
+/** Only a type: what a shared plugin puts on the context of the scope it is registered in. */
+declare const ADDS: unique symbol;
+/** Only a type: the routes a plugin defines, for the type of the app it is registered in. */
+declare const DEFS: unique symbol;
+/**
+ * A plugin: a function that gets a scope of its own and the options it was registered with.
+ * Make one with `plugin()` to name it or to share what it adds with the scope around it.
+ * `Deco` is what it needs on the context, `Adds` what a shared one puts there, `Defs` the
+ * routes it defines, by `"METHOD /path"` without the prefix it is registered with.
+ */
+export type Plugin<O = any, Deco = any, Adds = {}, Defs extends RouteDefs = {}> = ((app: Scope<{}, Deco>, options: O) => unknown) & {
+    readonly [SHARED]?: boolean;
+    readonly pluginName?: string;
+    /** The inkan versions it works with, as `plugin()` was given them. */
+    readonly inkan?: string;
+    readonly [ADDS]?: Adds;
+    readonly [DEFS]?: Defs;
+};
+/** What `plugin()` takes besides the function. */
+export type PluginOptions = {
+    /** Its name, for messages; the function's name by default. Name it like its npm package. */
+    name?: string;
+    /** Put its hooks and decorations into the scope it is registered in, not a scope of its own. */
+    shared?: boolean;
+    /**
+     * The inkan versions it works with, as an npm range: `">=0.8.0 <1.0.0"` (what `inkan create plugin` writes), `"^0.8.0"`,
+     * `"0.7.x || 0.8.x"`. `register()` throws when the app runs a version outside it
+     * (`inkan-quota needs inkan >=0.8.0 <1.0.0, this app runs 1.0.1`), so a plugin built
+     * against one version does not half-work on another. A range that is not one throws
+     * right here. A prerelease of inkan is in the range only when the range names a
+     * prerelease of the same version (`>=0.8.0-rc.1`), as npm reads it. Keep it the same
+     * as the `peerDependencies` entry for `@vxnsin/inkan`.
+     * @experimental
+     */
+    inkan?: string;
+};
+/**
+ * Makes a plugin. `shared: true` puts its hooks and decorations into the scope it is
+ * registered in instead of a scope of its own: right for a plugin whose whole point is to
+ * act on the routes around it, like a rate limit or CORS.
+ *
+ * A shared plugin that returns its scope hands on the types of its decorations: after
+ * `app.register(auth)` the handlers see `ctx.user` typed. Type the options on the
+ * parameter, not as a type argument, or there is nothing left to infer them from.
+ *
+ *   const auth = plugin((app, o: AuthOptions) => app.decorateRequest("user", (ctx) => read(ctx, o)), { shared: true });
+ *
+ * Any plugin, shared or not, that returns its scope hands on the routes it defined in that
+ * chain too: after `app.register(auth, { prefix: "/auth" })` the typed client of the app
+ * knows `POST /auth/login`. A plain function passed to `register` hands on nothing.
+ *
+ * A plugin published on its own names the inkan versions it works with, and `register()`
+ * refuses it on any other:
+ *
+ *   export const quota = plugin(setup, { name: "inkan-quota", inkan: ">=0.8.0 <1.0.0" });
+ */
+export declare function plugin<O = {}, Deco = {}, R = void>(setup: (app: Scope<{}, Deco>, options: O) => R, opts: PluginOptions & {
+    shared: true;
+}): Plugin<O, Deco, DecoOf<Awaited<R>>, RoutesOf<Awaited<R>>>;
+export declare function plugin<O = {}, Deco = {}, R = void>(setup: (app: Scope<{}, Deco>, options: O) => R, opts?: PluginOptions & {
+    shared?: false;
+}): Plugin<O, Deco, {}, RoutesOf<Awaited<R>>>;
+export declare function plugin<O = {}, Deco = {}>(setup: (app: Scope<{}, Deco>, options: O) => unknown, opts?: PluginOptions): Plugin<O, Deco>;
+/**
+ * Routes with hooks, decorations and plugins of their own. The app is one; `register`
+ * hands every plugin another, inside the one it is registered on.
+ */
+export declare class Scope<Defs extends RouteDefs = any, Deco = any> extends Routes<Defs, Deco> {
+    /** Whether the app runs in development: its `dev` option, by default NODE_ENV is not "production". */
+    get dev(): boolean;
+    /** This scope's path prefix: "" for the app, "/v1" for a plugin registered with `{ prefix: "/v1" }`. */
+    get prefix(): string;
+    private hook;
+    /**
+     * Runs once a route is found, before the body is read: auth, rate limits. Return a value to
+     * answer at once. The pages inkan serves itself (`/docs`, `/openapi.json`, `/_inkan`) are
+     * answered before any hook runs, so no hook sees them.
+     */
+    onRequest(fn: RequestHook<Deco>, options?: HookOptions): this;
+    /** Runs after the input is checked, before the handler: rules that need the typed input. */
+    preHandler(fn: RequestHook<Deco>, options?: HookOptions): this;
+    /**
+     * Sees every answer before it is written, problems too, and may change it: headers,
+     * compression, envelopes. Hooks run outermost scope first, in the order they were added.
+     * `{ order: "last" }` runs a hook after every other onSend hook of the route instead, for
+     * one that changes the body's bytes: `compress` is one, so a hook that reads the body (an
+     * ETag, a signature) always sees it before it is packed, wherever either was registered.
+     * The pages inkan serves itself (`/docs`, `/openapi.json`, `/_inkan`) are answered before
+     * any hook runs: headers set here (secure headers, CORS) do not reach them.
+     */
+    onSend(fn: SendHook<Deco>, options?: HookOptions | {
+        last?: boolean;
+    }): this;
+    /** Runs after the answer is written: metrics, audit logs. It cannot change the answer any more. */
+    onResponse(fn: ResponseHook<Deco>, options?: HookOptions): this;
+    /** Sees every problem before it becomes an answer, and may change it or return another. */
+    onProblem(fn: ProblemHook<Deco>, options?: HookOptions): this;
+    /**
+     * Wraps the handler of every route in this scope and the scopes inside it, those defined
+     * before the call too: `fn(ctx, next)` runs where a route's own middleware runs (after the
+     * input is checked and the preHandler hooks), outside that middleware, and `await next()`
+     * runs the rest. Outer scopes' wrap inner ones'. Joined into each route once, before the
+     * first request.
+     *
+     *   app.around(async (ctx, next) => {
+     *     const t0 = performance.now();
+     *     await next();
+     *     metrics.observe(ctx.route!.path, performance.now() - t0);
+     *   });
+     *
+     * @experimental
+     */
+    around(fn: (ctx: Ctx<Deco>, next: () => Promise<void>) => unknown): this;
+    /**
+     * How the pages of this scope look around what `ctx.render(content, props)` hands in: the
+     * head, the header, the footer. A plugin can have its own; inside one, the closest wins.
+     *
+     *   app.layout((content, { title }) => html`<!doctype html><title>${title}</title><main>${content}</main>`);
+     */
+    layout(fn: Layout): this;
+    /**
+     * Puts a value on the context of every handler and hook in this scope: `ctx.db`. It is
+     * set once, on the context's prototype, so it costs nothing per request. A name the
+     * context already has, by itself or from a decoration around it, is refused.
+     */
+    decorate: DecorateMethod<this>;
+    /**
+     * Puts a value on the context of every handler and hook in this scope that is made anew
+     * for each request: `ctx.user`. `init` runs the first time a request reads it and the
+     * value is kept on that context, so it runs at most once per request, and not at all for
+     * one that never asks. Only the scopes that use it pay for it: a getter on their
+     * context's prototype. Names are refused as with `decorate`.
+     *
+     *   app.decorateRequest("user", (ctx) => sessions.get(ctx.cookies.sid));
+     *
+     * An `init` that returns a promise makes `ctx.user` that promise, typed so: `await ctx.user`.
+     * It is made once however often it is read, and a problem it throws is the answer of the
+     * request that awaits it.
+     *
+     * With `{ resolve: "preHandler" }` it is awaited after the input is checked, before the
+     * preHandler hooks, so they and the handler see the value itself, typed without the
+     * promise. That loads it for every request of the routes it covers, read or not: `when`
+     * picks them, asked once per route. A route it leaves out has no value to show, so reading
+     * it there throws; onRequest hooks, which run before it is awaited, still get the promise.
+     *
+     *   app.decorateRequest("user", (ctx) => users.byId(ctx.cookies.sid), {
+     *     resolve: "preHandler",
+     *     when: (route) => route.security.length > 0,
+     *   });
+     *
+     * The plain form is stable; the one with `options` (`resolve`, `when`) is experimental.
+     */
+    decorateRequest: DecorateRequestMethod<this>;
+    /**
+     * Work that takes longer than a request: five routes around a queue. `POST path` starts a
+     * job (202, with its location), `GET path/:id` tells how it stands, `GET path/:id/events`
+     * follows it as server-sent events, `GET path/:id/result?wait=10` hands over what it made,
+     * `DELETE path/:id` cancels it. Jobs run in this process: one still running when it ends is lost.
+     *
+     *   app.job("/exports", { body, progress, result }, async (job) => {
+     *     job.progress({ done: 1, total: 2 });
+     *     return { url: "/x.csv", rows: 2 };
+     *   });
+     * @experimental
+     */
+    job: JobMethod<this>;
+    /**
+     * Adds to the OpenAPI operation of every route in this scope and the scopes inside it:
+     * header parameters, answers, descriptions, details of a security scheme. Runs when the
+     * document is written, never per request. Outer scopes' hooks run first.
+     *
+     *   app.onOperation((op, route, components, ref) => {
+     *     if (components.securitySchemes?.bearer) components.securitySchemes.bearer.bearerFormat = "JWT";
+     *     if (route.security?.length) op.responses["403"] ??= { description: "Not allowed for these credentials" };
+     *     op.responses["409"] ??= { description: "Replayed", content: { "application/json": { schema: ref(Conflict, "Conflict") } } };
+     *   });
+     *
+     * @experimental
+     */
+    onOperation(fn: OperationHook): this;
+    /** @deprecated Use `onOperation`, which it is. */
+    describe(fn: OperationHook): this;
+    /**
+     * A route for every file in a folder: `teas/[id].ts` exporting `GET` is `GET /teas/:id`,
+     * under this scope's prefix. It loads in order with the plugins, and `ready()` waits for it.
+     * Pass `new URL("./routes", import.meta.url)` to name the folder next to the file.
+     */
+    load(dir: string | URL): this;
+    /**
+     * Runs a plugin with a scope of its own, handing it `options`, and mounts it under
+     * `mount.prefix` if given: `app.register(auth, { secret }, { prefix: "/auth" })`. Plugins
+     * run in the order they are registered; one that returns a promise holds back the ones
+     * after it, and `await app.ready()` (or `listen`) waits for all of them. Throws, before
+     * the plugin runs, when it was made for other versions of inkan (`plugin(fn, { inkan })`).
+     *
+     * A `prefix` among the plugin's options (`register(p, { prefix })`, as before 0.8) still
+     * mounts it there, and is deprecated.
+     */
+    register: RegisterMethod<this>;
+}
+export {};
+
+// ---- core/sse.d.ts
+/** Reads an event stream back, the way a browser's EventSource would. Comments are skipped. */
+export declare function parseEvents(text: string): {
+    event: string;
+    data: unknown;
+    id?: string;
+}[];
+
+// ---- core/state.d.ts
+/**
+ * One slot in `ctx.state`. Its key is a symbol of its own, so two plugins that pick the
+ * same name never meet, and `ctx.state` stays a plain record for everyone else.
+ *
+ *   export const tenant = stateKey<Tenant>("tenant");
+ *   app.onRequest((ctx) => tenant.set(ctx, lookUp(ctx)));
+ *   app.get("/me", (ctx) => tenant.get(ctx)?.name);
+ *
+ * @experimental
+ */
+export type StateKey<T> = {
+    /** The name it was made with, for messages. */
+    readonly name: string;
+    /** The value set for this request, or undefined. */
+    get(ctx: {
+        readonly state: object;
+    }): T | undefined;
+    set(ctx: {
+        readonly state: object;
+    }, value: T): void;
+};
+/**
+ * A typed slot in `ctx.state`; see `StateKey`. Make it once, at the top of a module.
+ * @experimental
+ */
+export declare function stateKey<T>(name: string): StateKey<T>;
+
+// ---- core/store.d.ts
+/**
+ * A key-value store with a time to live, shared by whatever needs one. What an adapter must
+ * guarantee:
+ *
+ * - **Keys** are opaque strings, any characters (`:`, `*`, `%`, `_`, spaces, unicode). Two
+ *   keys are the same only when equal; none is a pattern or a prefix of another. An adapter
+ *   may put a prefix of its own in front of every key and channel.
+ * - **Values** are JSON: objects, arrays, strings, finite numbers, booleans and `null`. What
+ *   `get` returns equals what was set after a trip through `JSON.stringify` (a `Date` comes
+ *   back as a string, `undefined` properties are gone). `undefined` is never stored: it is
+ *   what `get` and `take` return for a key that is not there, never `null` for that.
+ * - **TTL** is in milliseconds (Redis `PX`; SQL `expires_at = now + ttl`) and optional:
+ *   without it the key stays until it is deleted. A key must not be gone before its TTL, and
+ *   must not be returned once its TTL is over by a second or more, so a store that counts
+ *   in whole seconds rounds up. `set` replaces the value and the TTL: a `set` without one
+ *   makes the key stay.
+ * - **`add`, `take` and `increment` are atomic** across every process that shares the store
+ *   (Redis `SET NX`, `GETDEL`, `INCRBY`; an `INSERT … ON CONFLICT`, a `DELETE … RETURNING`):
+ *   of fifty concurrent `add`s on one key exactly one wins, of fifty `take`s exactly one gets
+ *   the value, fifty `increment`s count to fifty.
+ * - **`publish`/`subscribe`** are both there or both missing. A message is JSON like a value;
+ *   it reaches every subscriber of its channel in every process that shares the store, at
+ *   most once, in the order it was published from one process. A message published while
+ *   nobody listens is lost.
+ * - **`shared`** is true when several processes see the same keys. inkan refuses to run jobs
+ *   with `workers` on a store that is not.
+ */
+export interface Store {
+    /** The value under `key`, or `undefined` when there is none or its TTL is over. */
+    get<T = unknown>(key: string): Promise<T | undefined>;
+    /** Keeps `value` under `key`, for `ttl` ms when given, replacing what was there and its TTL. */
+    set(key: string, value: unknown, ttl?: number): Promise<void>;
+    /** Forgets `key`. One that is not there is fine. */
+    delete(key: string): Promise<void>;
+    /** Keeps `value` only when `key` is free (or its TTL over), and says whether it did. Atomic. */
+    add(key: string, value: unknown, ttl?: number): Promise<boolean>;
+    /** Reads and removes `key` in one step: its value, or `undefined` when there was none. Atomic. */
+    take<T = unknown>(key: string): Promise<T | undefined>;
+    /**
+     * Adds `by` (default 1) to the number under `key` and returns the new number. A key that is
+     * not there counts as 0 and gets `ttl` ms; one that is there keeps its TTL, so a window
+     * stays fixed. `get` reads the number back. Atomic.
+     */
+    increment(key: string, by?: number, ttl?: number): Promise<number>;
+    /** Sends `message` (JSON) to every subscriber of `channel`. */
+    publish?(channel: string, message: unknown): Promise<void>;
+    /** Calls `fn` with every message on `channel` until the function it resolves to is called. */
+    subscribe?(channel: string, fn: (message: unknown) => void): Promise<() => void>;
+    /** Whether several processes see the same data. Missing means no. */
+    readonly shared?: boolean;
+}
+export type MemoryStoreOptions = {
+    /** Keys kept at most; past that the one used longest ago goes first. Default 10000. */
+    max?: number;
+    /** The time in ms, for tests. Default `Date.now()`. */
+    clock?: () => number;
+};
+/**
+ * A `Store` in this process's memory: fast, lost when the process ends, not seen by other
+ * workers (`shared: false`). Bounded by `max` keys, the least recently used going first;
+ * expired keys are dropped as they are met and once a minute on a write. `add`, `take` and
+ * `increment` are atomic in this process, and `publish` reaches this process's subscribers
+ * at once. Values are kept as they are given, not copied: do not change one after setting it.
+ */
+export declare function memoryStore(options?: MemoryStoreOptions): Store;
+
+// ---- core/stream.d.ts
+export type SseEvent = {
+    event?: string;
+    data: unknown;
+    id?: string;
+    retry?: number;
+};
+export type EventSource = (signal: AbortSignal) => AsyncIterable<SseEvent>;
+/** A server-sent event stream. Return it from a handler; see `sse()`. */
+export declare class EventStream {
+    source: EventSource;
+    keepAlive: number;
+    constructor(source: EventSource, keepAlive: number);
+}
+/**
+ * Answers with server-sent events. The source gets an AbortSignal that fires when
+ * the client goes away; stop there. A comment line goes out every `keepAlive` ms of
+ * silence, so proxies do not close an idle stream.
+ *
+ *   return sse(async function* (signal) {
+ *     while (!signal.aborted) yield { event: "tick", data: { at: Date.now() } };
+ *   });
+ */
+export declare const sse: (source: EventSource, opts?: {
+    keepAlive?: number;
+}) => EventStream;
+export { parseEvents } from "./sse.ts";
+export type FileExample = {
+    $file: string;
+    type: string;
+    content: string;
+};
+/** A file for an example's body. A body with one in it is sent as multipart/form-data. */
+export declare const fileExample: (name: string, content: string, type?: string) => FileExample;
+
+// ---- core/ws.d.ts
+import { Buffer } from "node:buffer";
+import type { Schema } from "../schema/schema.ts";
+import type { Context, DecoOf, Middleware, PathParams, RawHeaders, RawQuery, RouteMeta, Security, WithRoutes } from "./route.ts";
+/** @experimental */
+export type WsSpec<P, Q, H, In, Out> = {
+    summary?: string;
+    description?: string;
+    tags?: string[];
+    operationId?: string;
+    deprecated?: boolean;
+    /** Keeps the route out of the docs and the OpenAPI document. */
+    hidden?: boolean;
+    params?: Schema<P>;
+    query?: Schema<Q>;
+    headers?: Schema<H>;
+    /**
+     * What the client sends. With it, every message is JSON checked against it: one that is not
+     * JSON or breaks it closes the socket with 1007 and says why. Without it, text arrives as
+     * a string and binary as a Buffer.
+     */
+    message?: Schema<In>;
+    /** What the server sends: `socket.send` writes it as JSON, and in development checks it first. */
+    send?: Schema<Out>;
+    /** Credentials the upgrade request has to carry, as for a route: without them it is a 401 and no socket. */
+    security?: Security | Security[] | false;
+    /** Middleware for the upgrade request. It runs after the input was validated. */
+    use?: Middleware[];
+    meta?: RouteMeta;
+    /**
+     * The most bytes one message may have, fragments together, each fragment after the first
+     * counted 64 bytes more; a message comes in at most 1024 frames. Past either the socket
+     * closes with 1009. Four times this (1 MiB at least) may wait to be written before the
+     * socket is cut off with 1008. Default 1 MiB.
+     */
+    maxMessage?: number;
+    /** Milliseconds between pings; a peer that has not answered the last one by the next is cut off. Default 30 000, false for none. */
+    heartbeat?: number | false;
+    /**
+     * The pages that may open the socket, by the Origin header browsers send. Default (or the
+     * app's `ws.origins`): only the app's own origin (the Host header and `ctx.protocol`), and
+     * requests without an Origin, which are not browsers. A list adds those origins to the own
+     * one; a function decides alone (its `ctx` is the request before hooks and input checks:
+     * headers, protocol, path); `"*"` lets every page in. Anything else is a 403
+     * `origin-not-allowed` before any hook runs, so another site cannot open the socket with
+     * the user's cookies (cross-site WebSocket hijacking).
+     */
+    origins?: Origins;
+    /** The most sockets this route holds open at once, handshakes on the way counted; past it the upgrade is a 503. Default: no limit. */
+    maxConnections?: number;
+    /** Milliseconds the upgrade request has to get its answer (hooks, security, middleware) before the connection is cut. Default 10 000. */
+    handshakeTimeout?: number;
+};
+/**
+ * What an `origins` function sees of a request: it is asked before any hook, decoration or
+ * input check, so only what the request itself says is there.
+ */
+export type PreContext = {
+    readonly method: string;
+    readonly path: string;
+    /** Names in lower case, as they arrived. */
+    readonly headers: Readonly<Record<string, string | string[] | undefined>>;
+    readonly protocol: "http" | "https";
+    readonly ip: string | undefined;
+};
+/**
+ * Which pages may call: `"*"` for every one, a list of origins (`"https://shop.example"`),
+ * or a function that decides, given the request's Origin header (undefined when it has
+ * none) and the request. Used by WebSockets (`ws.origins`, `WsSpec.origins`) and by `cors`.
+ */
+export type Origins = "*" | string[] | ((origin: string | undefined, ctx: PreContext) => boolean);
+/** @deprecated Use `Origins`. */
+export type WsOrigins = Origins;
+/**
+ * What an app's `ws` option sets for every WebSocket route that does not say otherwise.
+ * @experimental
+ */
+export type WsDefaults = Pick<WsSpec<unknown, unknown, unknown, unknown, unknown>, "origins" | "maxMessage" | "heartbeat" | "handshakeTimeout">;
+/**
+ * The socket a WebSocket route's handler gets. `In` is what the client sends, `Out` what the server does.
+ * @experimental
+ */
+export interface WsSocket<In = string | Buffer, Out = unknown> extends AsyncIterable<In> {
+    /** 1 while open, 2 while closing, 3 once closed. */
+    readonly readyState: 0 | 1 | 2 | 3;
+    /** Bytes written but not yet handed to the network. */
+    readonly bufferedAmount: number;
+    /**
+     * Sends a value as JSON. It resolves once the socket can take more, so `await` it in a loop
+     * that sends a lot. On a socket that is closing it does nothing. In development a value that
+     * breaks the route's `send` contract throws.
+     */
+    send(value: Out): Promise<void>;
+    /** Sends text or bytes as they are, past the contract. */
+    sendRaw(data: string | Uint8Array): Promise<void>;
+    /** Starts the closing handshake. Default 1000; a reason has at most 123 bytes. */
+    close(code?: number, reason?: string): void;
+    on(event: "message", fn: (message: In) => void): this;
+    on(event: "close", fn: (code: number, reason: string) => void): this;
+    on(event: "error", fn: (error: Error) => void): this;
+    off(event: "message" | "close" | "error", fn: (...args: any[]) => void): this;
+}
+/** @experimental */
+export type WsHandler<P, Q, H, In, Out, Deco = {}> = (socket: WsSocket<In, Out>, ctx: Context<P, Q, undefined, H, {}> & Deco) => unknown;
+/** @experimental */
+export type WsMethod<Self> = <Path extends string, P = PathParams<Path>, Q = RawQuery, H = RawHeaders, In = string | Buffer, Out = unknown>(path: Path, spec: WsSpec<P, Q, H, In, Out>, handler: WsHandler<P, Q, H, In, Out, DecoOf<Self>>) => WithRoutes<Self, {
+    [K in `WS ${Path}`]: {
+        params: P;
+        query: Q;
+        body: undefined;
+        headers: H;
+        response: {};
+        message: In;
+        send: Out;
+    };
+}>;
+
+// ---- index.d.ts
+export { inkan, App } from "./core/app.ts";
+export { plugin, Scope } from "./core/scope.ts";
+export { route } from "./core/files.ts";
+export type { FileRoute } from "./core/files.ts";
+export type { HookOptions, OperationHook, Outgoing, Plugin, PluginOptions, ProblemHook, RegisterOptions, RequestHook, ResolveOptions, ResponseHook, SendHook } from "./core/scope.ts";
+export type { AdapterRequest, AdapterResponse, AppOptions, ListenOptions, InjectOptions, InjectResponse, LogEntry, RequestLog } from "./core/app.ts";
+export { Routes, routes, reply, Reply, joinPath } from "./core/route.ts";
+export type { ReplyHeaders } from "./core/route.ts";
+export type { Context, Example, Handler, Middleware, OperationRoute, PathParams, Responses, RouteInfo, RouteMeta, RouteSpec, Security } from "./core/route.ts";
+export type { Origins, PreContext, WsDefaults, WsHandler, WsOrigins, WsSocket, WsSpec } from "./core/ws.ts";
+export { t, Schema, ValidationError } from "./schema/schema.ts";
+export type { Infer, Issue, JsonSchema, SafeResult, ServerEvent, UploadedFile } from "./schema/schema.ts";
+export { sse, fileExample, EventStream } from "./core/stream.ts";
+export type { SseEvent } from "./core/stream.ts";
+export { memoryStore } from "./core/store.ts";
+export type { MemoryStoreOptions, Store } from "./core/store.ts";
+export { env } from "./core/env.ts";
+export { stateKey } from "./core/state.ts";
+export type { StateKey } from "./core/state.ts";
+export { context, currentContext } from "./core/request-context.ts";
+export type { PressureOptions, PressureSample } from "./core/pressure.ts";
+export type { Job, JobBody, JobOptions, JobRecord, JobState, JobStore } from "./core/jobs.ts";
+export { problem, HttpProblem } from "./core/problem.ts";
+export { html, raw, SafeHtml, parseCookies, serializeCookie } from "./core/helpers.ts";
+export type { CookieOptions, CsvOptions, RedirectStatus } from "./core/helpers.ts";
+export type { CacheRule } from "./core/cache.ts";
+export type { Layout, TrustProxy } from "./core/context.ts";
+export type { ProblemBody, ProblemOptions } from "./core/problem.ts";
+export { buildOpenAPI } from "./openapi/openapi.ts";
+export { diffOpenAPI, formatDiff } from "./openapi/diff.ts";
+export type { Change } from "./openapi/diff.ts";
+export { cors } from "./plugins/cors.ts";
+export type { CorsOptions } from "./plugins/cors.ts";
+export { rateLimit } from "./plugins/rate-limit.ts";
+export type { RateLimitOptions } from "./plugins/rate-limit.ts";
+export { serveStatic } from "./plugins/static.ts";
+export type { StaticOptions } from "./plugins/static.ts";
+export { compress } from "./plugins/compress.ts";
+export type { CompressOptions } from "./plugins/compress.ts";
+export { formatReport, partialMatch } from "./testing/check.ts";
+export type { CheckOptions, CheckReport, CheckResult, FormatOptions } from "./testing/check.ts";
+export type { Seal } from "./seal/compile.ts";
+
+// ---- openapi/diff.d.ts
+import type { FormatOptions } from "../testing/check.ts";
+type Json = Record<string, any>;
+type Doc = {
+    paths?: Record<string, Record<string, Json>>;
+    components?: {
+        schemas?: Record<string, Json>;
+    };
+};
+/** @experimental */
+export type Change = {
+    breaking: boolean;
+    where: string;
+    message: string;
+};
+/** @experimental */
+export declare function diffOpenAPI(before: Doc, after: Doc): Change[];
+/**
+ * The changes as text for a terminal: `formatDiff(changes, { title, color })`.
+ * `formatDiff(changes, title, color)` works too.
+ * @experimental
+ */
+export declare function formatDiff(changes: Change[], options?: FormatOptions | string, colored?: boolean): string;
+export {};
+
+// ---- openapi/openapi.d.ts
+import type { App } from "../core/app.ts";
+import type { OperationRoute } from "../core/route.ts";
+export type OpenAPIInfo = {
+    title?: string;
+    version?: string;
+    description?: string;
+    servers?: {
+        url: string;
+        description?: string;
+    }[];
+};
+/**
+ * The OpenAPI document of an app: what `app.openapi()` hands back.
+ * @deprecated Use `app.openapi()`. Given a list of routes (`app.routes()`, as before 0.8),
+ * it still writes their document, without what the scopes' onOperation hooks add.
+ */
+export declare function buildOpenAPI(app: App | readonly OperationRoute[], info?: OpenAPIInfo): Record<string, unknown>;
+
+// ---- plugins/compress.d.ts
+export type CompressOptions = {
+    /** Bodies smaller than this many bytes go as they are: compressing them costs more than it saves. Default 1024. */
+    threshold?: number;
+    /** Which encodings to offer, best first. Default `["br", "gzip"]`. */
+    encodings?: ("br" | "gzip")[];
+    /** Whether a media type is worth compressing. Default: text, JSON, JavaScript, XML, SVG and WebAssembly. */
+    filter?: (contentType: string) => boolean;
+};
+/** Compresses answers with brotli or gzip for clients that take it. Streams too, except event streams. */
+export declare const compress: (options?: CompressOptions) => import("../core/scope.ts").Plugin<{}, {}, {}, {}>;
+
+// ---- plugins/cors.d.ts
+import { type Middleware } from "../core/route.ts";
+import { type Plugin } from "../core/scope.ts";
+import type { Origins } from "../core/ws.ts";
+export type CorsOptions = {
+    /**
+     * Which origins may call: `"*"` (the default), a list, or a function that decides, given
+     * the Origin header and the request. A request without an Origin is no cross-origin call
+     * and gets no CORS headers, so the function is only asked about one with an Origin.
+     */
+    origins?: Origins;
+    /** @deprecated Use `origins`: a list instead of one origin, and a function that gets `(origin, ctx)`. */
+    origin?: "*" | string | string[] | ((origin: string) => boolean);
+    /** Lets the browser send cookies and auth headers. The origin is then echoed instead of `*`. */
+    credentials?: boolean;
+    /** How long, in seconds, the browser may reuse a preflight answer. */
+    maxAge?: number;
+    /** Methods a preflight allows. Default: every method inkan routes. */
+    methods?: string[];
+    /** Request headers a preflight allows. Default: whatever the browser asks for. */
+    allowHeaders?: string[];
+    /** Response headers the page may read besides the simple ones. */
+    exposeHeaders?: string[];
+};
+/** `cors(…)`: a plugin to register, and for now still middleware for `app.use`. */
+export type Cors = Plugin<{}, {}> & Middleware;
+/**
+ * Answers browser preflights and marks every answer for allowed origins. A shared plugin:
+ * `app.register(cors(…))` covers every route of the app, `scope.register(cors(…))` the
+ * routes of that scope. Preflights to a path without an OPTIONS route are answered too.
+ * Passed to `app.use`, as before 0.8, it still works as middleware, and is deprecated so.
+ */
+export declare function cors(options?: CorsOptions): Cors;
+
+// ---- plugins/rate-limit.d.ts
+import type { Context } from "../core/route.ts";
+import type { Store } from "../core/store.ts";
+export type RateLimitOptions = {
+    /** Requests a client may make per window. */
+    max: number;
+    /** The window in milliseconds. Default one minute. */
+    window?: number;
+    /** Who counts as one client. Default: the remote address, or "local" without a socket. */
+    key?: (ctx: Context<any, any, any, any, any>) => string;
+    /**
+     * Where the counts are kept, so processes that share it share them: one atomic
+     * `increment` per request, in fixed windows that start at multiples of `window` since the
+     * epoch. A store that fails fails the request (a 500). Default: this process's memory.
+     */
+    store?: Store;
+    /** What the store's keys start with. Give two limits that share a store their own. Default `"rate-limit:"`. */
+    prefix?: string;
+};
+/**
+ * At most `max` requests per client per `window`; the one after gets a 429 problem with
+ * `retry-after`. Every answer says how many are left in `x-ratelimit-remaining`. Counts
+ * live in memory, per process: behind several processes, each one counts for itself,
+ * unless they share a `store`.
+ */
+export declare const rateLimit: (opts: RateLimitOptions) => import("../core/scope.ts").Plugin<{}, {}, {}, {}>;
+
+// ---- plugins/static.d.ts
+export type StaticOptions = {
+    /** The folder the files come from. */
+    dir: string;
+    /** Where they are served. Default `/`. */
+    prefix?: string;
+    /**
+     * For a single-page app: a GET that finds no file gets this one instead (`true` means
+     * `index.html`), with `cache-control: no-cache`, so a new build is seen at once.
+     */
+    spa?: boolean | string;
+    /** Paths that stay out of the fallback and answer 404: `["/api"]`, so a mistyped API call is not handed a page. */
+    exclude?: string[];
+    /** Files that never change under their name, as a build's hashed assets: cached for a year. Default: a path under `/assets/`. */
+    immutable?: RegExp | ((path: string) => boolean);
+    /** `max-age` in seconds for every other file. Default 0, which means the browser asks again each time. */
+    maxAge?: number;
+    /** The file a folder answers with. Default `index.html`. */
+    index?: string;
+};
+/** Serves the files of a folder, and with `spa` an index.html for every path without one. */
+export declare const serveStatic: (options: StaticOptions) => import("../core/scope.ts").Plugin<{}, {}, {}, {}>;
+
+// ---- schema/schema.d.ts
+import { Buffer } from "node:buffer";
+export type Issue = {
+    path: string;
+    message: string;
+};
+export type JsonSchema = Record<string, unknown>;
+export type SafeResult<T> = {
+    ok: true;
+    value: T;
+} | {
+    ok: false;
+    issues: Issue[];
+};
+export declare class ValidationError extends Error {
+    issues: Issue[];
+    constructor(issues: Issue[]);
+}
+/** Collects component schemas while a document is written. */
+export type RefContext = {
+    components: Map<string, JsonSchema>;
+    refPrefix?: string;
+    active?: Set<Schema<any>>;
+};
+declare const FAIL: unique symbol;
+type Fail = typeof FAIL;
+/** A schema's trim: the value with only what the schema lists, ready for JSON.stringify. */
+type Trim = (v: unknown) => unknown;
+/** Whether a value may be written as it is. */
+type Fit = (v: unknown) => boolean;
+type Meta = {
+    description?: string;
+    examples?: unknown[];
+    optional?: boolean;
+    nullable?: boolean;
+    hasDefault?: boolean;
+    default?: unknown;
+    name?: string;
+    deprecated?: boolean;
+};
+/**
+ * A schema's check, as a plain function: the value (coerced, defaulted, stripped), or FAIL
+ * with what is wrong pushed onto `issues`. Built once per schema, the first time it is used.
+ */
+export type Check<T> = (value: unknown, path: string, coerce: boolean, issues: Issue[]) => T | Fail;
+/** Only a type: the key of the value type a schema carries, which `Infer` reads. */
+declare const OUT: unique symbol;
+export declare abstract class Schema<T = unknown> {
+    /** Only a type: what the schema checks to. There is nothing here at runtime. */
+    readonly [OUT]: T;
+    meta: Meta;
+    /**
+     * The check of this kind of schema, made once from its rules: its stamp. Every rule is
+     * read here, not per value, so the function it returns only does what this schema asks.
+     */
+    protected abstract stamp(): Check<T>;
+    protected abstract json(ctx?: RefContext): JsonSchema;
+    private checkFn?;
+    /** The stamp, with what every schema does first: a missing value, a default, null. */
+    protected runner(): Check<T>;
+    private inlineSchema;
+    private decorate;
+    protected clone(patch?: Partial<Meta>): this;
+    optional(): Schema<T | undefined>;
+    nullable(): Schema<T | null>;
+    /** The value used when the field is missing. The field becomes optional for callers. */
+    default(value: Exclude<T, undefined>): Schema<Exclude<T, undefined>>;
+    describe(description: string): this;
+    example(...examples: T[]): this;
+    deprecated(): this;
+    /** Runs after validation. Custom rules have no JSON Schema representation. */
+    refine(fn: (value: T) => boolean, message: string): Schema<T>;
+    /** Changes the parsed value, while documenting the original wire schema. */
+    transform<U>(fn: (value: T) => U): Schema<U>;
+    /** Names the schema, so OpenAPI lists it once under components and refers to it. */
+    named(name: string): this;
+    parse(value: unknown, opts?: {
+        coerce?: boolean;
+    }): T;
+    safeParse(value: unknown, opts?: {
+        coerce?: boolean;
+    }): SafeResult<T>;
+    toJSONSchema(): JsonSchema;
+    private ser?;
+    private sealedParse?;
+    private fitFn?;
+    private fitted;
+    /** When in doubt, no: the trim is always right. */
+    protected fitter(): Fit | undefined;
+    private trimFn?;
+    private trimmed;
+    /** How this kind of schema trims a value. The fallback lets the parser strip it, and writes the value as it is when it does not parse. */
+    protected trimmer(): Trim | undefined;
+}
+export type Infer<S> = S extends Schema<infer T> ? T : never;
+export type StringFormat = "email" | "uuid" | "date-time" | "date" | "uri";
+export declare class StringSchema extends Schema<string> {
+    private rules;
+    min(n: number): this;
+    max(n: number): this;
+    pattern(re: RegExp): this;
+    format(f: StringFormat): this;
+    email(): this;
+    uuid(): this;
+    /** Trims whitespace before the other rules run. */
+    trim(): this;
+    protected stamp(): Check<string>;
+    protected trimmer(): Trim | undefined;
+    protected fitter(): Fit | undefined;
+    protected json(): JsonSchema;
+}
+export declare class NumberSchema extends Schema<number> {
+    private rules;
+    constructor(int?: boolean);
+    min(n: number): this;
+    max(n: number): this;
+    positive(): this;
+    protected stamp(): Check<number>;
+    protected trimmer(): Trim | undefined;
+    protected fitter(): Fit | undefined;
+    protected json(): JsonSchema;
+}
+export declare class BooleanSchema extends Schema<boolean> {
+    protected stamp(): Check<boolean>;
+    protected trimmer(): Trim | undefined;
+    protected fitter(): Fit | undefined;
+    protected json(): {
+        type: string;
+    };
+}
+export declare class DateSchema extends Schema<Date> {
+    protected stamp(): Check<Date>;
+    protected trimmer(): Trim | undefined;
+    protected fitter(): Fit | undefined;
+    protected json(): {
+        type: string;
+        format: string;
+    };
+}
+export declare class EnumSchema<const V extends string | number | boolean> extends Schema<V> {
+    values: readonly V[];
+    constructor(values: readonly V[]);
+    protected stamp(): Check<V>;
+    protected trimmer(): Trim | undefined;
+    protected fitter(): Fit | undefined;
+    protected json(): {
+        const: V;
+        enum?: undefined;
+    } | {
+        const?: undefined;
+        enum: V[];
+    };
+}
+export declare class AnySchema<T = unknown> extends Schema<T> {
+    protected stamp(): Check<T>;
+    protected trimmer(): Trim | undefined;
+    protected fitter(): Fit | undefined;
+    protected json(): {};
+}
+export declare class ArraySchema<S extends Schema<any>> extends Schema<Infer<S>[]> {
+    item: S;
+    private rules;
+    constructor(item: S);
+    min(n: number): this;
+    max(n: number): this;
+    protected stamp(): Check<Infer<S>[]>;
+    protected trimmer(): Trim | undefined;
+    protected fitter(): Fit | undefined;
+    protected json(ctx?: RefContext): JsonSchema;
+}
+export type Shape = Record<string, Schema<any>>;
+type Simplify<T> = {
+    [K in keyof T]: T[K];
+} & {};
+type OptionalKeys<S extends Shape> = {
+    [K in keyof S]: undefined extends Infer<S[K]> ? K : never;
+}[keyof S];
+export type InferShape<S extends Shape> = Simplify<{
+    [K in Exclude<keyof S, OptionalKeys<S>>]: Infer<S[K]>;
+} & {
+    [K in OptionalKeys<S>]?: Infer<S[K]>;
+}>;
+export declare class ObjectSchema<S extends Shape> extends Schema<InferShape<S>> {
+    shape: S;
+    private unknownKeys;
+    constructor(shape: S);
+    /** Unknown keys become an error instead of being dropped. */
+    strict(): this;
+    /** Unknown keys are kept as they are. */
+    passthrough(): this;
+    extend<E extends Shape>(more: E): ObjectSchema<Simplify<Omit<S, keyof E> & E>>;
+    pick<K extends keyof S>(...keys: K[]): ObjectSchema<Pick<S, K>>;
+    omit<K extends keyof S>(...keys: K[]): ObjectSchema<Omit<S, K>>;
+    partial(): ObjectSchema<{
+        [K in keyof S]: Schema<Infer<S[K]> | undefined>;
+    }>;
+    protected stamp(): Check<InferShape<S>>;
+    protected trimmer(): Trim | undefined;
+    protected fitter(): Fit | undefined;
+    protected json(ctx?: RefContext): JsonSchema;
+}
+export declare class RecordSchema<S extends Schema<any>> extends Schema<Record<string, Infer<S>>> {
+    value: S;
+    constructor(value: S);
+    protected stamp(): Check<Record<string, Infer<S>>>;
+    protected trimmer(): Trim | undefined;
+    protected fitter(): Fit | undefined;
+    protected json(ctx?: RefContext): {
+        type: string;
+        additionalProperties: JsonSchema;
+    };
+}
+export declare class UnionSchema<S extends Schema<any>[]> extends Schema<Infer<S[number]>> {
+    options: S;
+    constructor(options: S);
+    protected stamp(): Check<Infer<S[number]>>;
+    protected json(ctx?: RefContext): {
+        anyOf: JsonSchema[];
+    };
+}
+export declare class LazySchema<T> extends Schema<T> {
+    private resolve;
+    constructor(resolve: () => Schema<T>);
+    protected stamp(): Check<T>;
+    protected trimmer(): Trim | undefined;
+    protected fitter(): Fit | undefined;
+    protected json(ctx?: RefContext): JsonSchema;
+}
+export declare class DiscriminatedSchema<K extends string, S extends Record<string, ObjectSchema<any>>> extends Schema<{
+    [V in keyof S]: Infer<S[V]> & Record<K, V>;
+}[keyof S]> {
+    private key;
+    private options;
+    constructor(key: K, options: S);
+    protected stamp(): Check<this[typeof OUT]>;
+    protected trimmer(): Trim | undefined;
+    protected fitter(): Fit | undefined;
+    protected json(ctx?: RefContext): {
+        oneOf: JsonSchema[];
+        discriminator: {
+            propertyName: K;
+            mapping?: Record<string, string> | undefined;
+        };
+    };
+}
+/** A file from a multipart/form-data upload. */
+export type UploadedFile = {
+    name: string;
+    type: string;
+    size: number;
+    data: Buffer;
+};
+export declare class FileSchema extends Schema<UploadedFile> {
+    private rules;
+    /** The largest file in bytes. The request body limit of the app still applies to the whole upload. */
+    max(bytes: number): this;
+    /** Media types that may come in: `"image/png"`, or `"image/*"` for a whole family. */
+    accept(...types: string[]): this;
+    protected stamp(): Check<UploadedFile>;
+    protected json(): JsonSchema;
+}
+/**
+ * A request body taken as it comes, not parsed: a file sent as the body itself, a
+ * webhook's signed bytes. `max` is also the route's body limit, so it may be larger than
+ * the app's; `accept` names the media types it takes, and anything else is a 415.
+ */
+export declare abstract class RawBodySchema<T> extends Schema<T> {
+    /** The most bytes the body may have. It is this route's body limit, past the app's `bodyLimit` too. */
+    max(bytes: number): this;
+    /** Media types the body may have: `"image/png"`, or `"image/*"` for a whole family. Default: any. */
+    accept(...types: string[]): this;
+    protected json(): JsonSchema;
+}
+/** The whole body as bytes, read before the handler runs. */
+export declare class BinarySchema extends RawBodySchema<Buffer> {
+    protected stamp(): Check<Buffer>;
+}
+/**
+ * The body as a stream of chunks, read by the handler while it arrives: for an upload too
+ * large to hold in memory. Nothing is read before the handler, and past `max` the stream
+ * throws a 413 problem. Without `max` there is no limit.
+ */
+export declare class StreamSchema extends RawBodySchema<AsyncIterable<Buffer>> {
+    protected stamp(): Check<AsyncIterable<Buffer>>;
+}
+/** One event of a server-sent event stream, as a handler yields it and a client reads it. */
+export type ServerEvent<E extends Record<string, Schema<any>>> = {
+    [K in keyof E & string]: {
+        event: K;
+        data: Infer<E[K]>;
+        id?: string;
+    };
+}[keyof E & string];
+/** The events a stream may send, by name. Every event is checked against its schema. */
+export declare class EventsSchema<E extends Record<string, Schema<any>>> extends Schema<ServerEvent<E>> {
+    events: E;
+    constructor(events: E);
+    protected stamp(): Check<ServerEvent<E>>;
+    protected json(ctx?: RefContext): {
+        oneOf: {
+            type: string;
+            properties: {
+                event: {
+                    const: string;
+                };
+                data: JsonSchema;
+                id: {
+                    type: string;
+                };
+            };
+            required: string[];
+        }[];
+    };
+}
+export declare const t: {
+    string: () => StringSchema;
+    number: () => NumberSchema;
+    int: () => NumberSchema;
+    boolean: () => BooleanSchema;
+    date: () => DateSchema;
+    lazy: <T>(resolve: () => Schema<T>) => LazySchema<T>;
+    discriminated: <K extends string, S extends Record<string, ObjectSchema<any>>>(key: K, options: S) => DiscriminatedSchema<K, S>;
+    literal: <const V extends string | number | boolean>(value: V) => EnumSchema<V>;
+    enum: <const V extends string | number | boolean>(values: readonly V[]) => EnumSchema<V>;
+    array: <S extends Schema<any>>(item: S) => ArraySchema<S>;
+    object: <S extends Shape>(shape: S) => ObjectSchema<S>;
+    record: <S extends Schema<any>>(value: S) => RecordSchema<S>;
+    union: <S extends Schema<any>[]>(...options: S) => UnionSchema<S>;
+    any: <T = unknown>() => AnySchema<T>;
+    /** No body at all, for a 204. */
+    empty: () => Schema<undefined>;
+    /** A file in a multipart/form-data body. A body with a file in it is read as multipart. */
+    file: () => FileSchema;
+    /** The whole request body as bytes, any media type: an upload sent as the body itself. */
+    binary: () => BinarySchema;
+    /** The request body as a stream of chunks, for the handler to read as it arrives: an upload too large for memory. */
+    stream: () => StreamSchema;
+    /** A server-sent event stream: the events it may send, each with the schema of its data. */
+    events: <E extends Record<string, Schema<any>>>(events: E) => EventsSchema<E>;
+    /** An RFC 9457 problem document, the shape every inkan error has. */
+    problem: () => ObjectSchema<{
+        type: StringSchema;
+        title: StringSchema;
+        status: NumberSchema;
+        detail: Schema<string | undefined>;
+        instance: Schema<string | undefined>;
+    }>;
+};
+export {};
+
+// ---- seal/compile.d.ts
+import { type Issue } from "../schema/schema.ts";
+/** A contract's check, stamped into code. Writing is the schema's own, so a seal never writes differently. */
+export type SealedEntry = {
+    parse: (value: unknown, coerce: boolean) => {
+        ok: true;
+        value: unknown;
+    } | {
+        ok: false;
+        issues: Issue[];
+    };
+};
+/** @experimental */
+export type Seal = {
+    inkan: number;
+    entries: Record<string, SealedEntry>;
+};
+
+// ---- seal/seal.d.ts
+export type SealState = {
+    sealed: number;
+    stale: string[];
+    unsealable: number;
+    wrongFormat?: boolean;
+};
+
+// ---- testing.d.ts
+export { storeConformance } from "./testing/store.ts";
+export type { StoreConformanceOptions } from "./testing/store.ts";
+
+// ---- testing/check.d.ts
+/** @experimental */
+export type CheckOptions = {
+    /** Runs before every example, e.g. to reset an in-memory store. */
+    beforeEach?: () => unknown;
+    /** Only routes whose `METHOD /path` contains this text. */
+    only?: string;
+    /** A promised status that no example answers with fails the check. */
+    strict?: boolean;
+};
+/** @experimental */
+export type CheckResult = {
+    method: string;
+    path: string;
+    example: string;
+    ok: boolean;
+    status: number;
+    ms: number;
+    problems: string[];
+};
+/** @experimental */
+export type CheckReport = {
+    ok: boolean;
+    passed: number;
+    failed: number;
+    results: CheckResult[];
+    /** Routes without a single example: nothing holds them to their contract. */
+    unchecked: string[];
+    /** Statuses a route promises that none of its examples answers with. */
+    uncovered: {
+        method: string;
+        path: string;
+        status: number;
+    }[];
+};
+/**
+ * Is everything in `expected` also in `actual`? Returns where it is not.
+ * @experimental
+ */
+export declare function partialMatch(expected: unknown, actual: unknown, path?: string): string | undefined;
+/** How `formatReport` and `formatDiff` write: a title for the head line, and terminal colors. */
+export type FormatOptions = {
+    title?: string;
+    color?: boolean;
+};
+/**
+ * A check report as text for a terminal: `formatReport(report, { title, color })`.
+ * `formatReport(report, title, color)` works too.
+ * @experimental
+ */
+export declare function formatReport(report: CheckReport, options?: FormatOptions | string, colored?: boolean): string;
+
+// ---- testing/store.d.ts
+import type { Store } from "../core/store.ts";
+export type StoreConformanceOptions = {
+    /** The name of the suite. Default `"Store conformance"`. */
+    name?: string;
+    /**
+     * Lets `ms` pass for the store's TTLs. Default: real time. A store with a clock of its own
+     * (`memoryStore({ clock })`) can move it on instead, and the suite runs in no time.
+     */
+    wait?: (ms: number) => Promise<void>;
+    /** Called after each test with its store, to close it or clear what it kept. */
+    close?: (store: Store) => unknown;
+    /** Milliseconds each test may take. Default 30000, for a slow database. */
+    timeout?: number;
+};
+/**
+ * Registers node:test cases every `Store` must pass, against stores from `make`: get, set
+ * and delete; JSON round trips; TTLs (`set` replaces the TTL, `increment` keeps it); `add`,
+ * `take` and `increment` atomic under fifty concurrent calls; keys that look alike kept
+ * apart; two stores from `make` not seeing each other's keys (give each a prefix of its
+ * own); and publish/subscribe when the store has them.
+ */
+export declare function storeConformance(make: () => Store | Promise<Store>, options?: StoreConformanceOptions): void;

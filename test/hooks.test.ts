@@ -99,7 +99,7 @@ test("a plugin's hooks and decorations stay inside it; the app's reach into ever
   const app = inkan(quiet)
     .decorate("db", "the pool")
     .onRequest((ctx) => void seen.push(`app hook on ${ctx.path}`))
-    .register(admin, { prefix: "/admin" })
+    .register(admin, {}, { prefix: "/admin" })
     .get("/public", (ctx) => ({ role: (ctx as unknown as { role?: string }).role ?? "none" }));
   await app.ready();
 

@@ -558,7 +558,7 @@ test("a cross-site upgrade is a 403 before any hook runs; same origin, listed or
     assert.equal(await ok("/fn", "http://fn.example"), 101);
     assert.equal((await exchange(s.port, handshake("/fn", "Origin: http://x\r\n"))).status, 403);
 
-    const t2 = await served(inkan({ ...quiet, wsOrigins: "*" }).ws("/s", {}, () => {}));
+    const t2 = await served(inkan({ ...quiet, ws: { origins: "*" } }).ws("/s", {}, () => {}));
     try {
       const r = await raw(t2.port, "/s", "Origin: http://evil.example\r\n");
       r.sock.destroy();

@@ -44,7 +44,12 @@ type BodyInput<B> = unknown extends B
       ? { body: RawBody }
       : { body: B | FormData };
 export type Input<R> = ParamsInput<Field<R, "params">> &
-  BodyInput<Field<R, "body">> & { query?: Partial<Field<R, "query">>; headers?: Record<string, string> };
+  BodyInput<Field<R, "body">> & {
+    query?: Partial<Field<R, "query">>;
+    headers?: Record<string, string>;
+    /** Aborts the request: `AbortSignal.timeout(5000)`, or a controller's. */
+    signal?: AbortSignal;
+  };
 type InputArgs<R> = {} extends Input<R> ? [input?: Input<R>] : [input: Input<R>];
 
 type Success = 200 | 201 | 202 | 203 | 204 | 206 | 207;
@@ -143,6 +148,7 @@ export type Client<A> = {
    *
    *   for await (const e of api.events("/exports/:id/events", { params: { id } }))
    *     if (e.event === "progress") e.data.done;
+   * @experimental
    */
   events: Events<DefsOf<A>>;
   /**
@@ -153,6 +159,7 @@ export type Client<A> = {
    *   room.on("message", (m) => m.type === "said" && show(m.text));
    *   await room.ready;
    *   room.send({ type: "say", text: "hello" });
+   * @experimental
    */
   ws: WsCall<DefsOf<A>>;
 };
@@ -166,7 +173,7 @@ export type ClientOptions = {
   WebSocket?: typeof WebSocket;
 };
 
-type RawInput = { params?: Record<string, unknown>; query?: Record<string, unknown>; body?: unknown; headers?: Record<string, string> };
+type RawInput = { params?: Record<string, unknown>; query?: Record<string, unknown>; body?: unknown; headers?: Record<string, string>; signal?: AbortSignal };
 
 function fill(path: string, params: Record<string, unknown> = {}): string {
   return path
@@ -209,7 +216,7 @@ export function client<A extends Routes<any>>(base: string, options: ClientOptio
       body = JSON.stringify(input.body);
       headers["content-type"] ??= "application/json";
     }
-    const res = await (options.fetch ?? fetch)(url, { method, headers, body, ...(duplex && { duplex }) } as RequestInit);
+    const res = await (options.fetch ?? fetch)(url, { method, headers, body, signal: input.signal, ...(duplex && { duplex }) } as RequestInit);
     const text = await res.text();
     let value: unknown = text === "" ? undefined : text;
     if (text && /json/.test(res.headers.get("content-type") ?? "")) value = JSON.parse(text);

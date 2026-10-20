@@ -200,14 +200,14 @@ export const QUESTS: Quest[] = [
     teach: "A plugin is a function that gets a scope of its own: its routes, hooks and decorations stay\nthere, under the prefix it is registered with.",
     task: 'Write a plugin that adds GET /ping answering { "pong": true }, and register it under /v2.',
     hints: [
-      'import { plugin } as well; const v2 = plugin((app) => { app.get(…) }); app.register(v2, { prefix: "/v2" });',
-      'const v2 = plugin((app) => { app.get("/ping", () => ({ pong: true })); });\napp.register(v2, { prefix: "/v2" });',
+      'import { plugin } as well; const v2 = plugin((app) => { app.get(…) }); app.register(v2, {}, { prefix: "/v2" });',
+      'const v2 = plugin((app) => { app.get("/ping", () => ({ pong: true })); });\napp.register(v2, {}, { prefix: "/v2" });',
     ],
     async check({ app }) {
       const r = await app.inject({ url: "/v2/ping" });
       if (r.status === 404) return "GET /v2/ping is not there yet";
       if (!has(r.body, "pong", true)) return `GET /v2/ping answered ${said(r)}, not { "pong": true }`;
-      if ((await app.inject({ url: "/ping" })).status !== 404) return 'GET /ping answers too: register the plugin with { prefix: "/v2" }';
+      if ((await app.inject({ url: "/ping" })).status !== 404) return 'GET /ping answers too: register the plugin with app.register(v2, {}, { prefix: "/v2" })';
       return true;
     },
   },

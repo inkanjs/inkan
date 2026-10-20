@@ -109,7 +109,7 @@ test("decorateRequest before the handler: awaited for the routes when() picks, p
         if (ctx.cookies.sid === "gone") throw problem(401, "session-gone", "The session is gone");
         return { id: ctx.cookies.sid ?? "anon" };
       },
-      { before: "handler", when: (route) => route.security.length > 0 },
+      { resolve: "preHandler", when: (route) => route.security.length > 0 },
     )
     .preHandler((ctx) => {
       if (ctx.route?.security.length) seen.push(ctx.user.id);
@@ -146,7 +146,7 @@ test("decorateRequest before the handler without when: every route of its scope,
   const app = inkan(quiet);
   app.register((scope) => {
     scope
-      .decorateRequest("tenant", async () => (made++, later("acme")), { before: "handler" })
+      .decorateRequest("tenant", async () => (made++, later("acme")), { resolve: "preHandler" })
       .get("/inside", (ctx) => ({ tenant: ctx.tenant.toUpperCase() }));
   });
   app.get("/outside", () => ({ ok: 1 }));
@@ -241,7 +241,7 @@ test("ctx.route.security is the group's, and empty where a route opens itself wi
 test("describe(): a plugin adds parameters, answers and scheme details to its routes only", async () => {
   const auth = plugin(
     (app) => {
-      app.describe((op, route, components) => {
+      app.onOperation((op, route, components) => {
         if (!route.security?.includes("bearer")) return;
         components.securitySchemes!.bearer!.bearerFormat = "JWT";
         op.responses["403"] ??= { description: "The token does not allow this" };
@@ -266,15 +266,15 @@ test("describe(): a plugin adds parameters, answers and scheme details to its ro
 test("describe(): outer scopes first, new sections kept, and a hook added late still reaches the document", () => {
   const order: string[] = [];
   const inner = plugin((app) => {
-    app.describe(() => void order.push("inner"));
+    app.onOperation(() => void order.push("inner"));
     app.get("/x", () => ({}));
   });
-  const app = inkan(quiet).describe(() => void order.push("app")).register(inner);
+  const app = inkan(quiet).onOperation(() => void order.push("app")).register(inner);
   const before = app.openapi() as any;
   assert.equal(before.components, undefined);
   assert.deepEqual(order, ["app", "inner"]);
 
-  app.describe((op, _r, components) => {
+  app.onOperation((op, _r, components) => {
     (components.responses ??= {}).Forbidden = { description: "Not for you" };
     op.responses["403"] = { $ref: "#/components/responses/Forbidden" };
   });
@@ -345,15 +345,15 @@ test("an onSend hook added after compress, or in a plugin inside it, still sees 
   assert.equal(r.headers.etag, `"${createHash("sha1").update(JSON.stringify(big)).digest("hex")}"`);
 });
 
-test("onSend { last: true } hooks run after the others, outermost first", async () => {
+test('onSend { order: "last" } hooks run after the others, outermost first', async () => {
   const seen: string[] = [];
   const inner = plugin((app) => {
-    app.onSend(() => void seen.push("inner last"), { last: true });
+    app.onSend(() => void seen.push("inner last"), { order: "last" });
     app.onSend(() => void seen.push("inner"));
     app.get("/x", () => ({}));
   });
   const app = inkan(quiet)
-    .onSend(() => void seen.push("app last"), { last: true })
+    .onSend(() => void seen.push("app last"), { order: "last" })
     .onSend(() => void seen.push("app"))
     .register(inner);
   await app.inject({ url: "/x" });
@@ -423,7 +423,7 @@ test("describe(): ref() lists a schema under components.schemas and refers to it
   const Conflict = t.object({ key: t.string() });
   const Named = t.object({ n: t.number() }).named("Named");
   const app = inkan(quiet)
-    .describe((op, _route, _components, ref) => {
+    .onOperation((op, _route, _components, ref) => {
       op.responses["409"] = { description: "Replayed", content: { "application/json": { schema: ref(Conflict, "Conflict") } } };
       op["x-named"] = ref(Named);
       assert.throws(() => ref(Conflict), /Name the schema/);
@@ -443,7 +443,7 @@ test("describe(): the route is ctx.route's view plus its spec, frozen", async ()
   const AUTH = Symbol("auth");
   const seen: any[] = [];
   const app = inkan(quiet)
-    .describe((op, route) => {
+    .onOperation((op, route) => {
       seen.push(route);
       if (route.security.length && route.meta.auth) op["x-roles"] = route.meta.auth.roles;
     })
@@ -462,7 +462,7 @@ test("describe(): the route is ctx.route's view plus its spec, frozen", async ()
   assert.deepEqual((await app.inject({ url: "/me", headers: { authorization: "Bearer x" } })).body, { sym: true });
 
   seen.length = 0;
-  app.describe(() => {});
+  app.onOperation(() => {});
   app.openapi();
   assert.deepEqual(seen[0].security, ["bearer"], "the same view after the first request");
 });
@@ -472,9 +472,9 @@ test("scope.dev and scope.prefix: the app's mode and each scope's prefix, read-o
   const inner = plugin((app) => void got.push({ dev: app.dev, prefix: app.prefix }));
   const outer = plugin((app) => {
     got.push({ dev: app.dev, prefix: app.prefix });
-    app.register(inner, { prefix: "/admin" });
+    app.register(inner, {}, { prefix: "/admin" });
   });
-  const app = inkan({ ...quiet, dev: false }).register(outer, { prefix: "/v1" }).register(inner);
+  const app = inkan({ ...quiet, dev: false }).register(outer, {}, { prefix: "/v1" }).register(inner);
   await app.ready();
   assert.equal(app.dev, false);
   assert.equal(app.prefix, "");
@@ -485,4 +485,69 @@ test("scope.dev and scope.prefix: the app's mode and each scope's prefix, read-o
   ]);
   assert.equal(inkan({ ...quiet, dev: true }).dev, true);
   assert.throws(() => ((app as any).prefix = "/x"), TypeError);
+});
+
+test("around wraps every route of its scope, those defined before it too, outer scopes outside", async () => {
+  const seen: string[] = [];
+  const app = inkan({ log: false }).get("/early", { use: [async (_ctx, next) => (seen.push("own"), await next())] }, () => (seen.push("handler"), { ok: true }));
+  app.around(async (ctx, next) => {
+    seen.push(`app ${ctx.path}`);
+    await next();
+    seen.push("app after");
+  });
+  app.register(
+    plugin((p) => {
+      p.get("/inner", () => (seen.push("inner handler"), { ok: true }));
+      p.around(async (_ctx, next) => (seen.push("plugin"), await next()));
+    }),
+  );
+  app.get("/late", () => ({ ok: true }));
+  await app.ready();
+  assert.equal((await app.inject({ url: "/early" })).status, 200);
+  assert.deepEqual(seen.splice(0), ["app /early", "own", "handler", "app after"]);
+  await app.inject({ url: "/inner" });
+  assert.deepEqual(seen.splice(0), ["app /inner", "plugin", "inner handler", "app after"]);
+  await app.inject({ url: "/late" });
+  assert.deepEqual(seen.splice(0), ["app /late", "app after"]);
+  await app.inject({ url: "/nowhere" });
+  assert.deepEqual(seen, [], "a request no route takes has no handler to wrap");
+});
+
+test('every hook takes { order: "last" }: after the others of its kind, outermost first', async () => {
+  const seen: string[] = [];
+  const inner = plugin((app) => {
+    app.preHandler(() => void seen.push("pre inner last"), { order: "last" });
+    app.preHandler(() => void seen.push("pre inner"));
+    app.onRequest(() => void seen.push("req inner"));
+    app.onProblem(() => void seen.push("problem inner"));
+    app.get("/x", () => {
+      throw problem(409, "taken");
+    });
+  });
+  const app = inkan(quiet)
+    .onRequest(() => void seen.push("req app last"), { order: "last" })
+    .preHandler(() => void seen.push("pre app"))
+    .onProblem(() => void seen.push("problem app last"), { order: "last" })
+    .onResponse(() => void seen.push("response app last"), { order: "last" })
+    .onResponse(() => void seen.push("response app"))
+    .register(inner);
+  await app.inject({ url: "/x" });
+  assert.deepEqual(seen, ["req inner", "req app last", "pre app", "pre inner", "pre inner last", "problem inner", "problem app last", "response app", "response app last"]);
+});
+
+test("decorating a name inkan reserves for later works, with one warning in development", () => {
+  const seen: string[] = [];
+  const warn = console.warn;
+  console.warn = (msg: string) => void seen.push(msg);
+  try {
+    inkan({ ...quiet, dev: true }).decorate("log", console).decorateRequest("startedAt", () => Date.now());
+    inkan({ ...quiet, dev: true }).decorate("log", console);
+    inkan({ ...quiet, dev: false }).decorate("startedAt", 1);
+  } finally {
+    console.warn = warn;
+  }
+  assert.equal(seen.length, 2);
+  assert.match(seen[0]!, /ctx\.log is reserved for inkan/);
+  assert.match(seen[1]!, /ctx\.startedAt is reserved/);
+  assert.throws(() => inkan(quiet).decorate("httpVersion", "2"), /already has a httpVersion/);
 });

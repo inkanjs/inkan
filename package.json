@@ -1,6 +1,6 @@
 {
   "name": "@vxnsin/inkan",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "An API server for Node where the docs can't lie: one contract per route gives you validation, types, OpenAPI, docs and tests.",
   "keywords": [
     "api",
@@ -32,6 +32,10 @@
       "types": "./dist/client.d.ts",
       "default": "./dist/client.js"
     },
+    "./testing": {
+      "types": "./dist/testing.d.ts",
+      "default": "./dist/testing.js"
+    },
     "./package.json": "./package.json"
   },
   "main": "./dist/index.js",
@@ -54,6 +58,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
+    "api:update": "node scripts/api.mjs --update",
     "test": "node --test \"test/**/*.test.ts\"",
     "check:example": "node src/cli.ts check examples/shop.ts",
     "dev:example": "node --watch examples/shop.ts",

@@ -81,6 +81,15 @@ test("app.fetch: the inspector stays shut without a loopback address, and opens 
   assert.equal((await dev.fetch(req("/docs"))).status, 200, "the docs page is for everybody");
 });
 
+test("app.exchange: without a remote address the inspector stays shut", async () => {
+  const dev = inkan({ ...quiet, dev: true }).get("/x", () => ({ ok: 1 }));
+  assert.equal((await dev.exchange({ method: "GET", url: "/_inkan", headers: {} })).status, 404);
+  assert.equal((await dev.exchange({ method: "GET", url: "/_inkan/log.json", headers: {} })).status, 404);
+  assert.equal((await dev.exchange({ method: "GET", url: "/_inkan", headers: {}, remote: "203.0.113.9" })).status, 404);
+  assert.equal((await dev.exchange({ method: "GET", url: "/_inkan", headers: {}, remote: "::1" })).status, 200);
+  assert.equal((await dev.inject({ url: "/_inkan" })).status, 200, "inject comes from inside the process");
+});
+
 test("app.fetch waits for plugins, and onResponse runs once the answer is out", async () => {
   const seen: number[] = [];
   const later = inkan(quiet)

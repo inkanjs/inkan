@@ -10,19 +10,26 @@
 //
 // Jobs run in this process. A job still running when the process ends is lost: there are no
 // retries and nothing is written to disk. The store only holds what a job looks like, so that
-// another store (a database, Redis) can be put in where several processes share it.
+// another store (a database, Redis) can be put in where several processes share it: any
+// `Store` (./store.ts), whose publish/subscribe carries progress and cancels between them.
 
 import { randomBytes } from "node:crypto";
+import { deprecate } from "./deprecate.ts";
 import { HttpProblem, problem, type ProblemBody } from "./problem.ts";
 import { EventsSchema, t, type Issue, type Schema } from "../schema/schema.ts";
 import { sse } from "./stream.ts";
 import { within as withContext } from "./request-context.ts";
 import { Cron, type CronZone } from "./cron.ts";
+import { memoryStore, type Store } from "./store.ts";
 import { joinPath, reply, type Context, type DecoOf, type Example, type JoinPath, type PathParams, type RawHeaders, type RawQuery, type Security, type WithRoutes } from "./route.ts";
 
+/** @experimental */
 export type JobState = "queued" | "running" | "done" | "failed" | "canceled";
 
-/** A job as the store keeps it. */
+/**
+ * A job as the store keeps it.
+ * @experimental
+ */
 export type JobRecord = {
   id: string;
   /** The job's kind: the path it was started at, as it was defined (`/exports`). */
@@ -37,9 +44,10 @@ export type JobRecord = {
   position?: number;
   result?: unknown;
   error?: ProblemBody;
-  createdAt: Date;
-  startedAt?: Date;
-  finishedAt?: Date;
+  /** When it was started, in ms since the epoch, as every time here: records go through JSON. */
+  createdAt: number;
+  startedAt?: number;
+  finishedAt?: number;
   /** When the store may forget it (ms since the epoch); set once it is over. */
   expiresAt?: number;
   /** Someone asked to cancel it; whoever runs it stops it. */
@@ -49,8 +57,12 @@ export type JobRecord = {
 type Maybe<T> = T | Promise<T>;
 
 /**
- * Where jobs are kept. `memoryStore()` is the one inkan has; a store several processes share
- * (`shared: true`) lets an app with jobs run with `workers`.
+ * @deprecated Since 0.8: give `app.job` a {@link Store} (`memoryStore()`, or an adapter's),
+ * which jobs share with everything else that keeps state. A `JobStore` still works.
+ *
+ * Where jobs were kept in 0.7. A store several processes share (`shared: true`) lets an app
+ * with jobs run with `workers`.
+ * @experimental
  */
 export interface JobStore {
   /** Whether every process sees the same jobs. The memory store does not. */
@@ -69,57 +81,122 @@ export interface JobStore {
 
 const FINAL = (s: JobState) => s === "done" || s === "failed" || s === "canceled";
 
+const isJobStore = (s: Store | JobStore): s is JobStore => typeof (s as JobStore).watch === "function" && typeof (s as JobStore).sweep === "function";
+
+/** A job's key, and the channel its changes go out on. */
+const jobKey = (id: string) => `inkan:job:${id}`;
+
+/** A record back from a store or a message: an object, or nothing. */
+const asRecord = (raw: unknown): JobRecord | undefined => (raw && typeof raw === "object" ? (raw as JobRecord) : undefined);
+
 /**
- * Jobs in this process's memory: lost when it ends, and not seen by other workers. Holds at
- * most `max` jobs (default 1000); past that the oldest finished one goes first.
+ * The jobs' view of a {@link Store}: one key per job, forgotten `retain` milliseconds after it ends
+ * by the store's TTL. This process hears of a change at once; the store gets the latest
+ * version of each job, one write at a time (a hundred quick progress updates are a few
+ * writes), and reads here see what is not written yet. When the store is shared, changes
+ * go out with `publish` to the other processes, so one that follows or cancels a job
+ * another one runs hears of it; a shared store without publish is asked once a second
+ * while someone watches.
  */
-export function memoryStore(options: { max?: number } = {}): JobStore {
-  const max = options.max ?? 1000;
-  const jobs = new Map<string, JobRecord>();
-  const watchers = new Map<string, Set<(job: JobRecord) => void>>();
-  const store: JobStore = {
-    shared: false,
-    get: (id) => jobs.get(id),
-    set(job) {
-      const fresh = !jobs.has(job.id);
-      jobs.set(job.id, job);
-      if (fresh && jobs.size > max) {
-        for (const [id, j] of jobs) {
-          if (FINAL(j.state)) {
-            jobs.delete(id);
-            break;
-          }
-        }
+function onStore(store: Store, report: (err: unknown) => void): JobStore {
+  const shared = store.shared === true;
+  const pubsub = shared && typeof store.publish === "function" && typeof store.subscribe === "function";
+  /** Who this is, so a process skips the messages it published itself. */
+  const self = randomBytes(9).toString("base64url");
+  const local = new Map<string, Set<(job: JobRecord) => void>>();
+  /** The latest version of a job that is not in the store yet. */
+  const unsaved = new Map<string, JobRecord>();
+  const flights = new Map<string, Promise<void>>();
+
+  const tell = (job: JobRecord) => {
+    const fns = local.get(job.id);
+    if (fns) for (const fn of [...fns]) fn(job);
+  };
+  const write = async (job: JobRecord) => {
+    const key = jobKey(job.id);
+    const ttl = job.expiresAt === undefined ? undefined : Math.max(1, job.expiresAt - Date.now());
+    const value: Record<string, unknown> = { ...job }; // plain JSON: nothing undefined
+    for (const k in value) if (value[k] === undefined) delete value[k];
+    await store.set(key, value, ttl);
+    if (pubsub) await store.publish!(key, { from: self, job: value });
+  };
+  /** Writes the job until the store has its latest version. */
+  const flush = async (id: string) => {
+    try {
+      for (let job = unsaved.get(id); job; job = unsaved.get(id)) {
+        await write(job);
+        if (unsaved.get(id) === job) unsaved.delete(id);
       }
-      const fns = watchers.get(job.id);
-      if (fns) for (const fn of [...fns]) fn(job);
+    } finally {
+      flights.delete(id);
+    }
+  };
+
+  const board: JobStore = {
+    shared,
+    get: async (id) => unsaved.get(id) ?? asRecord(await store.get(jobKey(id))),
+    set(job) {
+      tell(job);
+      unsaved.set(job.id, job);
+      let f = flights.get(job.id);
+      if (!f) flights.set(job.id, (f = flush(job.id)));
+      return f;
     },
     delete(id) {
-      jobs.delete(id);
+      unsaved.delete(id);
+      return store.delete(jobKey(id));
     },
-    sweep(now) {
-      for (const [id, j] of jobs) if (j.expiresAt !== undefined && j.expiresAt <= now) jobs.delete(id);
-    },
+    sweep() {}, // the store's TTL forgets them
     watch(id, fn) {
-      let set = watchers.get(id);
-      if (!set) watchers.set(id, (set = new Set()));
-      set.add(fn);
+      const fns = local.get(id) ?? new Set();
+      local.set(id, fns);
+      fns.add(fn);
+      let gone = false;
+      let off: (() => void) | undefined;
+      let poll: ReturnType<typeof setInterval> | undefined;
+      if (pubsub) {
+        store.subscribe!(jobKey(id), (m) => {
+          const msg = m as { from?: string; job?: unknown } | undefined;
+          const r = asRecord(msg?.job);
+          if (r && msg!.from !== self && !gone) fn(r);
+        }).then((o) => (gone ? o() : (off = o)), report);
+      } else if (shared) {
+        // no publish: ask the store, for what another process changed
+        let last: string | undefined;
+        poll = setInterval(() => {
+          store.get(jobKey(id)).then((raw) => {
+            const seen = JSON.stringify(raw ?? null);
+            const first = last === undefined;
+            if (seen === last) return;
+            last = seen;
+            const r = asRecord(raw);
+            if (r && !first && !gone) fn(r);
+          }, report);
+        }, 1000);
+        poll.unref?.();
+      }
       return () => {
-        set.delete(fn);
-        if (!set.size && watchers.get(id) === set) watchers.delete(id);
+        gone = true;
+        off?.();
+        clearInterval(poll);
+        fns.delete(fn);
+        if (!fns.size && local.get(id) === fns) local.delete(id);
       };
     },
-    cancel(id) {
-      const j = jobs.get(id);
-      if (j && !FINAL(j.state)) store.set({ ...j, cancelRequested: true });
+    async cancel(id) {
+      const j = await board.get(id);
+      if (j && !FINAL(j.state)) await board.set({ ...j, cancelRequested: true });
     },
   };
-  return store;
+  return board;
 }
 
 // ---------- types ----------
 
-/** A job as the routes answer with it. */
+/**
+ * A job as the routes answer with it.
+ * @experimental
+ */
 export type JobBody<P = unknown> = {
   id: string;
   state: JobState;
@@ -131,7 +208,10 @@ export type JobBody<P = unknown> = {
   finishedAt?: Date;
 };
 
-/** What the function that does the work gets. */
+/**
+ * What the function that does the work gets.
+ * @experimental
+ */
 export type Job<B = unknown, P = unknown, Deco = {}> = {
   id: string;
   /** The checked body it was started with. */
@@ -147,6 +227,7 @@ export type Job<B = unknown, P = unknown, Deco = {}> = {
   ctx: Context<any, any, B, any, any> & Deco;
 };
 
+/** @experimental */
 export type JobOptions<B, P, R, Deco = {}> = {
   summary?: string;
   description?: string;
@@ -163,14 +244,20 @@ export type JobOptions<B, P, R, Deco = {}> = {
   concurrency?: number;
   /** How many may wait; past that, starting one is a 503. Default 100. */
   queue?: number;
-  /** Seconds a finished job is kept for its result. Default 3600. */
+  /** Milliseconds a finished job is kept for its result. Default 3600000 (an hour). */
+  retain?: number;
+  /** @deprecated Seconds a finished job is kept; use `retain`, in milliseconds. */
   keep?: number;
   /** Milliseconds a job may run before it fails and `job.signal` is aborted. Default: no limit. */
   timeout?: number;
   /** Whose job it is. Anybody else gets a 404 for it. */
   owner?: (ctx: Context<any, any, B, any, any> & Deco) => string | undefined;
-  /** Where jobs are kept. Default: one memory store for the app. */
-  store?: JobStore;
+  /**
+   * Where jobs are kept: a `Store` (`memoryStore()`, or an adapter's). Default: one memory
+   * store for the app, holding 1000 jobs. With `workers`, one with `shared: true`, best with
+   * publish/subscribe (without it, a process following a job another one runs asks every second).
+   */
+  store?: Store | JobStore;
   /** Examples for starting one. The routes around it get examples that build on the first. */
   examples?: Example[];
   /**
@@ -184,13 +271,18 @@ export type JobOptions<B, P, R, Deco = {}> = {
    * run is a context of no real request: a POST to the job's path, no headers, its input as
    * the body.
    */
+  schedule?: string | { cron: string; input?: B; timezone?: CronZone };
+  /** @deprecated Use `schedule`, which it is. */
   every?: string | { cron: string; input?: B; timezone?: CronZone };
 };
 
 type ProblemSchema = Schema<ProblemBody>;
 type JobSchema<P> = Schema<JobBody<P>>;
 
-/** The five routes of a job, as the typed client knows them. */
+/**
+ * The five routes of a job, as the typed client knows them.
+ * @experimental
+ */
 export type JobRoutes<Path extends string, B, P, R> = {
   [K in `POST ${Path}`]: { params: PathParams<Path>; query: RawQuery; body: B; headers: RawHeaders; response: { 202: JobSchema<P>; 503: ProblemSchema } };
 } & {
@@ -221,7 +313,10 @@ export type JobRoutes<Path extends string, B, P, R> = {
   };
 };
 
-/** `job` as a property, so its type can name the app or scope it returns. */
+/**
+ * `job` as a property, so its type can name the app or scope it returns.
+ * @experimental
+ */
 export type JobMethod<Self> = <Path extends string, B = undefined, P = unknown, R = unknown>(
   path: Path,
   options: JobOptions<B, P, R, DecoOf<Self>>,
@@ -230,20 +325,27 @@ export type JobMethod<Self> = <Path extends string, B = undefined, P = unknown, 
 
 // ---------- running them ----------
 
-/** What the jobs need from the app. */
+/**
+ * What the jobs need from the app.
+ * @internal
+ */
 export interface JobHost {
   dev: boolean;
-  options: { validateResponses?: boolean; onError?: (error: unknown, ctx: Context<any, any, any, any, any>) => void };
+  options: { validateResponses?: boolean; onError?: (error: unknown, ctx: Context<any, any, any, any, any> | undefined) => void };
 }
 
 const newId = () => randomBytes(16).toString("base64url"); // not the request id: that one is a counter, easy to guess
 
-/** Every kind of job of one app: their store, the sweep, and the shutdown. */
+/**
+ * Every kind of job of one app: their store, the sweep, and the shutdown.
+ * @internal
+ */
 export class JobHub {
   host: JobHost;
   kinds: JobKind[] = [];
   closing = false;
   private store?: JobStore;
+  private boards = new WeakMap<Store, JobStore>();
   private sweeper?: ReturnType<typeof setInterval>;
   private scheduling = false;
   constructor(host: JobHost) {
@@ -251,7 +353,15 @@ export class JobHub {
   }
 
   defaultStore(): JobStore {
-    return (this.store ??= memoryStore());
+    return (this.store ??= this.board(memoryStore({ max: 1000 })));
+  }
+
+  /** The jobs' view of a store, one per store, so kinds that share a store share it. */
+  board(store: Store | JobStore): JobStore {
+    if (isJobStore(store)) return store;
+    let b = this.boards.get(store);
+    if (!b) this.boards.set(store, (b = onStore(store, (err) => this.report(err))));
+    return b;
   }
 
   /** Whether any kind keeps its jobs where only this process sees them. */
@@ -287,7 +397,7 @@ export class JobHub {
   }
 
   report(err: unknown, ctx?: Context<any, any, any, any, any>) {
-    if (this.host.options.onError) this.host.options.onError(err, ctx as never);
+    if (this.host.options.onError) this.host.options.onError(err, ctx);
     else console.error(err);
   }
 
@@ -335,7 +445,7 @@ const TIMEOUT = Symbol("timeout");
 /** The longest delay a timer takes: 2^31 - 1 ms, almost 25 days. Longer waits go in hops. */
 const LONGEST = 2 ** 31 - 1;
 
-/** A kind's schedule, from `every`. */
+/** A kind's schedule, from `schedule`. */
 type Schedule = {
   cron: Cron;
   zone: CronZone;
@@ -349,7 +459,10 @@ type Schedule = {
   last?: string;
 };
 
-/** One kind of job: its queue, its slots, and the routes' work. */
+/**
+ * One kind of job: its queue, its slots, and the routes' work.
+ * @internal
+ */
 export class JobKind {
   hub: JobHub;
   path: string;
@@ -372,8 +485,8 @@ export class JobKind {
     this.path = path;
     this.opts = opts;
     this.run = run;
-    this.store = opts.store ?? hub.defaultStore();
-    this.keep = (opts.keep ?? 3600) * 1000;
+    this.store = opts.store ? hub.board(opts.store) : hub.defaultStore();
+    this.keep = opts.retain ?? (opts.keep === undefined ? 3_600_000 : (deprecate("app.job({ keep }) in seconds", "{ retain } in milliseconds"), opts.keep * 1000));
     this.concurrency = Math.max(1, opts.concurrency ?? 1);
     this.limit = Math.max(0, opts.queue ?? 100);
   }
@@ -420,7 +533,7 @@ export class JobKind {
   private admit(ctx: Context<any, any, any, any, any>, input: unknown, owner: string | undefined): JobRecord {
     if (this.hub.closing) throw later(503, "shutting-down", "The server is shutting down", 5);
     if (this.queue.length >= this.limit) throw later(503, "job-queue-full", `${this.queue.length} jobs are waiting already`, 5);
-    const rec: JobRecord = { id: newId(), kind: this.path, state: "queued", input, position: this.queue.length + 1, createdAt: new Date() };
+    const rec: JobRecord = { id: newId(), kind: this.path, state: "queued", input, position: this.queue.length + 1, createdAt: Date.now() };
     if (owner !== undefined) rec.owner = owner;
     this.live.set(rec.id, { rec, ctx });
     this.queue.push(rec.id);
@@ -615,7 +728,7 @@ export class JobKind {
       if (r.cancelRequested && !ctl.signal.aborted) ctl.abort(new DOMException("The job was canceled", "AbortError"));
     });
     if (l.rec.cancelRequested) ctl.abort(new DOMException("The job was canceled", "AbortError"));
-    this.update(l, { state: "running", startedAt: new Date(), position: undefined });
+    this.update(l, { state: "running", startedAt: Date.now(), position: undefined });
 
     const { progress: progressSchema, result: resultSchema, timeout } = this.opts;
     const trim = progressSchema?._trimmer();
@@ -690,9 +803,9 @@ export class JobKind {
 
   private finish(l: Live, state: JobState, patch: Partial<JobRecord>) {
     const wasRunning = l.rec.state === "running";
-    const now = new Date();
+    const now = Date.now();
     this.live.delete(l.rec.id);
-    l.rec = { ...l.rec, ...patch, state, finishedAt: now, expiresAt: now.getTime() + this.keep, input: undefined, position: undefined, cancelRequested: undefined };
+    l.rec = { ...l.rec, ...patch, state, finishedAt: now, expiresAt: now + this.keep, input: undefined, position: undefined, cancelRequested: undefined };
     this.save(l.rec);
     if (wasRunning) {
       this.running--;
@@ -722,12 +835,12 @@ export class JobKind {
 
 /** A job as the routes answer with it: only what the contract lists. */
 function view(r: JobRecord): JobBody {
-  const v: JobBody = { id: r.id, state: r.state, createdAt: r.createdAt };
+  const v: JobBody = { id: r.id, state: r.state, createdAt: new Date(r.createdAt) };
   if (r.progress !== undefined) v.progress = r.progress;
   if (r.position !== undefined && r.state === "queued") v.position = r.position;
   if (r.error) v.error = r.error;
-  if (r.startedAt) v.startedAt = r.startedAt;
-  if (r.finishedAt) v.finishedAt = r.finishedAt;
+  if (r.startedAt !== undefined) v.startedAt = new Date(r.startedAt);
+  if (r.finishedAt !== undefined) v.finishedAt = new Date(r.finishedAt);
   return v;
 }
 
@@ -759,11 +872,12 @@ function paramsOf(path: string) {
 
 type Define = (method: string, path: string, spec: object, handler: (ctx: any) => unknown) => void;
 
-/** A job's `every`, read and checked when the job is defined, so a wrong one stops the start. */
+/** A job's `schedule`, read and checked when the job is defined, so a wrong one stops the start. */
 function scheduleOf(path: string, full: string, opts: JobOptions<any, any, any, any>, ctxFor: (path: string) => Context<any, any, any, any, any>): Schedule {
-  const every = typeof opts.every === "string" ? { cron: opts.every } : opts.every!;
+  const given = opts.schedule ?? opts.every!;
+  const every = typeof given === "string" ? { cron: given } : given;
   const where = `app.job("${path}")`;
-  if (/:\w/.test(full)) throw new Error(`${where}: every needs a path without parameters, since no request names them`);
+  if (/:\w/.test(full)) throw new Error(`${where}: schedule needs a path without parameters, since no request names them`);
   let cron: Cron;
   try {
     cron = new Cron(every.cron);
@@ -771,13 +885,13 @@ function scheduleOf(path: string, full: string, opts: JobOptions<any, any, any, 
     throw new Error(`${where}: ${(err as Error).message}`);
   }
   const zone = every.timezone ?? "UTC";
-  if (zone !== "UTC" && zone !== "local") throw new Error(`${where}: every.timezone is "UTC" or "local", not "${zone}"`);
+  if (zone !== "UTC" && zone !== "local") throw new Error(`${where}: schedule.timezone is "UTC" or "local", not "${zone}"`);
   if (!cron.next(Date.now(), zone)) throw new Error(`${where}: the cron "${every.cron}" never matches`);
   let input = every.input;
   if (opts.body) {
-    if (!("input" in every)) throw new Error(`${where}: the job takes a body, so every needs { cron, input } with the input to start it with`);
+    if (!("input" in every)) throw new Error(`${where}: the job takes a body, so schedule needs { cron, input } with the input to start it with`);
     const r = opts.body.safeParse(input);
-    if (!r.ok) throw new Error(`${where}: every.input does not match the body: ${r.issues.map((i) => `${i.path || "(body)"} ${i.message}`).join("; ")}`);
+    if (!r.ok) throw new Error(`${where}: schedule.input does not match the body: ${r.issues.map((i) => `${i.path || "(body)"} ${i.message}`).join("; ")}`);
     input = r.value;
   }
   return { cron, zone, input, ctx: () => ctxFor(full) };
@@ -786,6 +900,7 @@ function scheduleOf(path: string, full: string, opts: JobOptions<any, any, any, 
 /**
  * Defines a job's five routes on a scope. `prefix` is the scope's, `path` the job's own; the
  * routes go through `define`, so they are routes like any other.
+ * @internal
  */
 export function defineJob(
   hub: JobHub,
@@ -803,7 +918,8 @@ export function defineJob(
     console.warn("inkan: background jobs run in the process that started them; on a serverless platform it may be frozen or gone before they finish.");
   }
   const kind = new JobKind(hub, full, opts, run);
-  if (opts.every !== undefined) kind.schedule = scheduleOf(path, full, opts, ctxFor);
+  if (opts.schedule === undefined && opts.every !== undefined) deprecate("app.job({ every })", "app.job({ schedule })");
+  if ((opts.schedule ?? opts.every) !== undefined) kind.schedule = scheduleOf(path, full, opts, ctxFor);
   hub.kinds.push(kind);
 
   const name = opts.name ?? nameOf(full);
