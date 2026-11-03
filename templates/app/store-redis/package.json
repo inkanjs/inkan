@@ -1,0 +1,6 @@
+{
+  "dependencies": {
+    "@inkanjs/redis": "^0.1.0",
+    "redis": "^6.3.1"
+  }
+}

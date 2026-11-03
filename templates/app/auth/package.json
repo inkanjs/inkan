@@ -1,0 +1,8 @@
+{
+  "scripts": {
+    "check": "inkan check {{src}}/app.ts"
+  },
+  "dependencies": {
+    "@inkanjs/auth": "^0.2.0"
+  }
+}

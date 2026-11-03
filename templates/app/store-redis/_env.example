@@ -1,0 +1,2 @@
+# The server to connect to; this is the one the CI workflow starts.
+REDIS_URL=redis://localhost:6379

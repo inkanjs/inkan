@@ -15,5 +15,7 @@
     "noEmit": true,
     "paths": { "@vxnsin/inkan": ["./src/index.ts"] }
   },
-  "include": ["src", "test", "examples", "templates"]
+  "include": ["src", "test", "examples", "templates"],
+  // the app templates import packages this repository does not install: test/create-app.test.ts compiles them
+  "exclude": ["templates/app"]
 }

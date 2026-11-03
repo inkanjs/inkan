@@ -1,0 +1,2 @@
+# Signs the session cookies: 32 characters or more (openssl rand -base64 32). Required in production.
+AUTH_SECRET=
