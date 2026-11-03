@@ -1,10 +1,14 @@
 // app.upgrade, the door for servers with WebSockets of their own: the decision on the
 // upgrade, then the socket on a transport in memory. No sockets, no frames: what the app
 // does with messages, close codes, limits and backpressure, as a platform's adapter sees it.
-import { test } from "node:test";
+import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { inkan, t, type AdapterRequest, type WsEvents, type WsTransport, type WsUpgrade, type WsRefusal } from "../src/index.ts";
+
+// The app's timers are unref'd, since a server keeps the process alive; here nothing else does.
+const alive = setInterval(() => {}, 1000);
+after(() => clearInterval(alive));
 
 const quiet = { log: false, gracefulShutdown: false } as const;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -273,8 +277,6 @@ test("app.upgrade: maxConnections counts handshakes and sockets; a refusal, canc
 
 test("app.upgrade: a handshake that never gets its answer ends without one, and frees its slot", async () => {
   let aborted = false;
-  // the handshake timer is unref'd (a server keeps the process alive); here nothing else does
-  const alive = setInterval(() => {}, 1000);
   const app = inkan(quiet).ws("/slow", { handshakeTimeout: 50, maxConnections: 1 }, () => {});
   app.onRequest((ctx) => {
     ctx.signal.addEventListener("abort", () => (aborted = true));
@@ -287,7 +289,6 @@ test("app.upgrade: a handshake that never gets its answer ends without one, and 
   assert.ok(Date.now() - started < 1000);
   assert.equal(aborted, true, "ctx.signal aborts");
   switched(await app.upgrade(upgradeRequest("/slow"))).cancel();
-  clearInterval(alive);
 });
 
 test("app.upgrade: stopped() closes every open socket with 1001 and waits until the platform says it is gone", async () => {
