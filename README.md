@@ -78,6 +78,18 @@ npx @vxnsin/inkan learn
 
 `npx @vxnsin/inkan examples` gives you six explained projects to start from instead.
 
+To start a project of your own:
+
+```sh
+npm create inkan@latest my-api
+npm create inkan@latest my-api -- --store postgres --auth --frontend next
+```
+
+It asks where the data lives (memory, Postgres, Redis, MongoDB or MySQL), whether you want
+logins, and whether a Next.js or Vite frontend goes with it, then writes a project that
+passes `inkan check` and its own tests, with a CI workflow. `npx @vxnsin/inkan create app`
+is the same command; `--help` lists the options.
+
 ## What's in it
 
 The core has no dependencies. Besides the contracts, it comes with:

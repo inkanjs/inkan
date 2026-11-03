@@ -1,0 +1,23 @@
+{
+  "name": "{{name}}",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch --env-file-if-exists=.env {{src}}/server.ts",
+    "start": "node --env-file-if-exists=.env {{src}}/server.ts",
+    "check": "inkan check {{src}}/app.ts --strict",
+    "test": "node --env-file-if-exists=.env --test \"test/**/*.test.ts\"",
+    "typecheck": "tsc"
+  },
+  "dependencies": {
+    "@vxnsin/inkan": "^{{version}}"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^7.0.2"
+  },
+  "engines": {
+    "node": ">=22.18"
+  }
+}

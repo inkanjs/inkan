@@ -1,0 +1,36 @@
+{
+  "name": "create-inkan",
+  "version": "0.8.1",
+  "description": "npm create inkan: a new inkan app with a store, auth, a frontend, tests and CI, from the inkan of the same version.",
+  "keywords": [
+    "inkan",
+    "create",
+    "starter",
+    "api",
+    "openapi"
+  ],
+  "license": "MIT",
+  "author": "Vensin (https://github.com/vxnsin)",
+  "homepage": "https://github.com/inkanjs/inkan#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/inkanjs/inkan.git",
+    "directory": "create"
+  },
+  "type": "module",
+  "bin": {
+    "create-inkan": "./index.js"
+  },
+  "files": [
+    "index.js"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@vxnsin/inkan": "0.8.1"
+  }
+}

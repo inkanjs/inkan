@@ -53,6 +53,32 @@ jobs:
       # trusted publishing: npm checks this workflow via OIDC, no token involved
       - run: npm publish --access public --ignore-scripts
 
+  # create-inkan (create/), the package behind `npm create inkan`: the same version, after
+  # the core it depends on is out. Trusted publishing has to be set up for it on npm too.
+  create:
+    needs: npm
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - name: same version as the core
+        run: |
+          core="$(node -p "require('./package.json').version")"
+          create="$(node -p "require('./create/package.json').version + ' ' + require('./create/package.json').dependencies['@vxnsin/inkan']")"
+          if [ "$create" != "$core $core" ]; then
+            echo "::error::create/package.json ($create) has to be at $core and depend on @vxnsin/inkan $core"
+            exit 1
+          fi
+      - run: npm publish --access public --ignore-scripts
+        working-directory: create
+
   github-packages:
     needs: verify
     runs-on: ubuntu-latest

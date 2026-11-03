@@ -1,0 +1,2 @@
+# The server and database to connect to; this is the one the CI workflow starts.
+MYSQL_URL=mysql://root:root@localhost:3306/app

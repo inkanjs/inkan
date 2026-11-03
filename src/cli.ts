@@ -15,6 +15,7 @@ import { copyExample, EXAMPLES, ExampleError } from "./cli/examples.ts";
 import { writeSeal } from "./seal/seal.ts";
 import { learn, LearnError, setupLearn } from "./cli/learn.ts";
 import { createPlugin, CreateError } from "./cli/create.ts";
+import { runCreateApp } from "./cli/app.ts";
 
 const version = (): string => JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 
@@ -73,6 +74,9 @@ const HELP = `
                 ${c.dim("an interactive tutorial: quests in a practice app, checked as you save")}
   ${c.bold("inkan examples")} ${c.dim("[name] [folder] [--list] [--force]")}
                 ${c.dim("copy an explained example project into a folder")}
+  ${c.bold("inkan create app")} ${c.dim("[folder] [--store <s>] [--auth] [--frontend <f>] [--yes]")}
+                ${c.dim("a project to build on: a store, auth, a frontend, tests and CI;")}
+                ${c.dim("asks what it needs, or see inkan create app --help")}
   ${c.bold("inkan create plugin")} ${c.dim("<name> [folder]")}
                 ${c.dim("a package for a plugin of your own: tests, types, CI, ready for npm")}
 
@@ -200,8 +204,12 @@ switch (command) {
     }
   }
   case "create": {
+    if (args[0] === "app") {
+      const code = await runCreateApp(args.slice(1), { version: version(), color, fail });
+      process.exit(code);
+    }
     const [kind, name, folder] = args;
-    if (kind !== "plugin") fail("Create what? inkan create plugin <name> is what there is, for example: inkan create plugin inkan-quota");
+    if (kind !== "plugin") fail("Create what? inkan create app [folder] or inkan create plugin <name>, for example: inkan create plugin inkan-quota");
     if (!name) fail("Which name will it have on npm? For example: inkan create plugin inkan-quota");
     try {
       const { dir, files, fn, range } = createPlugin(name, folder, { version: version() });

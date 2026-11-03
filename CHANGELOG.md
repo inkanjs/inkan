@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.9.0 (unreleased)
+
+### New
+
+- **`npm create inkan`**, and `inkan create app [folder]` behind it: a project to build on,
+  with a store (`--store memory|postgres|redis|mongo|mysql`, the database ones through
+  @inkanjs/postgres, redis, mongo and mysql), logins from @inkanjs/auth (`--auth`), and a
+  frontend (`--frontend none|next|vite`, the API under `/api` through @inkanjs/next or
+  @inkanjs/vite). It asks for what the flags leave open, and asks nothing without a terminal
+  or with `--yes`; `--pm npm|pnpm|yarn|bun` (by default the one that ran it) installs,
+  `--no-install` does not. Every project comes with a README, tests (`app.check` with
+  `strict`, and `app.inject`), `.env.example` and a CI workflow that starts its database,
+  and passes `inkan check` (`--strict` without auth) and its tests as it is. The templates
+  are a base and overlays in templates/app; the package `create-inkan` (in create/) runs
+  the CLI of the same inkan version. Experimental: the generated files may change in any
+  release.
+
 ## 0.8.1
 
 ### Fixed

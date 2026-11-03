@@ -1,0 +1,2 @@
+# The server and database to connect to; this is the one the CI workflow starts.
+MONGO_URL=mongodb://localhost:27017/app

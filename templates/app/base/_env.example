@@ -1,0 +1,2 @@
+# Copy to .env: `npm run dev`, `npm start` and `npm test` read it.
+PORT=3000
