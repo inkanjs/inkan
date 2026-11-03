@@ -13,13 +13,10 @@ jobs:
     timeout-minutes: 10
 {{services}}    steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 24
-      - run: npm install
-      - run: npm run typecheck
+{{ciSetup}}      - run: {{ciInstall}}
+      - run: {{ciTypecheck}}
       # every example, run as a test
-      - run: npm run check
+      - run: {{ciCheck}}
       # everything in test/
-      - run: npm test
+      - run: {{ciTest}}
 {{build}}

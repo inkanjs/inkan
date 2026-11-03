@@ -43,8 +43,36 @@ being updated (`npm run api:update`), so every change to the API shows in review
 - from `@vxnsin/inkan/client`: `client`, `Client`, `ClientOptions`, `Answer`, `Input`,
   `Jsonify`, `StreamError`
 
+## Stable: the command line
+
+From 0.9.0 the CLI follows the same rules, for what scripts and CI read from it:
+
+- the exit codes of `inkan check`, `inkan diff`, `inkan openapi` and `inkan routes`: `0` all
+  good; `1` the result failed (an example broke, with `--strict` also a promised status no
+  example shows, or a change breaks clients); `2` nothing was checked: a usage error (a
+  missing argument, an unknown option, an option without its value, a `--format` it does not
+  know) or a load error (no such file, the entry throws while it loads or in `app.ready()`,
+  it exports no app, a JSON file it cannot read, `-o` it cannot write)
+- `inkan openapi <entry> [-o <file>]`: the app's OpenAPI 3.1 document as JSON, to the file or
+  to stdout
+- `inkan diff <before> <after> --json` (or `--format json`): a JSON array of
+  `{ breaking: boolean, kind: string, where: string, message: string }`, the breaking ones
+  first. `where` is `METHOD /path` as OpenAPI writes the path; `kind` is one of `ChangeKind`;
+  `message` is for people, and its wording may change. New kinds may come in a minor release
+  (for changes not told apart before); an existing kind keeps its name and meaning.
+- `inkan check <entry> --json` (or `--format json`): a `CheckReport`, `{ ok, passed, failed,
+  results, unchecked, uncovered, untested }`, each result `{ method, path, example, ok, status,
+  ms, problems }` (`problems` is a list of strings for people, worded as they may be).
+- the flags `--json`, `--format terminal|json|markdown`, `--strict`, `--only`, `-o`/`--out`
+
+New fields may be added to these objects in a minor release; none is removed or changes its
+meaning. The terminal and Markdown text is for people and is not stable.
+
 ## Experimental
 
+- `untested` on a route, and `CheckOptions.untested` (with the CLI reading an entry's
+  `export const untested`)
+- `formatDiffMarkdown`, `formatReportMarkdown`, `ChangeKind`
 - jobs: `job`, `Job*` types, the `schedule` option
 - WebSockets: `ws`, `Ws*` types, `client.ws`, `upgradeListener`, the app's `ws` option
 - `app.upgrade` and its types for adapters: `WsUpgrade`, `WsRefusal`, `WsTransport`, `WsEvents`

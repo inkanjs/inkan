@@ -1168,6 +1168,15 @@ export type RouteSpec<P, Q, B, H, R extends Responses> = {
      */
     security?: Security | Security[] | false;
     examples?: Example[];
+    /**
+     * Statuses in `response` that no example shows, on purpose, each with the reason:
+     * `{ 429: "a lockout takes many failed logins" }`. `inkan check --strict` lists them
+     * instead of failing on them. An example that does answer with one still counts.
+     * @experimental
+     */
+    untested?: {
+        [status: number]: string;
+    };
     /** Middleware for this route only. It runs after the input was validated. */
     use?: Middleware[];
     /**
@@ -2010,8 +2019,8 @@ export type { CacheRule } from "./core/cache.ts";
 export type { Layout, TrustProxy } from "./core/context.ts";
 export type { ProblemBody, ProblemOptions } from "./core/problem.ts";
 export { buildOpenAPI } from "./openapi/openapi.ts";
-export { diffOpenAPI, formatDiff } from "./openapi/diff.ts";
-export type { Change } from "./openapi/diff.ts";
+export { diffOpenAPI, formatDiff, formatDiffMarkdown } from "./openapi/diff.ts";
+export type { Change, ChangeKind } from "./openapi/diff.ts";
 export { cors } from "./plugins/cors.ts";
 export type { CorsOptions } from "./plugins/cors.ts";
 export { rateLimit } from "./plugins/rate-limit.ts";
@@ -2020,12 +2029,12 @@ export { serveStatic } from "./plugins/static.ts";
 export type { StaticOptions } from "./plugins/static.ts";
 export { compress } from "./plugins/compress.ts";
 export type { CompressOptions } from "./plugins/compress.ts";
-export { formatReport, partialMatch } from "./testing/check.ts";
+export { formatReport, formatReportMarkdown, partialMatch } from "./testing/check.ts";
 export type { CheckOptions, CheckReport, CheckResult, FormatOptions } from "./testing/check.ts";
 export type { Seal } from "./seal/compile.ts";
 
 // ---- openapi/diff.d.ts
-import type { FormatOptions } from "../testing/check.ts";
+import { type FormatOptions } from "../testing/check.ts";
 type Json = Record<string, any>;
 type Doc = {
     paths?: Record<string, Record<string, Json>>;
@@ -2033,9 +2042,21 @@ type Doc = {
         schemas?: Record<string, Json>;
     };
 };
-/** @experimental */
+/**
+ * What changed, as a name for machines: `message` is for people and may be worded
+ * differently in a later release, `kind` is not. `request-…` and `response-…` kinds
+ * name a value in a request (a parameter or the body) or in an answer.
+ * @experimental
+ */
+export type ChangeKind = "route-removed" | "route-added" | "param-added-required" | "param-added-optional" | "param-required" | "param-removed" | "body-added-required" | "body-required" | "status-removed" | "status-added" | "request-null-removed" | "response-null-added" | "request-type-changed" | "response-type-changed" | "request-value-removed" | "request-value-added" | "request-values-restricted" | "response-value-added" | "response-value-removed" | "response-values-unrestricted" | "request-limit-tightened" | "request-pattern-changed" | "request-format-changed" | "request-extra-keys-refused" | "request-field-added-required" | "request-field-added-optional" | "request-field-required" | "request-field-removed" | "response-field-removed" | "response-optional-field-removed" | "response-field-added" | "response-field-optional" | "request-shape-changed" | "response-shape-changed";
+/**
+ * One difference between two OpenAPI documents. The shape of `inkan diff --json` is a list
+ * of these, and is stable (docs/STABILITY.md).
+ * @experimental
+ */
 export type Change = {
     breaking: boolean;
+    kind: ChangeKind;
     where: string;
     message: string;
 };
@@ -2046,7 +2067,15 @@ export declare function diffOpenAPI(before: Doc, after: Doc): Change[];
  * `formatDiff(changes, title, color)` works too.
  * @experimental
  */
-export declare function formatDiff(changes: Change[], options?: FormatOptions | string, colored?: boolean): string;
+export declare function formatDiff(changes: readonly Omit<Change, "kind">[], options?: FormatOptions | string, colored?: boolean): string;
+/**
+ * The changes as Markdown, what a pull request comment shows: a headline, then one table,
+ * the breaking changes first. `inkan diff --format markdown` prints it.
+ * @experimental
+ */
+export declare function formatDiffMarkdown(changes: readonly (Omit<Change, "kind"> & {
+    kind?: ChangeKind;
+})[], options?: Pick<FormatOptions, "title">): string;
 export {};
 
 // ---- openapi/openapi.d.ts
@@ -2553,6 +2582,13 @@ export type CheckOptions = {
     only?: string;
     /** A promised status that no example answers with fails the check. */
     strict?: boolean;
+    /**
+     * Statuses that are promised but shown by no example on purpose, for routes this app does
+     * not write itself (a plugin's): `{ "POST /auth/login": { 429: "a lockout takes many failed logins" } }`.
+     * The same as the route's own `untested`. The CLI takes it from an entry's `export const untested`.
+     * @experimental
+     */
+    untested?: Record<string, Record<number, string>>;
 };
 /** @experimental */
 export type CheckResult = {
@@ -2578,6 +2614,13 @@ export type CheckReport = {
         path: string;
         status: number;
     }[];
+    /** Statuses a route promises and no example shows, on purpose (`untested`): `--strict` lets them be. */
+    untested: {
+        method: string;
+        path: string;
+        status: number;
+        reason: string;
+    }[];
 };
 /**
  * Is everything in `expected` also in `actual`? Returns where it is not.
@@ -2595,6 +2638,13 @@ export type FormatOptions = {
  * @experimental
  */
 export declare function formatReport(report: CheckReport, options?: FormatOptions | string, colored?: boolean): string;
+/**
+ * A check report as Markdown, what a pull request comment shows: a headline, the examples
+ * that fail with what they expected and what was answered, the statuses no example shows.
+ * `inkan check --format markdown` prints it.
+ * @experimental
+ */
+export declare function formatReportMarkdown(report: CheckReport, options?: Pick<FormatOptions, "title">): string;
 
 // ---- testing/store.d.ts
 import type { Store } from "../core/store.ts";

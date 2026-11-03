@@ -100,7 +100,8 @@ The core has no dependencies. Besides the contracts, it comes with:
 - one error format for everything, [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) problems
 - server-sent events, streams, file uploads and CSV, all under the contract
 - WebSockets with a contract per message, and background jobs with progress and schedules
-- hooks, plugins and decorators, and `inkan diff` to tell which changes break clients
+- hooks, plugins and decorators, and `inkan diff` to tell which changes break clients, in
+  the terminal, as JSON or as Markdown for a pull request comment
 - `inkan seal`, which compiles contracts to plain code ahead of time, without `eval`
 
 It runs on `node:http`, and on Bun, Deno and serverless through `app.fetch`. Auth,

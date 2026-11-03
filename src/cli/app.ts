@@ -98,7 +98,8 @@ export function projectName(dir: string): string {
 /** `npm run dev`, `pnpm dev`, …: how each package manager runs a script. */
 export function runScript(pm: Manager, script: string): string {
   if (pm === "npm") return script === "test" || script === "start" ? `npm ${script}` : `npm run ${script}`;
-  if (pm === "bun") return `bun run ${script}`;
+  // `bun test` is bun's own test runner, and yarn 1 has a `yarn check` of its own
+  if (pm === "bun" || pm === "yarn") return `${pm} run ${script}`;
   return `${pm} ${script}`;
 }
 
@@ -156,7 +157,7 @@ export function appFiles(name: string, choices: AppChoices, opts: { version: str
 
   const db = store === "memory" ? undefined : SERVICES[store];
   const services = db ? `    services:\n      ${db.service}\n    env:\n      ${db.env}\n` : "";
-  const build = frontend === "none" ? "" : "      - run: npm run build\n";
+  const build = frontend === "none" ? "" : `      - run: ${runScript(pm, "build")}\n`;
   const fill: Record<string, string> = {
     name,
     version: opts.version,
@@ -164,10 +165,16 @@ export function appFiles(name: string, choices: AppChoices, opts: { version: str
     prefix,
     services,
     build,
+    ciSetup: ciSetup(pm),
+    ciInstall: `${pm} install`,
+    ciTypecheck: runScript(pm, "typecheck"),
+    ciCheck: runScript(pm, "check"),
+    ciTest: runScript(pm, "test"),
     stack: stackLine(choices),
     commands: commands(choices, pm),
     layout: layout(choices),
     checkTest: checkTest(choices),
+    untestedImport: auth ? ", untested" : "",
     production:
       frontend === "next"
         ? `// \`next build\` loads this file to collect the routes, with NODE_ENV=production but without
@@ -182,6 +189,18 @@ const production = process.env.NODE_ENV === "production" && process.env.NEXT_PHA
   return out;
 }
 
+/**
+ * The steps of the generated CI workflow that set up the package manager. Node is there for
+ * every one: the scripts run `node` and `inkan`, whoever installs.
+ */
+export function ciSetup(pm: Manager): string {
+  const node = "      - uses: actions/setup-node@v5\n        with:\n          node-version: 24\n";
+  if (pm === "pnpm") return "      - uses: pnpm/action-setup@v4\n        with:\n          version: 10\n" + node;
+  if (pm === "yarn") return node + "      - run: corepack enable\n"; // the yarn of package.json's packageManager, if it names one
+  if (pm === "bun") return node + "      - uses: oven-sh/setup-bun@v2\n";
+  return node;
+}
+
 function stackLine({ store, auth, frontend }: AppChoices): string {
   const db = { postgres: "PostgreSQL", redis: "Redis", mongo: "MongoDB", mysql: "MySQL" } as const;
   return [
@@ -191,39 +210,42 @@ function stackLine({ store, auth, frontend }: AppChoices): string {
   ].join(" ");
 }
 
-// The auth plugin promises statuses no single example can show: a login from another
-// site (403), a lockout after many failed logins (429), too many password checks at once (503).
-const unshowable = (p: string) => [`POST ${p}/auth/login 403`, `POST ${p}/auth/login 429`, `POST ${p}/auth/login 503`, `POST ${p}/auth/logout 403`];
+// @inkanjs/auth 0.2 promises statuses on its routes that no single example can show, and does
+// not say so itself: the app says it for them, as `export const untested`, which `inkan check`
+// reads like `beforeEach`. Once the plugin marks them on its routes (`RouteSpec.untested`),
+// the export changes nothing and can go.
+function untestedSource(p: string): string {
+  return `
+// \`inkan check --strict\` fails on a status the contract promises and no example shows. The
+// auth plugin promises a few that no single example can: these, and only these, may stay unshown.
+export const untested = {
+  "POST ${p}/auth/login": {
+    403: "a login from another site",
+    429: "a lockout after many failed logins",
+    503: "too many password checks at once",
+  },
+  "POST ${p}/auth/logout": { 403: "a logout from another site" },
+};
+`;
+}
 
-function checkTest({ auth, frontend }: AppChoices): string {
-  const head = "// 1. Every example in the app, run as a test. `strict` also fails when the contract\n//    promises a status that no example shows.";
-  if (!auth) {
-    return `${head}
+function checkTest({ auth }: AppChoices): string {
+  return `// 1. Every example in the app, run as a test. \`strict\` also fails when the contract
+//    promises a status that no example shows${auth ? " (but for the few in `untested`, see app.ts)" : ""}.
 test("every example keeps its promise", async () => {
-  const report = await app.check({ beforeEach, strict: true });
+  const report = await app.check({ beforeEach, ${auth ? "untested, " : ""}strict: true });
   assert.ok(report.ok, formatReport(report));
-});`;
-  }
-  return `${head} The auth plugin promises four that no single example
-//    can: a login from another site (403), a lockout after many failed logins (429), too
-//    many password checks at once (503). Every other one has to be shown.
-const unshowable = new Set(${JSON.stringify(unshowable(prefixOf(frontend)))});
-
-test("every example keeps its promise", async () => {
-  const report = await app.check({ beforeEach, strict: true });
-  const uncovered = report.uncovered.filter((u) => !unshowable.has(\`\${u.method} \${u.path} \${u.status}\`));
-  assert.ok(report.failed === 0 && uncovered.length === 0, formatReport(report));
 });`;
 }
 
-function commands({ store, auth, frontend }: AppChoices, pm: Manager): string {
+function commands({ store, frontend }: AppChoices, pm: Manager): string {
   const r = (s: string) => runScript(pm, s);
   const docs = frontend === "vite" ? "http://localhost:5173/api/docs" : frontend === "next" ? "http://localhost:3000/api/docs" : "http://localhost:3000/docs";
   const lines = [
     ...(store === "memory" ? [] : ["cp .env.example .env   # then point it at your database"]),
     `${pm} install`,
     `${r("dev")}`.padEnd(22) + ` # then open ${docs}`,
-    `${r("check")}`.padEnd(22) + (auth ? " # every example, run as a test" : " # every example, run as a test, --strict"),
+    `${r("check")}`.padEnd(22) + " # every example, run as a test, --strict",
     `${r("test")}`.padEnd(22) + " # the tests in test/",
     ...(frontend === "none" ? [] : [`${r("build")}`.padEnd(22) + " # the frontend, for production"]),
   ];
@@ -275,7 +297,7 @@ const MONTH = 30 * 24 * 60 * 60 * 1000; // a Store's TTLs are in milliseconds
 export async function beforeEach() {
   await store.set("note:welcome", { id: "welcome", text: "Hello from ${name}" }, MONTH);
 }
-
+${auth ? untestedSource(p) : ""}
 export const app = inkan({ ${options.join(", ")} })
 ${auth ? `  // 3. Logins: ${p}/auth/login, ${p}/auth/logout and ${p}/auth/me, and \`security: login.session\` on a route.\n  .register(login${p ? `, {}, { prefix: "${p}" }` : ""})\n` : ""}  .get(
     "${p}/health",

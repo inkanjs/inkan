@@ -13,10 +13,12 @@ import {
   createApp,
   CreateAppError,
   detectManager,
+  MANAGERS,
   projectName,
   runScript,
   serverDir,
   type AppChoices,
+  type Manager,
 } from "../src/cli/app.ts";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
@@ -71,7 +73,7 @@ test("create app: every combination has its files, its dependencies, and nothing
     assert.equal("vite" in (pkg.devDependencies ?? {}), choices.frontend === "vite", `${name}: vite`);
     assert.deepEqual(deps, [...deps].sort(), `${name}: dependencies in order`);
     const src = serverDir(choices.frontend);
-    assert.equal(pkg.scripts.check, `inkan check ${src}/app.ts${choices.auth ? "" : " --strict"}`);
+    assert.equal(pkg.scripts.check, `inkan check ${src}/app.ts --strict`, `${name}: strict, with auth too`);
     assert.equal(pkg.scripts.test, 'node --env-file-if-exists=.env --test "test/**/*.test.ts"');
     if (choices.frontend !== "none") assert.ok(pkg.scripts.build, `${name}: a build`);
 
@@ -80,6 +82,9 @@ test("create app: every combination has its files, its dependencies, and nothing
     assert.ok(app.includes(`"${prefix}/notes/:id"`), `${name}: routes under "${prefix}"`);
     assert.equal(app.includes('docs: "/api/docs"'), prefix === "/api");
     assert.equal(app.includes("security: login.session"), choices.auth);
+    assert.equal(app.includes(`export const untested = {
+  "POST ${prefix}/auth/login": {`), choices.auth, `${name}: the auth statuses no example shows`);
+    assert.equal(files["test/app.test.ts"]!.includes("app.check({ beforeEach, untested, strict: true })"), choices.auth);
     assert.match(app, /app\.onClose\(closeStore\);\n$/);
 
     const ci = files[".github/workflows/ci.yml"]!;
@@ -88,6 +93,16 @@ test("create app: every combination has its files, its dependencies, and nothing
     const env = files[".env.example"]!;
     assert.equal(env.includes("AUTH_SECRET="), choices.auth);
   }
+});
+
+test("create app: the CI workflow installs and runs with the chosen package manager", () => {
+  const ci = (pm: Manager) => appFiles("shop", { store: "memory", auth: false, frontend: "vite" }, { version: "1.0.0", pm })[".github/workflows/ci.yml"]!;
+  const runs = (pm: Manager) => [...ci(pm).matchAll(/- (?:run|uses): (.+)/g)].map((m) => m[1]);
+  assert.deepEqual(runs("npm"), ["actions/checkout@v5", "actions/setup-node@v5", "npm install", "npm run typecheck", "npm run check", "npm test", "npm run build"]);
+  assert.deepEqual(runs("pnpm"), ["actions/checkout@v5", "pnpm/action-setup@v4", "actions/setup-node@v5", "pnpm install", "pnpm typecheck", "pnpm check", "pnpm test", "pnpm build"]);
+  assert.deepEqual(runs("yarn"), ["actions/checkout@v5", "actions/setup-node@v5", "corepack enable", "yarn install", "yarn run typecheck", "yarn run check", "yarn run test", "yarn run build"]);
+  assert.deepEqual(runs("bun"), ["actions/checkout@v5", "actions/setup-node@v5", "oven-sh/setup-bun@v2", "bun install", "bun run typecheck", "bun run check", "bun run test", "bun run build"]);
+  for (const pm of MANAGERS) assert.ok(!ci(pm).includes("{{"), `${pm}: every placeholder filled`);
 });
 
 test("create app: the README says what was chosen and how to run it", () => {

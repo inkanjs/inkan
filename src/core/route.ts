@@ -107,6 +107,13 @@ export type RouteSpec<P, Q, B, H, R extends Responses> = {
    */
   security?: Security | Security[] | false;
   examples?: Example[];
+  /**
+   * Statuses in `response` that no example shows, on purpose, each with the reason:
+   * `{ 429: "a lockout takes many failed logins" }`. `inkan check --strict` lists them
+   * instead of failing on them. An example that does answer with one still counts.
+   * @experimental
+   */
+  untested?: { [status: number]: string };
   /** Middleware for this route only. It runs after the input was validated. */
   use?: Middleware[];
   /**

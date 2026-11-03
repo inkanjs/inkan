@@ -15,6 +15,13 @@ export type CheckOptions = {
   only?: string;
   /** A promised status that no example answers with fails the check. */
   strict?: boolean;
+  /**
+   * Statuses that are promised but shown by no example on purpose, for routes this app does
+   * not write itself (a plugin's): `{ "POST /auth/login": { 429: "a lockout takes many failed logins" } }`.
+   * The same as the route's own `untested`. The CLI takes it from an entry's `export const untested`.
+   * @experimental
+   */
+  untested?: Record<string, Record<number, string>>;
 };
 
 /** @experimental */
@@ -38,6 +45,8 @@ export type CheckReport = {
   unchecked: string[];
   /** Statuses a route promises that none of its examples answers with. */
   uncovered: { method: string; path: string; status: number }[];
+  /** Statuses a route promises and no example shows, on purpose (`untested`): `--strict` lets them be. */
+  untested: { method: string; path: string; status: number; reason: string }[];
 };
 
 function fill(path: string, params: Record<string, unknown> = {}): string {
@@ -316,6 +325,7 @@ export async function runChecks(app: App, opts: CheckOptions = {}): Promise<Chec
   const results: CheckResult[] = [];
   const unchecked: string[] = [];
   const uncovered: CheckReport["uncovered"] = [];
+  const untested: CheckReport["untested"] = [];
   const log = app.options.log;
   (app.options as AppOptions).log = false;
   const index = indexExamples(app);
@@ -328,8 +338,12 @@ export async function runChecks(app: App, opts: CheckOptions = {}): Promise<Chec
       if (!examples.length) unchecked.push(label);
       else {
         const covered = new Set(examples.map((ex) => expectedStatus(r, ex)));
+        const onPurpose: Record<number, string> = { ...opts.untested?.[label], ...r.spec.untested };
         for (const s of Object.keys(r.spec.response ?? {}).map(Number)) {
-          if (!covered.has(s)) uncovered.push({ method: r.method, path: r.path, status: s });
+          if (covered.has(s)) continue;
+          const reason = onPurpose[s];
+          if (reason !== undefined) untested.push({ method: r.method, path: r.path, status: s, reason: String(reason) });
+          else uncovered.push({ method: r.method, path: r.path, status: s });
         }
       }
       for (const [i, ex] of examples.entries()) results.push(await runOne(app, r, ex, i, index, opts.beforeEach));
@@ -339,7 +353,7 @@ export async function runChecks(app: App, opts: CheckOptions = {}): Promise<Chec
   }
   const failed = results.filter((r) => !r.ok).length;
   const ok = failed === 0 && !(opts.strict && uncovered.length);
-  return { ok, passed: results.length - failed, failed, results, unchecked, uncovered };
+  return { ok, passed: results.length - failed, failed, results, unchecked, uncovered, untested };
 }
 
 /** How `formatReport` and `formatDiff` write: a title for the head line, and terminal colors. */
@@ -357,6 +371,9 @@ export function formatReport(report: CheckReport, options?: FormatOptions | stri
   const gaps = (route: string) => {
     for (const u of report.uncovered) {
       if (`${u.method} ${u.path}` === route) lines.push(`    ${c.warn("·")} ${c.warn(String(u.status))} is in the contract, but no example answers with it`);
+    }
+    for (const u of report.untested ?? []) {
+      if (`${u.method} ${u.path}` === route) lines.push(`    ${c.dim("·")} ${c.dim(`${u.status} not demonstrated, on purpose: ${u.reason}`)}`);
     }
   };
   let last = "";
@@ -386,7 +403,71 @@ export function formatReport(report: CheckReport, options?: FormatOptions | stri
     report.uncovered.length
       ? (report.ok || report.failed ? c.warn : c.seal)(`${report.uncovered.length} status${report.uncovered.length === 1 ? "" : "es"} uncovered`)
       : "",
+    report.untested?.length ? c.dim(`${report.untested.length} on purpose`) : "",
   ].filter(Boolean);
   lines.push("", "  " + summary.join(c.dim(" · ")), "");
+  return lines.join("\n");
+}
+
+// ---------- Markdown, for a pull request comment or a job summary ----------
+
+/**
+ * Text that GitHub must not read as Markdown or HTML.
+ * @internal
+ */
+export const mdText = (s: unknown) => String(s).replace(/\r?\n/g, " ").replace(/[\\`*_[\]<>|#~]/g, "\\$&");
+/**
+ * Text inside a code span, also inside a table.
+ * @internal
+ */
+export const mdCode = (s: unknown) => "`" + String(s).replace(/\r?\n/g, " ").replaceAll("`", "'").replaceAll("|", "\\|") + "`";
+/** @internal */
+export const plural = (n: number, one: string, many = one + "s") => `${n} ${n === 1 ? one : many}`;
+
+/**
+ * A check report as Markdown, what a pull request comment shows: a headline, the examples
+ * that fail with what they expected and what was answered, the statuses no example shows.
+ * `inkan check --format markdown` prints it.
+ * @experimental
+ */
+export function formatReportMarkdown(report: CheckReport, options: Pick<FormatOptions, "title"> = {}): string {
+  const total = report.results.length;
+  const uncovered = report.uncovered.length;
+  const head = report.failed
+    ? `**✗ ${plural(report.failed, "example")} of ${total} ${report.failed === 1 ? "fails" : "fail"}**`
+    : report.ok
+      ? `**✓ ${total === 1 ? "the example passes" : `all ${plural(total, "example")} pass`}**`
+      : `**✗ ${plural(uncovered, "promised status", "promised statuses")} without an example (--strict)**`;
+  const tail = [
+    ...(report.failed || !report.ok ? [`${report.passed} passed`] : []),
+    ...(uncovered && (report.ok || report.failed) ? [plural(uncovered, "status", "statuses") + " uncovered"] : []),
+    ...(report.untested?.length ? [`${report.untested.length} not demonstrated, on purpose`] : []),
+    ...(report.unchecked.length ? [plural(report.unchecked.length, "route") + " without an example"] : []),
+  ];
+  const lines = [`### 印 inkan check${options.title ? ` · ${mdText(options.title)}` : ""}`, "", [head, ...tail].join(" · "), ""];
+
+  const failed = report.results.filter((r) => !r.ok);
+  if (failed.length) {
+    lines.push("| | Route | Example | Answered | What was expected |", "|---|---|---|---|---|");
+    for (const r of failed) {
+      lines.push(`| ✗ | ${mdCode(`${r.method} ${r.path}`)} | ${mdText(r.example)} | ${r.status || "—"} | ${r.problems.map((p) => mdText(p.trim())).join("<br>")} |`);
+    }
+    lines.push("");
+  }
+  if (uncovered) {
+    lines.push(`**Promised, but no example answers with it${!report.ok && !report.failed ? " (fails --strict)" : ""}**`, "");
+    for (const u of report.uncovered) lines.push(`- ${mdCode(`${u.method} ${u.path}`)} ${u.status}`);
+    lines.push("");
+  }
+  if (report.untested?.length) {
+    lines.push("<details><summary>Not demonstrated, on purpose</summary>", "");
+    for (const u of report.untested) lines.push(`- ${mdCode(`${u.method} ${u.path}`)} ${u.status}: ${mdText(u.reason)}`);
+    lines.push("", "</details>", "");
+  }
+  if (report.unchecked.length) {
+    lines.push(`<details><summary>${plural(report.unchecked.length, "route")} without an example</summary>`, "");
+    for (const u of report.unchecked) lines.push(`- ${mdCode(u)}`);
+    lines.push("", "</details>", "");
+  }
   return lines.join("\n");
 }

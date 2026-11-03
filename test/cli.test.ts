@@ -88,3 +88,69 @@ test("cli openapi and routes", () => {
   assert.match(routes.out, /GET\s+\/teas\/:id\s+.*3 examples/);
   assert.equal(routes.out.trim().split("\n").length, 5);
 });
+
+test("cli check --format markdown: a headline, and the failed examples with what they expected", () => {
+  const ok = inkan("check", shop, "--format", "markdown");
+  assert.equal(ok.code, 0, ok.err);
+  assert.match(ok.out, /^### 印 inkan check · Tea Shop 1\.0\.0\n\n\*\*✓ all 11 examples pass\*\*/);
+
+  const broken = inkan("check", "test/fixtures/broken.ts", "--format", "markdown");
+  assert.equal(broken.code, 1);
+  assert.ok(broken.out.includes("**✗ 1 example of 1 fails**"), broken.out);
+  assert.ok(broken.out.includes("| ✗ | `GET /teas/:id` | missing | 200 | answered 200, expected 404 |"), broken.out);
+  assert.ok(broken.out.includes("- `GET /teas/:id` 200"), "the promised status no example shows");
+  assert.deepEqual(JSON.parse(inkan("check", shop, "--format", "json").out).passed, 11, "--format json is --json");
+});
+
+test("cli exit codes: 0 ok, 1 a failed result, 2 a usage or load error", () => {
+  const dir = mkdtempSync(join(tmpdir(), "inkan-cli-"));
+  try {
+    // 0
+    assert.equal(inkan("check", shop).code, 0);
+    assert.equal(inkan("openapi", shop, "-o", join(dir, "a.json")).code, 0);
+    assert.equal(inkan("diff", join(dir, "a.json"), shop).code, 0);
+    // 1: the check ran and failed, or a change breaks clients
+    assert.equal(inkan("check", "test/fixtures/broken.ts").code, 1);
+    assert.equal(inkan("diff", join(dir, "a.json"), "test/fixtures/broken.ts", "--json").code, 1);
+    // 2: nothing ran
+    const usage: string[][] = [
+      ["check"],
+      ["check", shop, "--format", "yaml"],
+      ["check", shop, "--json", "--format", "terminal"],
+      ["check", shop, "--strcit"],
+      ["check", shop, "--only"],
+      ["check", shop, "examples/other.ts"],
+      ["openapi", shop, "-o"],
+      ["openapi", shop, "-o", join(dir, "no", "such", "folder", "a.json")],
+      ["diff", join(dir, "a.json")],
+      ["frobnicate"],
+    ];
+    for (const a of usage) assert.equal(inkan(...a).code, 2, a.join(" "));
+    for (const command of ["check", "openapi", "routes"]) {
+      const missing = inkan(command, "test/fixtures/nothing-here.ts");
+      assert.equal(missing.code, 2, `${command}: no such file`);
+      assert.match(missing.err, /There is no file test\/fixtures\/nothing-here\.ts/);
+      const throws = inkan(command, "test/fixtures/throws.ts");
+      assert.equal(throws.code, 2, `${command}: an entry that throws`);
+      assert.match(throws.err, /Could not load test\/fixtures\/throws\.ts: the database URL is missing/);
+    }
+    assert.equal(inkan("diff", join(dir, "a.json"), "test/fixtures/throws.ts").code, 2);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("cli check --strict: statuses not demonstrated on purpose, by the route or the entry's `untested`", () => {
+  const r = inkan("check", "test/fixtures/untested.ts", "--strict", "--json");
+  assert.equal(r.code, 0, r.out + r.err);
+  const report: CheckReport = JSON.parse(r.out);
+  assert.deepEqual(report.uncovered, []);
+  assert.deepEqual(report.untested, [
+    { method: "GET", path: "/login", status: 429, reason: "a lockout takes many failed logins" },
+    { method: "GET", path: "/plugin", status: 503, reason: "too many at once" },
+  ]);
+  const text = inkan("check", "test/fixtures/untested.ts", "--strict");
+  assert.match(text.out, /429 not demonstrated, on purpose: a lockout takes many failed logins/);
+  const md = inkan("check", "test/fixtures/untested.ts", "--strict", "--format", "markdown");
+  assert.ok(md.out.includes("- `GET /plugin` 503: too many at once"), md.out);
+});

@@ -1,7 +1,7 @@
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { formatReport } from "@vxnsin/inkan";
-import { app, beforeEach } from "../{{src}}/app.ts";
+import { app, beforeEach{{untestedImport}} } from "../{{src}}/app.ts";
 import { closeStore, store } from "../{{src}}/store.ts";
 
 after(closeStore);

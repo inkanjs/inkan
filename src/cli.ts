@@ -3,14 +3,14 @@
 // Loads the module that builds your app (listen() stays quiet while it does)
 // and reads it, without opening a port.
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { pathToFileURL } from "node:url";
 import type { App } from "./core/app.ts";
-import { formatReport } from "./testing/check.ts";
+import { formatReport, formatReportMarkdown } from "./testing/check.ts";
 import { paint, useColor } from "./core/color.ts";
-import { diffOpenAPI, formatDiff } from "./openapi/diff.ts";
+import { diffOpenAPI, formatDiff, formatDiffMarkdown } from "./openapi/diff.ts";
 import { copyExample, EXAMPLES, ExampleError } from "./cli/examples.ts";
 import { writeSeal } from "./seal/seal.ts";
 import { learn, LearnError, setupLearn } from "./cli/learn.ts";
@@ -26,6 +26,14 @@ const option = (...names: string[]) => {
   if (i < 0) return undefined;
   return args.splice(i, 2)[1];
 };
+/** An option that needs a value: a usage error without one. */
+const value = (...names: string[]) => {
+  const i = args.findIndex((a) => names.includes(a));
+  if (i < 0) return undefined;
+  const v = args[i + 1];
+  if (v === undefined || v.startsWith("-")) fail(`${args[i]} needs a value.`);
+  return option(...names);
+};
 const has = (name: string) => {
   const i = args.indexOf(name);
   if (i >= 0) args.splice(i, 1);
@@ -40,20 +48,55 @@ function fail(msg: string): never {
 
 async function load(entry: string | undefined) {
   if (!entry) fail("Which file builds the app? For example: inkan check src/app.ts");
+  if (!existsSync(entry)) fail(`There is no file ${entry}.`);
   process.env.INKAN_NO_LISTEN = "1";
   let mod: Record<string, unknown>;
   try {
     mod = await import(pathToFileURL(resolve(entry)).href);
   } catch (err) {
-    if (entry.endsWith(".ts") && (err as NodeJS.ErrnoException).code === "ERR_UNKNOWN_FILE_EXTENSION") {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (entry.endsWith(".ts") && code === "ERR_UNKNOWN_FILE_EXTENSION") {
       fail(`Node ${process.versions.node} cannot load .ts files by itself. Use Node 22.18 or newer, or point at the built .js file.`);
     }
-    throw err;
+    loadFailed(entry, err); // a load error is a 2, like a usage error: no check ran
   }
   const app = (mod.default ?? mod.app) as App | undefined;
   if (!app || typeof app.check !== "function") fail(`${entry} has to export the app, as \`export default app\` or \`export const app\`.`);
-  await app.ready(); // plugins add routes too
-  return { app, beforeEach: mod.beforeEach as (() => unknown) | undefined };
+  try {
+    await app.ready(); // plugins add routes too
+  } catch (err) {
+    loadFailed(entry, err);
+  }
+  return {
+    app,
+    beforeEach: mod.beforeEach as (() => unknown) | undefined,
+    untested: mod.untested as Record<string, Record<number, string>> | undefined,
+  };
+}
+
+function loadFailed(entry: string, err: unknown): never {
+  console.error((err as Error)?.stack ?? err);
+  fail(`Could not load ${entry}: ${(err as Error)?.message ?? err}`);
+}
+
+/** `--format terminal|json|markdown`, and `--json` for `--format json`. */
+function format(): "terminal" | "json" | "markdown" {
+  const json = has("--json");
+  const i = args.indexOf("--format");
+  const given = i < 0 ? undefined : args.splice(i, 2)[1];
+  if (i >= 0 && !["terminal", "json", "markdown"].includes(given ?? "")) {
+    fail(`--format takes terminal, json or markdown${given ? `, not "${given}"` : ""}.`);
+  }
+  if (json && given && given !== "json") fail(`--json and --format ${given} say different things; pick one.`);
+  return json ? "json" : ((given ?? "terminal") as "terminal" | "json" | "markdown");
+}
+
+/** What is left after the options were taken: positional arguments only, `count` at most. */
+function rest(count: number, usage: string): string[] {
+  const unknown = args.find((a) => a.startsWith("-"));
+  if (unknown) fail(`There is no option ${unknown} here. ${usage}`);
+  if (args.length > count) fail(`One too many: "${args[count]}". ${usage}`);
+  return args;
 }
 
 const color = useColor();
@@ -62,12 +105,12 @@ const c = paint(color);
 const HELP = `
   ${c.seal("印")} ${c.bold("inkan")}
 
-  ${c.bold("inkan check")}   ${c.dim("<entry> [--only <text>] [--json] [--strict]")}
+  ${c.bold("inkan check")}   ${c.dim("<entry> [--only <text>] [--strict] [--format <fmt>]")}
                 ${c.dim("run every example against its contract;")}
                 ${c.dim("--strict fails on promised statuses no example covers")}
   ${c.bold("inkan openapi")} ${c.dim("<entry> [-o <file>]")}   ${c.dim("write the OpenAPI 3.1 document")}
   ${c.bold("inkan routes")}  ${c.dim("<entry>")}               ${c.dim("list the routes")}
-  ${c.bold("inkan diff")}    ${c.dim("<before> <after> [--json]")}
+  ${c.bold("inkan diff")}    ${c.dim("<before> <after> [--format <fmt>]")}
                 ${c.dim("what would break a client; each side a .json file or an app")}
   ${c.bold("inkan seal")}    ${c.dim("<entry> [-o <file>]")}   ${c.dim("stamp the contracts into plain code, for speed")}
   ${c.bold("inkan learn")}   ${c.dim("[folder] [--port <n>] [--force]")}
@@ -82,32 +125,44 @@ const HELP = `
 
   ${c.dim("<entry>")} is the file that builds the app and exports it,
   as ${c.link("`export default app`")} or ${c.link("`export const app`")}.
-  It may also export ${c.link("`beforeEach`")}, which check runs before every example.
+  It may also export ${c.link("`beforeEach`")}, which check runs before every example,
+  and ${c.link("`untested`")}: statuses of routes it does not write itself that no example shows, on purpose.
+  ${c.dim("<fmt>")} is terminal (the default), json (${c.dim("--json")} for short) or markdown, for a PR comment.
+
+  Exit codes: 0 all good, 1 a check failed or a change breaks clients, 2 a usage or load error.
 `;
 
 switch (command) {
   case "check": {
-    const only = option("--only");
-    const json = has("--json");
+    const only = value("--only");
+    const as = format();
     const strict = has("--strict");
-    const { app, beforeEach } = await load(args[0]);
-    const report = await app.check({ only, beforeEach, strict });
-    if (json) console.log(JSON.stringify(report, null, 2));
-    else console.log(formatReport(report, { title: [app.options.title, app.options.version].filter(Boolean).join(" "), color }));
+    const [entry] = rest(1, "inkan check <entry> [--only <text>] [--strict] [--format terminal|json|markdown]");
+    const { app, beforeEach, untested } = await load(entry);
+    const report = await app.check({ only, beforeEach, strict, untested });
+    const title = [app.options.title, app.options.version].filter(Boolean).join(" ");
+    if (as === "json") console.log(JSON.stringify(report, null, 2));
+    else if (as === "markdown") console.log(formatReportMarkdown(report, { title }));
+    else console.log(formatReport(report, { title, color }));
     process.exit(report.ok ? 0 : 1);
   }
   case "openapi": {
-    const out = option("--out", "-o");
-    const { app } = await load(args[0]);
+    const out = value("--out", "-o");
+    const [entry] = rest(1, "inkan openapi <entry> [-o <file>]");
+    const { app } = await load(entry);
     const doc = JSON.stringify(app.openapi(), null, 2) + "\n";
     if (out) {
-      writeFileSync(out, doc);
+      try {
+        writeFileSync(out, doc);
+      } catch (err) {
+        fail(`Could not write ${out}: ${(err as Error).message}`);
+      }
       console.log(`  ${c.ok("wrote")} ${out}`);
     } else process.stdout.write(doc);
     process.exit(0);
   }
   case "routes": {
-    const { app } = await load(args[0]);
+    const { app } = await load(rest(1, "inkan routes <entry>")[0]);
     for (const r of app.routes()) {
       const n = r.spec.examples?.length ?? 0;
       const examples = n ? c.dim(`${n} example${n === 1 ? "" : "s"}`) : c.warn("no examples");
@@ -134,8 +189,8 @@ switch (command) {
     process.exit(0);
   }
   case "diff": {
-    const json = has("--json");
-    const [before, after] = args;
+    const as = format();
+    const [before, after] = rest(2, "inkan diff <before> <after> [--format terminal|json|markdown]");
     if (!before || !after) fail("Compare what with what? For example: inkan diff openapi.json src/app.ts");
     const read = async (file: string) => {
       if (file.endsWith(".json")) {
@@ -148,8 +203,10 @@ switch (command) {
       return (await load(file)).app.openapi();
     };
     const changes = diffOpenAPI(await read(before), await read(after));
-    if (json) console.log(JSON.stringify(changes, null, 2));
-    else console.log(formatDiff(changes, { title: `${before} → ${after}`, color }));
+    const title = `${before} → ${after}`;
+    if (as === "json") console.log(JSON.stringify(changes, null, 2));
+    else if (as === "markdown") console.log(formatDiffMarkdown(changes, { title }));
+    else console.log(formatDiff(changes, { title, color }));
     process.exit(changes.some((x) => x.breaking) ? 1 : 0);
   }
   case "learn": {
