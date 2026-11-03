@@ -1,0 +1,2 @@
+# The connection string; this is the database the CI workflow starts.
+DATABASE_URL=postgres://postgres:postgres@localhost:5432/postgres

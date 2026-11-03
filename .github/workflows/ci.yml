@@ -50,3 +50,82 @@ jobs:
       - name: deno
         run: deno run --allow-env --allow-read test/platforms/smoke.ts
 
+
+  # `npm create inkan` as people get it: the core packed as npm would publish it, a project
+  # made from it with `inkan create app`, then that project's own install, typecheck,
+  # `npm run check` (--strict without auth) and tests against a real database, and its
+  # frontend's build. Pairwise over the choices: every store, auth with and without, every
+  # frontend; databases as service containers, started only for the job that needs one.
+  create-app:
+    name: create-app (${{ matrix.store }}, ${{ matrix.auth }}, ${{ matrix.frontend }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { store: memory, auth: no-auth, frontend: none }
+          - { store: memory, auth: auth, frontend: vite }
+          - { store: postgres, auth: auth, frontend: none }
+          - { store: postgres, auth: no-auth, frontend: next }
+          - { store: redis, auth: no-auth, frontend: none }
+          - { store: redis, auth: auth, frontend: next }
+          - { store: mongo, auth: auth, frontend: vite }
+          - { store: mysql, auth: no-auth, frontend: vite }
+    services:
+      # an empty image leaves a service out
+      postgres:
+        image: ${{ matrix.store == 'postgres' && 'postgres:17' || '' }}
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U postgres" --health-interval 2s --health-timeout 5s --health-retries 30
+      redis:
+        image: ${{ matrix.store == 'redis' && 'redis:7' || '' }}
+        ports: ["6379:6379"]
+        options: --health-cmd "redis-cli ping" --health-interval 2s --health-timeout 5s --health-retries 30
+      mongo:
+        image: ${{ matrix.store == 'mongo' && 'mongo:7' || '' }}
+        # mongo:8 refuses to start on Linux 6.19 to 7.0.13, which the GitHub runners have
+        ports: ["27017:27017"]
+        options: --health-cmd "mongosh --quiet --eval 'db.runCommand({ping:1})'" --health-interval 2s --health-timeout 5s --health-retries 30
+      mysql:
+        image: ${{ matrix.store == 'mysql' && 'mysql:8.4' || '' }}
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: app
+        ports: ["3306:3306"]
+        options: --health-cmd "mysqladmin ping -h 127.0.0.1 -proot" --health-interval 2s --health-timeout 5s --health-retries 30
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/postgres
+      REDIS_URL: redis://localhost:6379
+      MONGO_URL: mongodb://localhost:27017/app
+      MYSQL_URL: mysql://root:root@localhost:3306/app
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: pack the core
+        run: npm pack --pack-destination "$RUNNER_TEMP" && mv "$RUNNER_TEMP"/vxnsin-inkan-*.tgz "$RUNNER_TEMP/inkan.tgz"
+      - name: create the app
+        run: node dist/cli.js create app "$RUNNER_TEMP/app" --store ${{ matrix.store }} --${{ matrix.auth }} --frontend ${{ matrix.frontend }} --no-install
+      - name: install it, with the packed core
+        working-directory: ${{ runner.temp }}/app
+        # the packed version may not be on npm yet: the tarball stands in for it
+        run: |
+          npm pkg set "dependencies.@vxnsin/inkan=file:$RUNNER_TEMP/inkan.tgz"
+          npm install --no-audit --no-fund
+      - run: npm run typecheck
+        working-directory: ${{ runner.temp }}/app
+      - run: npm run check
+        working-directory: ${{ runner.temp }}/app
+      - run: npm test
+        working-directory: ${{ runner.temp }}/app
+      - if: matrix.frontend != 'none'
+        run: npm run build
+        working-directory: ${{ runner.temp }}/app

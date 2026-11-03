@@ -1,5 +1,75 @@
 # Changelog
 
+## 0.9.0
+
+### New
+
+- **`npm create inkan`**, and `inkan create app [folder]` behind it: a project to build on,
+  with a store (`--store memory|postgres|redis|mongo|mysql`, the database ones through
+  @inkanjs/postgres, redis, mongo and mysql), logins from @inkanjs/auth (`--auth`), and a
+  frontend (`--frontend none|next|vite`, the API under `/api` through @inkanjs/next or
+  @inkanjs/vite). It asks for what the flags leave open, and asks nothing without a terminal
+  or with `--yes`; `--pm npm|pnpm|yarn|bun` (by default the one that ran it) installs,
+  `--no-install` does not; the CI workflow installs and runs with the same package manager. Every project comes with a README, tests (`app.check` with
+  `strict`, and `app.inject`), `.env.example` and a CI workflow that starts its database,
+  and passes `inkan check --strict` and its tests as it is. The templates
+  are a base and overlays in templates/app; the package `create-inkan` (in create/) runs
+  the CLI of the same inkan version. Experimental: the generated files may change in any
+  release.
+- **`app.upgrade(request)`** (experimental): WebSocket routes on servers with WebSockets of
+  their own (uWebSockets.js, Bun), run the way `listen` runs them. It takes an
+  `AdapterRequest` and decides the upgrade as `listen` does: routing, the free checks (a GET
+  over HTTP/1.1 without a body, the origin, `maxConnections`) before any hook, then hooks,
+  security, input and middleware within `handshakeTimeout`. The answer is a refusal
+  (`{ response }`, an answer as `exchange` gives one, or none when the handshake ran out of
+  time) or a 101 with the answer's headers and cookies, `accept(transport)` and `cancel()`.
+  The transport is the platform's socket (`send(data, binary)`, `close(code, reason)`, and
+  optionally `ping()`, `bufferedAmount`, `pause()` and `resume()`); `accept` runs the route's
+  handler and returns the events the platform calls (`message`, `close`, `drain`, `pong`,
+  `error`). The app keeps the meaning: the message and send contracts, `maxMessage`, the close
+  codes 1003, 1007, 1008, 1009 and 1011, 1001 on `stopped()`, backpressure through `drain`,
+  the heartbeat when the transport can ping, and paused reading while 16 messages wait unread
+  when it can pause. A transport that does not report the close within 3 s of the app's is cut
+  (1006) and counts as gone, so `stopped()` never waits for ever. Types: `WsUpgrade`,
+  `WsRefusal`, `WsTransport`, `WsEvents`.
+- **`inkan check --format markdown` and `inkan diff --format markdown`**: what a pull request
+  comment shows. A headline (`✓ no breaking changes` or `✗ 2 breaking changes`; for check,
+  how many examples pass or fail), the changes as one table with the breaking ones first, and
+  the examples that fail with what was answered and what was expected. `--format` takes
+  `terminal` (the default), `json` or `markdown`; `--json` stays, for `--format json`. Also as
+  `formatDiffMarkdown(changes)` and `formatReportMarkdown(report)` (experimental).
+- **`kind` on every `Change`**: a name for machines (`route-removed`, `status-removed`,
+  `param-added-required`, `response-field-removed`, … the `ChangeKind` type lists all 34),
+  next to `message`, which is for people and stays as it was.
+- **`untested` on a route** (experimental): `untested: { 429: "a lockout takes many failed
+  logins" }` says a promised status is shown by no example on purpose. `inkan check --strict`
+  lists it ("not demonstrated, on purpose") instead of failing, and `CheckReport.untested`
+  has it with its reason. For routes an app does not write itself, a plugin's, the same goes
+  as `app.check({ untested: { "POST /auth/login": { 429: "…" } } })`, and the CLI reads it from
+  the entry's `export const untested`, as it reads `beforeEach`. Projects from
+  `inkan create app --auth` use it for the statuses @inkanjs/auth 0.2 promises on login and
+  logout, so they run `--strict` too.
+- **Stable from 0.9**: the JSON of `inkan diff --json` (a list of `{ breaking, kind, where,
+  message }`) and `inkan check --json` (`CheckReport`), `inkan openapi <entry> -o <file>`, and
+  the CLI's exit codes, 0 all good, 1 a check failed or a change breaks clients, 2 a usage or
+  load error (docs/STABILITY.md).
+
+### Speed
+
+- As fast as 0.8: nothing in 0.9 is on the request path. On the runner inkan scores 89.4
+  against Fastify's 87.2 (median of three runs), ahead in all three, not in every scenario.
+  The numbers are in [`bench/reports/0.9.0.md`](bench/reports/0.9.0.md).
+
+### Changed
+
+- The CLI exits with 2, not 1, when the entry cannot be loaded (it throws, or `app.ready()`
+  does), when a file is missing or `-o` cannot be written, and on an option it does not know
+  or one without its value: 1 means only that a check ran and failed, or a change breaks clients.
+- `Change` (experimental) has `kind`; `formatDiff` takes changes with or without it.
+- `inkan create app`: yarn runs scripts as `yarn run <script>` (yarn 1 has a `yarn check` of its own).
+- `listen` and `upgradeListener` run their WebSockets through the same `accept`, with the
+  app's own RFC 6455 framing on the Node socket as the transport. Nothing changes on the wire.
+
 ## 0.8.1
 
 ### Fixed

@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { diffOpenAPI, inkan, t, type Change, type Schema } from "../src/index.ts";
+import { diffOpenAPI, formatDiffMarkdown, inkan, t, type Change, type ChangeKind, type Schema } from "../src/index.ts";
 
 const quiet = { log: false, gracefulShutdown: false } as const;
 const app = () => inkan(quiet);
@@ -118,10 +118,86 @@ test("inkan diff: exit 1 on a breaking change, 0 otherwise, two files or a file 
   assert.equal(run(without, before).status, 0, "adding a route is safe");
 
   const json = run(before, without, "--json");
-  assert.deepEqual(JSON.parse(json.stdout), [{ breaking: true, where: "GET /b", message: "is gone" }]);
+  assert.equal(json.status, 1);
+  assert.deepEqual(JSON.parse(run(before, without, "--format", "json").stdout), JSON.parse(json.stdout), "--json is --format json");
+  assert.deepEqual(JSON.parse(json.stdout), [{ breaking: true, kind: "route-removed", where: "GET /b", message: "is gone" }]);
 
   const shop = join(dir, "shop.json");
   assert.equal(spawnSync(process.execPath, ["src/cli.ts", "openapi", "examples/shop.ts", "-o", shop], { cwd: root }).status, 0);
   assert.equal(run(shop, "examples/shop.ts").status, 0, "an app against its own document");
   assert.equal(run("only-one.json").status, 2);
+
+  const md = run(before, without, "--format", "markdown");
+  assert.equal(md.status, 1, "the exit code does not depend on the format");
+  assert.ok(md.stdout.includes("**✗ 1 breaking change**"), md.stdout);
+  assert.ok(md.stdout.includes("| ✗ | `GET /b` | is gone | `route-removed` |"), md.stdout);
+  assert.ok(run(without, before, "--format", "markdown").stdout.includes("**✓ no breaking changes** · 1 safe change"));
+  for (const bad of [["--format", "html"], ["--json", "--format", "markdown"], ["--format"], ["--nope"]]) {
+    const r = run(before, without, ...bad);
+    assert.equal(r.status, 2, bad.join(" "));
+    assert.equal(r.stdout, "");
+  }
+  assert.equal(run(before, join(dir, "missing.ts")).status, 2, "an app that cannot be loaded");
+});
+
+test("every change has a kind, for machines; the message stays for people", () => {
+  const op = (o: Record<string, unknown>) => ({ paths: { "/x": { post: { responses: {}, ...o } } } });
+  const kinds = (a: object, b: object) => diffOpenAPI(a, b).map((c) => c.kind).sort();
+  const body = (schema: object, required = false) => ({ requestBody: { required, content: { "application/json": { schema } } } });
+  const answer = (schema: object) => ({ responses: { 200: { content: { "application/json": { schema } } } } });
+  const param = (name: string, required: boolean, schema: object = { type: "string" }) => ({ parameters: [{ in: "query", name, required, schema }] });
+
+  const expect: [object, object, ChangeKind[]][] = [
+    [{ paths: { "/x": { get: {} } } }, { paths: { "/y": { get: {} } } }, ["route-added", "route-removed"]],
+    [op({}), op(param("q", true)), ["param-added-required"]],
+    [op({}), op(param("q", false)), ["param-added-optional"]],
+    [op(param("q", false)), op(param("q", true)), ["param-required"]],
+    [op(param("q", false)), op({}), ["param-removed"]],
+    [op({}), op(body({ type: "object" }, true)), ["body-added-required"]],
+    [op(body({ type: "object" })), op(body({ type: "object" }, true)), ["body-required"]],
+    [op({ responses: { 200: {}, 404: {} } }), op({ responses: { 200: {}, 410: {} } }), ["status-added", "status-removed"]],
+    [op(body({ anyOf: [{ type: "string" }, { type: "null" }] })), op(body({ type: "string" })), ["request-null-removed"]],
+    [op(answer({ type: "string" })), op(answer({ anyOf: [{ type: "string" }, { type: "null" }] })), ["response-null-added"]],
+    [op(body({ type: "string" })), op(body({ type: "boolean" })), ["request-type-changed"]],
+    [op(answer({ type: "string" })), op(answer({ type: "boolean" })), ["response-type-changed"]],
+    [op(body({ enum: ["a", "b"] })), op(body({ enum: ["a", "c"] })), ["request-value-added", "request-value-removed"]],
+    [op(answer({ enum: ["a", "b"] })), op(answer({ enum: ["a", "c"] })), ["response-value-added", "response-value-removed"]],
+    [op(body({ type: "string" })), op(body({ type: "string", enum: ["a"] })), ["request-values-restricted"]],
+    [op(answer({ type: "string", enum: ["a"] })), op(answer({ type: "string" })), ["response-values-unrestricted"]],
+    [op(body({ type: "string" })), op(body({ type: "string", minLength: 2, maxLength: 9 })), ["request-limit-tightened", "request-limit-tightened"]],
+    [op(body({ type: "string" })), op(body({ type: "string", pattern: "^a" })), ["request-pattern-changed"]],
+    [op(body({ type: "string" })), op(body({ type: "string", format: "email" })), ["request-format-changed"]],
+    [op(body({ type: "object" })), op(body({ type: "object", additionalProperties: false })), ["request-extra-keys-refused"]],
+    [
+      op(body({ type: "object", properties: { gone: {}, later: {} } })),
+      op(body({ type: "object", properties: { must: {}, may: {}, later: {} }, required: ["must", "later"] })),
+      ["request-field-added-optional", "request-field-added-required", "request-field-removed", "request-field-required"],
+    ],
+    [
+      op(answer({ type: "object", properties: { id: {}, nick: {}, name: {} }, required: ["id", "name"] })),
+      op(answer({ type: "object", properties: { name: {}, mail: {} } })),
+      ["response-field-added", "response-field-optional", "response-field-removed", "response-optional-field-removed"],
+    ],
+    [op(body({ oneOf: [{ type: "string" }] })), op(body({ oneOf: [{ type: "integer" }] })), ["request-shape-changed"]],
+    [op(answer({ oneOf: [{ type: "string" }] })), op(answer({ oneOf: [{ type: "integer" }] })), ["response-shape-changed"]],
+  ];
+  for (const [a, b, want] of expect) assert.deepEqual(kinds(a, b), want, JSON.stringify(want));
+  const seen = new Set(expect.flatMap(([, , k]) => k));
+  assert.equal(seen.size, 34, "every kind there is, once at least");
+  for (const c of diffOpenAPI(...(expect[0]!.slice(0, 2) as [object, object]))) {
+    assert.deepEqual(Object.keys(c), ["breaking", "kind", "where", "message"], "the stable JSON shape, in this order");
+  }
+});
+
+test("formatDiffMarkdown: a headline and one table, the breaking changes first", () => {
+  const changes: Change[] = [
+    { breaking: false, kind: "route-added", where: "GET /new", message: "is new" },
+    { breaking: true, kind: "response-field-removed", where: "GET /me", message: "the 200 answer.name | x is gone" },
+  ];
+  const md = formatDiffMarkdown(changes, { title: "a.json → b.json" });
+  assert.match(md, /^### 印 inkan diff · `a\.json → b\.json`\n\n\*\*✗ 1 breaking change\*\* · 1 safe change\n/);
+  const rows = md.split("\n").filter((l) => l.startsWith("| ✗") || l.startsWith("| ·"));
+  assert.deepEqual(rows, ["| ✗ | `GET /me` | the 200 answer.name \\| x is gone | `response-field-removed` |", "| · | `GET /new` | is new | `route-added` |"]);
+  assert.match(formatDiffMarkdown([]), /\*\*✓ no breaking changes\*\* · nothing changed that a client could notice/);
+  assert.doesNotMatch(formatDiffMarkdown([]), /\| Route/);
 });

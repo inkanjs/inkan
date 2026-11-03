@@ -1,0 +1,22 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+{{services}}    steps:
+      - uses: actions/checkout@v5
+{{ciSetup}}      - run: {{ciInstall}}
+      - run: {{ciTypecheck}}
+      # every example, run as a test
+      - run: {{ciCheck}}
+      # everything in test/
+      - run: {{ciTest}}
+{{build}}
