@@ -172,7 +172,7 @@ import { type SealState } from "../seal/seal.ts";
 import { type Context, type Middleware, type OperationRoute, type RouteDefs } from "./route.ts";
 import { type TrustProxy } from "./context.ts";
 import { Scope } from "./scope.ts";
-import { type Origins, type WsDefaults } from "./ws.ts";
+import { type Origins, type WsDefaults, type WsEvents, type WsTransport } from "./ws.ts";
 import { type PressureOptions, type PressureSample } from "./pressure.ts";
 import { Buffer } from "node:buffer";
 export type AppOptions = OpenAPIInfo & {
@@ -315,6 +315,30 @@ export type AdapterResponse = {
     done?: () => void;
     /** Set-Cookie headers, one per cookie; write each as a header of its own. */
     cookies?: string[];
+};
+/**
+ * `app.upgrade` said yes: upgrade the connection with these headers and cookies (each cookie a
+ * Set-Cookie of its own), then, once the platform's socket is open, `accept` it.
+ * @experimental
+ */
+export type WsUpgrade = {
+    status: 101;
+    /** The answer's own headers (request id, CORS); the platform adds those of the handshake. */
+    headers: Record<string, string>;
+    cookies: string[];
+    /** The socket is open on the platform: the route's handler runs with it. Route the platform's callbacks to the events. Once. */
+    accept(transport: WsTransport): WsEvents;
+    /** The connection went before it opened: frees its `maxConnections` slot and aborts `ctx.signal`. */
+    cancel(): void;
+};
+/**
+ * `app.upgrade` said no: write `response` as an answer of `exchange`, then end the connection.
+ * Without one (the handshake ran out of `handshakeTimeout`) end it without an answer.
+ * @experimental
+ */
+export type WsRefusal = {
+    status?: undefined;
+    response: AdapterResponse | undefined;
 };
 /** What gets logged for every request. */
 export type RequestLog = {
@@ -487,19 +511,40 @@ export declare class App<Defs extends RouteDefs = any, Deco = any> extends Scope
     /** Sockets and handshakes per WebSocket route with `maxConnections`. */
     private wsCount;
     /**
-     * An upgrade request: routed among the WebSocket routes, checked for what costs nothing
-     * (`refuse`), then the same way as any request (hooks, security, input, middleware). An
-     * answer other than the 101 the route's acceptor gives is written onto the socket as it
-     * is, and the connection ends.
+     * For adapters of servers with WebSockets of their own (uWebSockets.js, Bun): an upgrade
+     * request, decided the way `listen` decides it. It is routed among the WebSocket routes;
+     * the checks that cost nothing come first (a GET over HTTP/1.1 without a body, an allowed
+     * origin, a free slot under `maxConnections`), then the hooks, security, input checks and
+     * middleware, all within the route's `handshakeTimeout`.
+     *
+     * The answer is a refusal, `{ response }`: write it as `exchange`'s answer and end the
+     * connection; with `response` undefined (the handshake ran out of time) end it without an
+     * answer. Or it is `{ status: 101, headers, cookies, accept }`: upgrade with those headers
+     * (the platform adds Upgrade, Connection and Sec-WebSocket-Accept, no subprotocol and no
+     * extension), and once the platform's socket is open call `accept(transport)` and route the
+     * platform's callbacks to the events it returns. A connection that is gone before it opened
+     * is `cancel()`ed instead.
+     * @experimental
      */
-    private upgrade;
+    upgrade(request: AdapterRequest): Promise<WsUpgrade | WsRefusal>;
+    /** An upgrade from Node's server: the app's own framing on the socket, through the same `shake` and `accept`. */
+    private nodeUpgrade;
+    /**
+     * An upgrade request, from any server: routed among the WebSocket routes, checked for what
+     * costs nothing (`refuse`, `maxConnections`), then the same way as any request (hooks,
+     * security, input, middleware). An answer other than the 101 the route's acceptor gives is
+     * a refusal. Never rejects: what fails is a 500.
+     */
+    private shake;
+    /** Something failed outside every handler: log it, and the upgrade is a 500. */
+    private failedUpgrade;
     /**
      * The checks that cost next to nothing, made before any hook, security or middleware: a
      * handshake that cannot be one (not a GET, not HTTP/1.1, a body), a page from another
-     * origin, a route that holds as many sockets as it may. A problem to answer with, or none.
+     * origin. A problem to answer with, or none.
      */
     private refuse;
-    /** The upgrade went through: the socket, and the route's handler with it. */
+    /** The upgrade went through: the socket on its transport, and the route's handler with it. */
     private accept;
     /** Closes every open WebSocket with 1001 and resolves once they are gone: part of a shutdown. */
     private closeSockets;
@@ -1878,6 +1923,53 @@ export type WsMethod<Self> = <Path extends string, P = PathParams<Path>, Q = Raw
         send: Out;
     };
 }>;
+/**
+ * A platform's WebSocket as the app drives it, handed to `accept()` of an `app.upgrade`
+ * that said 101. The platform does the wire (frames, masks, pongs, the closing handshake);
+ * the app does the meaning (the contracts, the limits, the close codes, the heartbeat).
+ * @experimental
+ */
+export interface WsTransport {
+    /**
+     * Sends one message, text or binary. Return false when the platform holds more than it
+     * wants to: the app's `send` then waits for `events.drain()` before it resolves.
+     */
+    send(data: string | Uint8Array, binary: boolean): boolean | void;
+    /**
+     * Starts the closing handshake with this code and reason (at most 123 bytes), or, for
+     * 1006, cuts the connection without a close frame. Either way the platform calls
+     * `events.close` once the connection is gone.
+     */
+    close(code: number, reason: string): void;
+    /**
+     * Sends a ping. With it the route's `heartbeat` runs: a peer that has not answered the
+     * last ping (`events.pong()`) by the next one is cut off. Leave it out when the platform
+     * keeps connections alive itself; then the app does not ping.
+     */
+    ping?(): void;
+    /** Bytes the platform holds unsent. Past four times `maxMessage` (1 MiB at least) the socket is cut off with 1008. */
+    readonly bufferedAmount?: number;
+}
+/**
+ * What the platform tells the app about an accepted WebSocket; `accept()` returns it. The
+ * functions need no `this`.
+ * @experimental
+ */
+export interface WsEvents {
+    /**
+     * A whole message from the client, unmasked and put together from its fragments. Text as
+     * a string (or its UTF-8 bytes, which the app checks), binary as bytes, which the app
+     * copies before it returns, so the platform may take its memory back. The app holds it
+     * to the route's `maxMessage` (1009) and its `message` contract (1007, 1003).
+     */
+    message(data: string | ArrayBuffer | ArrayBufferView, binary: boolean): void;
+    /** The connection is gone, with the code and reason of the close frame (1005 for none, 1006 for no frame at all). Call it once. */
+    close(code: number, reason: string): void;
+    /** The platform can take more after a `send` that returned false. */
+    drain(): void;
+    /** A pong came: the peer is alive. */
+    pong(): void;
+}
 
 // ---- index.d.ts
 export { inkan, App } from "./core/app.ts";
@@ -1885,11 +1977,11 @@ export { plugin, Scope } from "./core/scope.ts";
 export { route } from "./core/files.ts";
 export type { FileRoute } from "./core/files.ts";
 export type { HookOptions, OperationHook, Outgoing, Plugin, PluginOptions, ProblemHook, RegisterOptions, RequestHook, ResolveOptions, ResponseHook, SendHook } from "./core/scope.ts";
-export type { AdapterRequest, AdapterResponse, AppOptions, ListenOptions, InjectOptions, InjectResponse, LogEntry, RequestLog } from "./core/app.ts";
+export type { AdapterRequest, AdapterResponse, AppOptions, ListenOptions, InjectOptions, InjectResponse, LogEntry, RequestLog, WsRefusal, WsUpgrade } from "./core/app.ts";
 export { Routes, routes, reply, Reply, joinPath } from "./core/route.ts";
 export type { ReplyHeaders } from "./core/route.ts";
 export type { Context, Example, Handler, Middleware, OperationRoute, PathParams, Responses, RouteInfo, RouteMeta, RouteSpec, Security } from "./core/route.ts";
-export type { Origins, PreContext, WsDefaults, WsHandler, WsOrigins, WsSocket, WsSpec } from "./core/ws.ts";
+export type { Origins, PreContext, WsDefaults, WsEvents, WsHandler, WsOrigins, WsSocket, WsSpec, WsTransport } from "./core/ws.ts";
 export { t, Schema, ValidationError } from "./schema/schema.ts";
 export type { Infer, Issue, JsonSchema, SafeResult, ServerEvent, UploadedFile } from "./schema/schema.ts";
 export { sse, fileExample, EventStream } from "./core/stream.ts";

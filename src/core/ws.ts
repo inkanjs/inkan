@@ -23,7 +23,10 @@
 //     socket.on("message", (m) => room.forEach((s) => void s.send({ type: "said", text: m.text })));
 //   });
 //
-// `app.fetch` (Bun, Deno, serverless) has no WebSockets: those platforms upgrade their own way.
+// `app.fetch` (Bun, Deno, serverless) has no WebSockets. A server with WebSockets of its own
+// (uWebSockets.js, Bun) asks `app.upgrade` instead: the app routes and checks the upgrade, and
+// runs the socket on the platform's frames through a `WsTransport`. `listen` does the same
+// with its own framing on the Node socket (NodeTransport).
 
 import { createHash } from "node:crypto";
 import { Buffer, isUtf8 } from "node:buffer";
@@ -187,7 +190,7 @@ function originOf(s: string): string | undefined {
 }
 
 /**
- * Marks an IncomingMessage that came in through the upgrade event; the route's acceptor finds it there.
+ * Marks a request that came in as an upgrade (`upgradeListener`, `app.upgrade`); the route's acceptor finds it there.
  * @internal
  */
 export const UPGRADING = Symbol("inkan.upgrading");
@@ -199,9 +202,10 @@ export type Upgrading = { ctx?: Context<any, any, any, any, any> };
  * @internal
  */
 export function acceptor(ctx: Context<any, any, any, any, any>): undefined {
-  const req = ctx.req as (Record<symbol, Upgrading | undefined> & { headers: Record<string, string | string[] | undefined> }) | undefined;
-  const state = req?.[UPGRADING];
-  const h = req?.headers ?? {};
+  // the request as it arrived, which the context keeps to itself
+  const raw = (ctx as unknown as { raw?: Record<symbol, Upgrading | undefined> & { headers: Record<string, string | string[] | undefined> } }).raw;
+  const state = raw?.[UPGRADING];
+  const h = raw?.headers ?? {};
   // strict on purpose: the header is "websocket" and nothing else, not a list to pick from
   if (!state || String(h.upgrade).toLowerCase() !== "websocket") {
     const p = problem(426, "upgrade-required", `${ctx.path} is a WebSocket: open it with an upgrade to websocket`);
@@ -318,6 +322,66 @@ class Bytes {
   }
 }
 
+// ---------- the socket, on any transport ----------
+
+/**
+ * A platform's WebSocket as the app drives it, handed to `accept()` of an `app.upgrade`
+ * that said 101. The platform does the wire (frames, masks, pongs, the closing handshake);
+ * the app does the meaning (the contracts, the limits, the close codes, the heartbeat).
+ * @experimental
+ */
+export interface WsTransport {
+  /**
+   * Sends one message, text or binary. Return false when the platform holds more than it
+   * wants to: the app's `send` then waits for `events.drain()` before it resolves.
+   */
+  send(data: string | Uint8Array, binary: boolean): boolean | void;
+  /**
+   * Starts the closing handshake with this code and reason (at most 123 bytes), or, for
+   * 1006, cuts the connection without a close frame. Either way the platform calls
+   * `events.close` once the connection is gone.
+   */
+  close(code: number, reason: string): void;
+  /**
+   * Sends a ping. With it the route's `heartbeat` runs: a peer that has not answered the
+   * last ping (`events.pong()`) by the next one is cut off. Leave it out when the platform
+   * keeps connections alive itself; then the app does not ping.
+   */
+  ping?(): void;
+  /** Bytes the platform holds unsent. Past four times `maxMessage` (1 MiB at least) the socket is cut off with 1008. */
+  readonly bufferedAmount?: number;
+}
+
+/**
+ * What the platform tells the app about an accepted WebSocket; `accept()` returns it. The
+ * functions need no `this`.
+ * @experimental
+ */
+export interface WsEvents {
+  /**
+   * A whole message from the client, unmasked and put together from its fragments. Text as
+   * a string (or its UTF-8 bytes, which the app checks), binary as bytes, which the app
+   * copies before it returns, so the platform may take its memory back. The app holds it
+   * to the route's `maxMessage` (1009) and its `message` contract (1007, 1003).
+   */
+  message(data: string | ArrayBuffer | ArrayBufferView, binary: boolean): void;
+  /** The connection is gone, with the code and reason of the close frame (1005 for none, 1006 for no frame at all). Call it once. */
+  close(code: number, reason: string): void;
+  /** The platform can take more after a `send` that returned false. */
+  drain(): void;
+  /** A pong came: the peer is alive. */
+  pong(): void;
+}
+
+/** @internal What the app's own framing (the Node transport) tells the socket besides. */
+type Events = WsEvents & {
+  /** The most bytes a message may have: the framing counts them as the frames come. */
+  maxMessage: number;
+  /** The closing handshake began, by the peer's close frame or a protocol error, with this code. */
+  closing(code: number, reason: string): void;
+  error(err: Error): void;
+};
+
 /** @internal */
 export type SocketOptions = {
   maxMessage: number;
@@ -330,6 +394,8 @@ export type SocketOptions = {
   label: string;
   /** Where an error of the handler or a listener goes. */
   report: (err: unknown) => void;
+  /** Called once the connection is gone, before the close listeners. */
+  ended?: () => void;
 };
 
 const CLOSE_WAIT = 3000; // ms the client has to answer a close frame before the socket is cut
@@ -343,91 +409,79 @@ export const MAX_FRAGMENTS = 1024;
 const FRAME_COST = 64;
 /** The least the write buffer may hold before a socket is cut off with 1008; otherwise four times `maxMessage`. */
 const MIN_BUFFER = 1024 * 1024;
+const DONE = Promise.resolve();
 
 type Listeners = { message: ((m: any) => void)[]; close: ((code: number, reason: string) => void)[]; error: ((e: Error) => void)[] };
 
 /**
- * One WebSocket connection, server side.
+ * One WebSocket connection, server side: what it means (contracts, limits, close codes,
+ * heartbeat, listeners), on a transport that moves its messages.
  * @internal
  */
 export class Connection implements WsSocket<any, any> {
   readyState: 0 | 1 | 2 | 3 = 1;
-  private socket: Duplex;
+  private t: WsTransport;
+  /** The app's own framing, which checks sizes and UTF-8 as the frames come, and can pause reading. */
+  private node?: NodeTransport;
   private o: SocketOptions;
   private write?: (v: unknown) => string;
-  private bytes = new Bytes();
   private listeners: Listeners = { message: [], close: [], error: [] };
   /** Messages that came before anybody listened. */
   private held: unknown[] = [];
-  // the frame being read
-  private head = true;
-  private fin = false;
-  private op = 0;
-  private len = 0;
-  private mask?: Buffer;
-  // the message being put together from fragments
-  private parts: Buffer[] = [];
-  private partsOp = 0;
-  private partsSize = 0;
-  private frames = 0;
-  /** A fragmented text message, decoded as it comes so bad UTF-8 is caught at once. */
-  private decoder?: TextDecoder;
-  private texts: string[] = [];
-  /** The payload of the latest ping not yet answered, while the socket cannot take more. */
-  private pong?: Buffer;
+  private paused = false;
+  /** Sends that wait for the transport to drain. */
+  private waiting: (() => void)[] = [];
   /** The most bytes waiting to be written before the socket is cut off. */
   private bufferCap: number;
   private alive = true;
   private pinger?: ReturnType<typeof setInterval>;
-  private closer?: ReturnType<typeof setTimeout>;
-  private sentClose = false;
-  /** Set once nothing more is read: the peer broke the protocol, or its close frame came. */
+  /** Set once nothing more is delivered: the peer broke the contract, or the closing began. */
   private stopped = false;
   private code = 1006;
   private reason = "";
-  /** Resolves once the TCP connection is gone. */
+  private done!: () => void;
+  /** Resolves once the connection is gone. */
   closed: Promise<void>;
+  /** What the transport calls. */
+  events: Events;
 
-  constructor(socket: Duplex, options: SocketOptions) {
-    this.socket = socket;
+  constructor(transport: WsTransport, options: SocketOptions) {
+    this.t = transport;
+    if (transport instanceof NodeTransport) this.node = transport;
     this.o = options;
     this.bufferCap = Math.max(4 * options.maxMessage, MIN_BUFFER);
     if (options.send) this.write = options.send._serializer();
-    let done!: () => void;
-    this.closed = new Promise((r) => (done = r));
-    socket.on("close", () => {
-      this.readyState = 3;
-      clearInterval(this.pinger);
-      clearTimeout(this.closer);
-      done();
-      for (const fn of this.listeners.close.slice()) this.guard(() => fn(this.code, this.reason));
-    });
-    // the peer ended its side without a close frame (the server socket allows half-open): end ours too
-    socket.on("end", () => this.socket.end());
-    socket.on("error", (err: Error) => {
-      for (const fn of this.listeners.error.slice()) this.guard(() => fn(err));
-    });
+    this.closed = new Promise((r) => (this.done = r));
+    this.events = {
+      maxMessage: options.maxMessage,
+      message: (data, binary) => this.data(data, binary),
+      close: (code, reason) => this.ended(code, reason),
+      drain: () => this.drained(),
+      pong: () => void (this.alive = true),
+      closing: (code, reason) => this.closing(code, reason),
+      error: (err) => {
+        for (const fn of this.listeners.error.slice()) this.guard(() => fn(err));
+      },
+    };
   }
 
-  /** Starts reading: the bytes that came with the upgrade request first, then the socket. */
-  start(head: Buffer) {
-    const s = this.socket as Duplex & { setNoDelay?: (on: boolean) => void; setTimeout?: (ms: number) => void };
-    s.setNoDelay?.(true);
-    s.setTimeout?.(0);
-    if (this.o.heartbeat) {
-      this.pinger = setInterval(() => {
-        if (!this.alive) return void this.socket.destroy(); // no pong since the last ping: 1006
-        this.alive = false;
-        this.raw(PING, Buffer.alloc(0));
-      }, this.o.heartbeat);
-      this.pinger.unref();
-    }
-    this.socket.on("data", (b: Buffer) => this.read(b));
-    if (head.length) this.read(head);
+  /** Starts the heartbeat, where the transport can ping. */
+  begin() {
+    const ping = this.t.ping;
+    if (!this.o.heartbeat || !ping || this.readyState === 3) return;
+    this.pinger = setInterval(() => {
+      if (!this.alive) {
+        clearInterval(this.pinger);
+        return void this.t.close(1006, ""); // no pong since the last ping: 1006
+      }
+      this.alive = false;
+      if (this.readyState === 1 && !this.over()) ping.call(this.t);
+    }, this.o.heartbeat);
+    this.pinger.unref();
   }
 
   get bufferedAmount(): number {
-    return (this.socket as Duplex & { writableLength: number }).writableLength;
+    return this.t.bufferedAmount ?? 0;
   }
 
   on(event: "message" | "close" | "error", fn: (...args: any[]) => void): this {
@@ -457,11 +511,11 @@ export class Connection implements WsSocket<any, any> {
       }
       text = this.write(value);
     } else text = JSON.stringify(value) ?? "null";
-    return this.raw(TEXT, Buffer.from(text));
+    return this.out(text, false);
   }
 
   sendRaw(data: string | Uint8Array): Promise<void> {
-    return typeof data === "string" ? this.raw(TEXT, Buffer.from(data)) : this.raw(BINARY, Buffer.from(data.buffer, data.byteOffset, data.byteLength));
+    return this.out(data, typeof data !== "string");
   }
 
   close(code = 1000, reason = ""): void {
@@ -469,72 +523,63 @@ export class Connection implements WsSocket<any, any> {
     if (this.readyState !== 1) return;
     this.code = code;
     this.reason = reason;
-    this.sendClose(code, reason);
-    this.closer = setTimeout(() => this.socket.destroy(), CLOSE_WAIT);
-    this.closer.unref();
+    this.readyState = 2;
+    this.t.close(code, reason);
   }
 
-  /** Breaks the connection off for something the peer did: the close frame, then the end, without waiting. */
+  /** A message out; resolves once the transport can take more. */
+  private out(data: string | Uint8Array, binary: boolean): Promise<void> {
+    if (this.readyState !== 1 || this.over()) return DONE;
+    return this.t.send(data, binary) === false ? new Promise((r) => this.waiting.push(r)) : DONE;
+  }
+
+  /** Whether too much waits to be written: the peer does not read, or the handler writes without waiting. Then it is cut off. */
+  private over(): boolean {
+    if ((this.t.bufferedAmount ?? 0) <= this.bufferCap) return false;
+    this.code = 1008;
+    this.reason = "too much is waiting to be written";
+    this.readyState = 2;
+    this.t.close(1006, "");
+    return true;
+  }
+
+  private drained() {
+    const w = this.waiting;
+    if (!w.length) return;
+    this.waiting = [];
+    for (const r of w) r();
+  }
+
+  /** Breaks the connection off for something the peer sent: the close frame, then the end, without waiting. */
   private fail(code: number, reason: string) {
+    if (this.readyState === 3) return;
+    this.closing(code, reason);
+    if (this.node) this.node.fail(code, reason);
+    else this.t.close(code, reason);
+  }
+
+  private closing(code: number, reason: string) {
     if (this.readyState === 3) return;
     this.code = code;
     this.reason = reason;
-    this.stopped = true;
-    this.bytes = new Bytes();
-    this.parts = [];
-    this.texts = [];
-    this.sendClose(code, reason);
-    this.socket.end();
-    this.closer ??= setTimeout(() => this.socket.destroy(), CLOSE_WAIT);
-    this.closer.unref();
-  }
-
-  private sendClose(code: number, reason: string) {
-    if (this.sentClose) return;
-    this.sentClose = true;
     this.readyState = 2;
-    const r = reasonBytes(reason);
-    const payload = Buffer.allocUnsafe(2 + r.length);
-    payload.writeUInt16BE(code, 0);
-    r.copy(payload, 2);
-    this.put(CLOSE, payload);
+    this.stopped = true;
   }
 
-  /** A frame out; resolves once the socket can take more. */
-  private raw(op: number, payload: Buffer): Promise<void> {
-    if (this.readyState !== 1) return Promise.resolve();
-    return this.put(op, payload) ? Promise.resolve() : this.drained();
-  }
-
-  private put(op: number, payload: Buffer): boolean {
-    const s = this.socket;
-    if (s.destroyed || !s.writable) return true;
-    if (this.sentClose && op !== CLOSE) return true; // nothing goes out after our close frame
-    if ((s as Duplex & { writableLength: number }).writableLength > this.bufferCap) {
-      // the peer does not read, or the handler writes without waiting: cut it off
-      this.code = 1008;
-      this.reason = "too much is waiting to be written";
-      this.readyState = 2;
-      s.destroy();
-      return true;
+  private ended(code: number, reason: string) {
+    if (this.readyState === 3) return;
+    if (this.readyState === 1) {
+      // the peer or the platform ended it; a close the app began keeps the app's code
+      this.code = code;
+      this.reason = reason;
     }
-    const parts = frame(op, payload);
-    if (parts.length === 1) return s.write(parts[0]);
-    s.cork();
-    s.write(parts[0]);
-    const ok = s.write(parts[1]);
-    s.uncork();
-    return ok;
-  }
-
-  private drained(): Promise<void> {
-    return new Promise((resolve) => {
-      const done = () => {
-        this.socket.off("drain", done).off("close", done);
-        resolve();
-      };
-      this.socket.on("drain", done).on("close", done);
-    });
+    this.readyState = 3;
+    this.stopped = true;
+    clearInterval(this.pinger);
+    this.drained();
+    this.done();
+    this.o.ended?.();
+    for (const fn of this.listeners.close.slice()) this.guard(() => fn(this.code, this.reason));
   }
 
   /** Runs a listener; one that throws is reported and closes the socket with 1011. */
@@ -555,9 +600,234 @@ export class Connection implements WsSocket<any, any> {
 
   // ----- reading -----
 
+  private data(data: string | ArrayBuffer | ArrayBufferView, binary: boolean) {
+    if (this.stopped || this.readyState !== 1) return;
+    this.alive = true;
+    const max = this.o.maxMessage;
+    let value: unknown;
+    if (typeof data === "string") {
+      // a UTF-16 unit is at most 3 bytes of UTF-8: only a long text is counted
+      if (!this.node && data.length * 3 > max && Buffer.byteLength(data) > max) return this.fail(1009, `messages may have at most ${max} bytes`);
+      value = data;
+    } else {
+      const b = ArrayBuffer.isView(data) ? Buffer.from(data.buffer, data.byteOffset, data.byteLength) : Buffer.from(data);
+      if (!this.node && b.length > max) return this.fail(1009, `messages may have at most ${max} bytes`);
+      if (!binary) {
+        if (!isUtf8(b)) return this.fail(1007, "a text message that is not valid UTF-8");
+        value = b.toString();
+      } else value = this.node ? b : copy(b); // the framing's are its own already; a platform takes its memory back
+    }
+    const contract = this.o.message;
+    if (contract) {
+      if (typeof value !== "string") return this.fail(1003, "messages are JSON text, not binary");
+      try {
+        value = JSON.parse(value);
+      } catch {
+        return this.fail(1007, "the message is not JSON");
+      }
+      const r = contract.safeParse(value);
+      if (!r.ok) return this.fail(1007, r.issues.map((i) => `${i.path || "(message)"} ${withoutValue(i.message)}`).join("; "));
+      value = r.value;
+    }
+    if (!this.listeners.message.length || this.held.length) {
+      this.held.push(value);
+      if (this.held.length >= HOLD) this.pause();
+      return;
+    }
+    this.deliver(value);
+  }
+
+  private pause() {
+    if (this.paused || !this.node) return;
+    this.paused = true;
+    this.node.pause();
+  }
+
+  private resume() {
+    if (!this.paused) return;
+    this.paused = false;
+    this.node!.resume();
+  }
+
+  private deliver(value: unknown) {
+    for (const fn of this.listeners.message.slice()) this.guard(() => fn(value));
+  }
+
+  private flush() {
+    while (this.held.length && this.listeners.message.length) this.deliver(this.held.shift());
+    if (!this.held.length) this.resume();
+  }
+
+  /** The messages as they come, until the socket closes. Reading pauses while too many wait for the loop. */
+  [Symbol.asyncIterator](): AsyncIterator<any> {
+    const queue: unknown[] = [];
+    let wake: (() => void) | undefined;
+    let ended = this.readyState === 3;
+    const onMessage = (m: unknown) => {
+      queue.push(m);
+      if (queue.length >= HOLD) this.pause();
+      wake?.();
+    };
+    const onClose = () => {
+      ended = true;
+      wake?.();
+    };
+    const stop = () => {
+      this.off("message", onMessage).off("close", onClose);
+      ended = true;
+    };
+    this.on("message", onMessage).on("close", onClose);
+    return {
+      next: async () => {
+        while (!queue.length && !ended) await new Promise<void>((r) => (wake = r));
+        wake = undefined;
+        if (queue.length) {
+          const value = queue.shift();
+          if (queue.length < HOLD && !this.held.length) this.resume();
+          return { value, done: false };
+        }
+        stop();
+        return { value: undefined, done: true };
+      },
+      return: async () => {
+        stop();
+        return { value: undefined, done: true };
+      },
+    };
+  }
+}
+
+/** Bytes of their own, always: a platform reuses the memory of what it hands over. */
+function copy(b: Buffer): Buffer {
+  const c = Buffer.allocUnsafeSlow(b.length);
+  b.copy(c);
+  return c;
+}
+
+// ---------- the app's own framing, on a Node socket ----------
+
+/**
+ * RFC 6455 on the socket Node hands over after an upgrade: the transport `listen` and
+ * `upgradeListener` give their WebSockets. Frames in (masked, fragmented, text checked as
+ * UTF-8 frame by frame, sizes counted as they come), frames out, pings answered, the closing
+ * handshake. Any bytes from the peer count as a sign of life.
+ * @internal
+ */
+export class NodeTransport implements WsTransport {
+  private socket: Duplex;
+  private ev!: Events;
+  private bytes = new Bytes();
+  // the frame being read
+  private head = true;
+  private fin = false;
+  private op = 0;
+  private len = 0;
+  private mask?: Buffer;
+  // the message being put together from fragments
+  private parts: Buffer[] = [];
+  private partsOp = 0;
+  private partsSize = 0;
+  private frames = 0;
+  /** A fragmented text message, decoded as it comes so bad UTF-8 is caught at once. */
+  private decoder?: TextDecoder;
+  private texts: string[] = [];
+  /** The payload of the latest ping not yet answered, while the socket cannot take more. */
+  private pong?: Buffer;
+  private closer?: ReturnType<typeof setTimeout>;
+  private sentClose = false;
+  /** Set once nothing more is read: the peer broke the protocol, or its close frame came. */
+  private stopped = false;
+
+  constructor(socket: Duplex) {
+    this.socket = socket;
+  }
+
+  /** Starts reading, for the socket `accept` made: the bytes that came with the upgrade request first, then the socket. */
+  start(events: WsEvents, head: Buffer) {
+    const ev = (this.ev = events as Events);
+    const s = this.socket as Duplex & { setNoDelay?: (on: boolean) => void; setTimeout?: (ms: number) => void };
+    s.on("close", () => {
+      clearTimeout(this.closer);
+      ev.close(1006, "");
+    });
+    // the peer ended its side without a close frame (the server socket allows half-open): end ours too
+    s.on("end", () => s.end());
+    s.on("error", (err: Error) => ev.error(err));
+    s.on("drain", () => ev.drain());
+    s.setNoDelay?.(true);
+    s.setTimeout?.(0);
+    s.on("data", (b: Buffer) => this.read(b));
+    if (head.length) this.read(head);
+  }
+
+  get bufferedAmount(): number {
+    return (this.socket as Duplex & { writableLength: number }).writableLength;
+  }
+
+  send(data: string | Uint8Array, binary: boolean): boolean {
+    return this.put(binary ? BINARY : TEXT, typeof data === "string" ? Buffer.from(data) : Buffer.from(data.buffer, data.byteOffset, data.byteLength));
+  }
+
+  ping() {
+    this.put(PING, Buffer.alloc(0));
+  }
+
+  close(code: number, reason: string) {
+    if (code === 1006) return void this.socket.destroy();
+    this.sendClose(code, reason);
+    this.closer = setTimeout(() => this.socket.destroy(), CLOSE_WAIT);
+    this.closer.unref();
+  }
+
+  pause() {
+    this.socket.pause();
+  }
+
+  resume() {
+    this.socket.resume();
+  }
+
+  /** Breaks the connection off: the close frame, then the end, without waiting. */
+  fail(code: number, reason: string) {
+    if (this.socket.destroyed) return;
+    this.ev.closing(code, reason);
+    this.stopped = true;
+    this.bytes = new Bytes();
+    this.parts = [];
+    this.texts = [];
+    this.sendClose(code, reason);
+    this.socket.end();
+    this.closer ??= setTimeout(() => this.socket.destroy(), CLOSE_WAIT);
+    this.closer.unref();
+  }
+
+  private sendClose(code: number, reason: string) {
+    if (this.sentClose) return;
+    this.sentClose = true;
+    const r = reasonBytes(reason);
+    const payload = Buffer.allocUnsafe(2 + r.length);
+    payload.writeUInt16BE(code, 0);
+    r.copy(payload, 2);
+    this.put(CLOSE, payload);
+  }
+
+  /** A frame out; false once the socket holds more than it wants. */
+  private put(op: number, payload: Buffer): boolean {
+    const s = this.socket;
+    if (s.destroyed || !s.writable) return true;
+    if (this.sentClose && op !== CLOSE) return true; // nothing goes out after our close frame
+    const parts = frame(op, payload);
+    if (parts.length === 1) return s.write(parts[0]);
+    s.cork();
+    s.write(parts[0]);
+    const ok = s.write(parts[1]);
+    s.uncork();
+    return ok;
+  }
+
   private read(chunk: Buffer) {
     if (this.stopped) return;
-    this.alive = true;
+    this.ev.pong(); // any bytes: the peer is alive
     const b = this.bytes;
     b.push(chunk);
     for (;;) {
@@ -592,8 +862,9 @@ export class Connection implements WsSocket<any, any> {
           if (op === CONTINUATION && !this.partsOp) return this.fail(1002, "a continuation without a message to continue");
           if (op !== CONTINUATION && this.partsOp) return this.fail(1002, "a new message before the last one ended");
           const frames = op === CONTINUATION ? this.frames + 1 : 1;
+          const max = this.ev.maxMessage;
           if (frames > MAX_FRAGMENTS) return this.fail(1009, `a message may come in at most ${MAX_FRAGMENTS} frames`);
-          if (this.partsSize + len + (frames - 1) * FRAME_COST > this.o.maxMessage) return this.fail(1009, `messages may have at most ${this.o.maxMessage} bytes`);
+          if (this.partsSize + len + (frames - 1) * FRAME_COST > max) return this.fail(1009, `messages may have at most ${max} bytes`);
         }
         this.len = len;
         this.head = false;
@@ -643,6 +914,13 @@ export class Connection implements WsSocket<any, any> {
     this.message(kind, whole);
   }
 
+  private message(kind: number, data: Buffer | string) {
+    if (typeof data === "string") return this.ev.message(data, false); // decoded frame by frame already
+    if (kind === BINARY) return this.ev.message(own(data), true);
+    if (!isUtf8(data)) return this.fail(1007, "a text message that is not valid UTF-8");
+    this.ev.message(data.toString(), false);
+  }
+
   /** A ping is answered with a pong; while the socket cannot take more, only the latest one is. */
   private pingIn(payload: Buffer) {
     if (this.sentClose) return;
@@ -671,10 +949,8 @@ export class Connection implements WsSocket<any, any> {
     }
     if (!this.sentClose) {
       // the client began: answer with its code, and the server ends the TCP connection
-      this.code = code;
-      this.reason = reason;
+      this.ev.closing(code, reason);
       this.sentClose = true;
-      this.readyState = 2;
       const echo = Buffer.allocUnsafe(payload.length >= 2 ? 2 : 0);
       if (echo.length) echo.writeUInt16BE(code, 0);
       this.put(CLOSE, echo);
@@ -682,80 +958,6 @@ export class Connection implements WsSocket<any, any> {
     this.stopped = true;
     this.bytes = new Bytes();
     this.socket.end();
-  }
-
-  private message(kind: number, data: Buffer | string) {
-    let value: unknown;
-    if (typeof data === "string") value = data; // decoded frame by frame already
-    else if (kind === TEXT) {
-      if (!isUtf8(data)) return this.fail(1007, "a text message that is not valid UTF-8");
-      value = data.toString();
-    } else value = own(data);
-    const contract = this.o.message;
-    if (contract) {
-      if (kind !== TEXT) return this.fail(1003, "messages are JSON text, not binary");
-      try {
-        value = JSON.parse(value as string);
-      } catch {
-        return this.fail(1007, "the message is not JSON");
-      }
-      const r = contract.safeParse(value);
-      if (!r.ok) return this.fail(1007, r.issues.map((i) => `${i.path || "(message)"} ${withoutValue(i.message)}`).join("; "));
-      value = r.value;
-    }
-    if (!this.listeners.message.length || this.held.length) {
-      this.held.push(value);
-      if (this.held.length >= HOLD) this.socket.pause();
-      return;
-    }
-    this.deliver(value);
-  }
-
-  private deliver(value: unknown) {
-    for (const fn of this.listeners.message.slice()) this.guard(() => fn(value));
-  }
-
-  private flush() {
-    while (this.held.length && this.listeners.message.length) this.deliver(this.held.shift());
-    if (!this.held.length && this.socket.isPaused()) this.socket.resume();
-  }
-
-  /** The messages as they come, until the socket closes. Reading pauses while too many wait for the loop. */
-  [Symbol.asyncIterator](): AsyncIterator<any> {
-    const queue: unknown[] = [];
-    let wake: (() => void) | undefined;
-    let ended = this.readyState === 3;
-    const onMessage = (m: unknown) => {
-      queue.push(m);
-      if (queue.length >= HOLD) this.socket.pause();
-      wake?.();
-    };
-    const onClose = () => {
-      ended = true;
-      wake?.();
-    };
-    const stop = () => {
-      this.off("message", onMessage).off("close", onClose);
-      ended = true;
-    };
-    this.on("message", onMessage).on("close", onClose);
-    return {
-      next: async () => {
-        while (!queue.length && !ended) await new Promise<void>((r) => (wake = r));
-        wake = undefined;
-        if (queue.length) {
-          const value = queue.shift();
-          if (queue.length < HOLD && this.socket.isPaused() && !this.held.length) this.socket.resume();
-          return { value, done: false };
-        }
-        stop();
-        return { value: undefined, done: true };
-      },
-      return: async () => {
-        stop();
-        return { value: undefined, done: true };
-      },
-    };
   }
 }
 
@@ -781,17 +983,24 @@ export function writeAnswer(socket: Duplex, status: number, reasonPhrase: string
   socket.end(bytes ? Buffer.concat([Buffer.from(lines.join("\r\n")), bytes]) : lines.join("\r\n"));
 }
 
+/** What of an answer's headers goes with a 101: not those of a body, nor those of the handshake itself. @internal */
+export function switchHeaders(headers: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(headers)) {
+    const name = k.toLowerCase();
+    if (name === "content-length" || name === "content-type" || name === "connection" || name === "upgrade" || name === "sec-websocket-accept" || name === "transfer-encoding") continue;
+    if (SAFE_HEADER.test(k) && SAFE_HEADER.test(String(v))) out[k] = v;
+  }
+  return out;
+}
+
 /**
  * The 101 that makes the request a socket: the answer's own headers (request id, cookies) go with it.
  * @internal
  */
 export function writeSwitch(socket: Duplex, key: string, headers: Record<string, string>, cookies: string[] = []) {
   const lines = ["HTTP/1.1 101 Switching Protocols", "upgrade: websocket", "connection: Upgrade", `sec-websocket-accept: ${acceptKey(key)}`];
-  for (const [k, v] of Object.entries(headers)) {
-    const name = k.toLowerCase();
-    if (name === "content-length" || name === "content-type" || name === "connection" || name === "upgrade" || name === "sec-websocket-accept" || name === "transfer-encoding") continue;
-    if (SAFE_HEADER.test(k) && SAFE_HEADER.test(String(v))) lines.push(`${k}: ${v}`);
-  }
+  for (const [k, v] of Object.entries(switchHeaders(headers))) lines.push(`${k}: ${v}`);
   for (const c of cookies) if (SAFE_HEADER.test(c)) lines.push(`set-cookie: ${c}`);
   lines.push("", "");
   socket.write(lines.join("\r\n"));

@@ -47,6 +47,7 @@ being updated (`npm run api:update`), so every change to the API shows in review
 
 - jobs: `job`, `Job*` types, the `schedule` option
 - WebSockets: `ws`, `Ws*` types, `client.ws`, `upgradeListener`, the app's `ws` option
+- `app.upgrade` and its types for adapters: `WsUpgrade`, `WsRefusal`, `WsTransport`, `WsEvents`
 - `client.events`
 - `pressure` (the option, `app.pressure()`, `Pressure*` types)
 - `currentContext()` and the `context` option
