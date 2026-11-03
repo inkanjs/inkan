@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.9.0 (unreleased)
+## 0.9.0
 
 ### New
 
@@ -53,6 +53,12 @@
   message }`) and `inkan check --json` (`CheckReport`), `inkan openapi <entry> -o <file>`, and
   the CLI's exit codes, 0 all good, 1 a check failed or a change breaks clients, 2 a usage or
   load error (docs/STABILITY.md).
+
+### Speed
+
+- As fast as 0.8: nothing in 0.9 is on the request path. On the runner inkan scores 89.4
+  against Fastify's 87.2 (median of three runs), ahead in all three, not in every scenario.
+  The numbers are in [`bench/reports/0.9.0.md`](bench/reports/0.9.0.md).
 
 ### Changed
 
