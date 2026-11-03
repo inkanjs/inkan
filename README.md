@@ -68,15 +68,7 @@ You need Node 22 or newer. From 22.18 on, `.ts` files run as they are, without a
 The package is scoped because npm keeps the plain name `inkan` free of look-alikes; the
 command is `inkan` either way.
 
-If you'd rather learn by doing, there is a tutorial that runs in your terminal, offline. It
-sets up a small tea shop and walks you through twelve short tasks, checking your code every
-time you save:
-
-```sh
-npx @vxnsin/inkan learn
-```
-
-`npx @vxnsin/inkan examples` gives you six explained projects to start from instead.
+`npx @vxnsin/inkan examples` gives you six explained projects to look at and start from.
 
 To start a project of your own:
 

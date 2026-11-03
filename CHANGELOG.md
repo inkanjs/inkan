@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.1
+
+### Removed
+
+- `inkan learn`, the tutorial in the terminal. It was never marked stable, and `npm create inkan`
+  and `inkan examples` are the better way in. 0.9.0 still has it.
+
 ## 0.9.0
 
 ### New

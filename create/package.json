@@ -1,6 +1,6 @@
 {
   "name": "create-inkan",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "npm create inkan: a new inkan app with a store, auth, a frontend, tests and CI, from the inkan of the same version.",
   "keywords": [
     "inkan",
@@ -31,6 +31,6 @@
     "node": ">=22"
   },
   "dependencies": {
-    "@vxnsin/inkan": "0.9.0"
+    "@vxnsin/inkan": "0.9.1"
   }
 }
