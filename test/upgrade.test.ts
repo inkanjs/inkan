@@ -273,6 +273,8 @@ test("app.upgrade: maxConnections counts handshakes and sockets; a refusal, canc
 
 test("app.upgrade: a handshake that never gets its answer ends without one, and frees its slot", async () => {
   let aborted = false;
+  // the handshake timer is unref'd (a server keeps the process alive); here nothing else does
+  const alive = setInterval(() => {}, 1000);
   const app = inkan(quiet).ws("/slow", { handshakeTimeout: 50, maxConnections: 1 }, () => {});
   app.onRequest((ctx) => {
     ctx.signal.addEventListener("abort", () => (aborted = true));
@@ -285,6 +287,7 @@ test("app.upgrade: a handshake that never gets its answer ends without one, and 
   assert.ok(Date.now() - started < 1000);
   assert.equal(aborted, true, "ctx.signal aborts");
   switched(await app.upgrade(upgradeRequest("/slow"))).cancel();
+  clearInterval(alive);
 });
 
 test("app.upgrade: stopped() closes every open socket with 1001 and waits until the platform says it is gone", async () => {

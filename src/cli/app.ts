@@ -69,8 +69,11 @@ const SERVICES: Record<Exclude<StoreKind, "memory">, { service: string; env: str
     env: "MONGO_URL: mongodb://localhost:27017/app",
     service: `mongo:
         image: mongo:8
+        # MongoDB 8 stops on Linux 6.19 to 7.0.13 (its tcmalloc) unless rseq is turned off
+        env:
+          GLIBC_TUNABLES: glibc.pthread.rseq=0
         ports: ["27017:27017"]
-        options: --health-cmd "mongosh --quiet --eval 'db.runCommand({ ping: 1 })'" --health-interval 2s --health-timeout 5s --health-retries 30`,
+        options: --health-cmd "mongosh --quiet --eval 'db.runCommand({ping:1})'" --health-interval 2s --health-timeout 5s --health-retries 30`,
   },
   mysql: {
     env: "MYSQL_URL: mysql://root:root@localhost:3306/app",
