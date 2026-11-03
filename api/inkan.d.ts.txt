@@ -1949,6 +1949,13 @@ export interface WsTransport {
     ping?(): void;
     /** Bytes the platform holds unsent. Past four times `maxMessage` (1 MiB at least) the socket is cut off with 1008. */
     readonly bufferedAmount?: number;
+    /**
+     * Stops reading from the peer: the app calls it once 16 messages wait unread (a handler
+     * that does not listen yet, or an iterator that falls behind), and `resume` once they are
+     * read. Without them nothing is paused.
+     */
+    pause?(): void;
+    resume?(): void;
 }
 /**
  * What the platform tells the app about an accepted WebSocket; `accept()` returns it. The
@@ -1969,6 +1976,8 @@ export interface WsEvents {
     drain(): void;
     /** A pong came: the peer is alive. */
     pong(): void;
+    /** The platform's socket failed: the route's `error` listeners hear it. The close still comes with `close`. */
+    error(err: Error): void;
 }
 
 // ---- index.d.ts

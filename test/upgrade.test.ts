@@ -320,3 +320,54 @@ test("app.upgrade: the iterator reads the messages that came before anybody list
   assert.deepEqual(m.json(), [{ sum: 6 }]);
   ev.close(1000, "");
 });
+
+test("app.upgrade: a transport that never says it is closed counts as gone after 3 s: cut once, the slot freed, stopped() resolves", { timeout: 10_000 }, async () => {
+  let heard: [number, string] | undefined;
+  const app = inkan(quiet).ws("/deaf", { maxConnections: 1 }, (socket) => socket.on("close", (code, reason) => (heard = [code, reason])));
+  const m = memory();
+  switched(await app.upgrade(upgradeRequest("/deaf"))).accept(m.transport);
+  const started = Date.now();
+  await app.stopped();
+  const took = Date.now() - started;
+  assert.ok(took >= 2900 && took < 4500, `took ${took} ms`);
+  assert.deepEqual(m.closes, [[1001, "the server is shutting down"], [1006, ""]]);
+  assert.deepEqual(heard, [1001, "the server is shutting down"], "the handler hears the close it began");
+  switched(await app.upgrade(upgradeRequest("/deaf"))).cancel(); // the slot is free
+});
+
+test("app.upgrade: a transport with pause/resume is paused while 16 messages wait unread, and resumed once they are read", async () => {
+  const calls: string[] = [];
+  const got: unknown[] = [];
+  const app = inkan(quiet).ws("/slow", {}, async (socket) => {
+    await sleep(30); // listens late: what comes meanwhile waits
+    socket.on("message", (msg) => void got.push(msg));
+  });
+  const m = memory();
+  const transport: WsTransport = Object.assign(m.transport, { pause: () => void calls.push("pause"), resume: () => void calls.push("resume") });
+  const ev = switched(await app.upgrade(upgradeRequest("/slow"))).accept(transport);
+  for (let i = 0; i < 15; i++) ev.message(String(i), false);
+  assert.deepEqual(calls, []);
+  for (let i = 15; i < 20; i++) ev.message(String(i), false);
+  assert.deepEqual(calls, ["pause"], "paused once");
+  await sleep(60);
+  assert.equal(got.length, 20, "nothing is lost");
+  assert.deepEqual(calls, ["pause", "resume"]);
+
+  // without them nothing is paused, and nothing breaks
+  const plain = memory();
+  const ev2 = switched(await app.upgrade(upgradeRequest("/slow"))).accept(plain.transport);
+  for (let i = 0; i < 20; i++) ev2.message(String(i), false);
+  await sleep(60);
+  assert.equal(got.length, 40);
+  ev.close(1000, "");
+  ev2.close(1000, "");
+});
+
+test("app.upgrade: events.error reaches the route's error listeners", async () => {
+  const errors: string[] = [];
+  const app = inkan(quiet).ws("/e", {}, (socket) => socket.on("error", (e) => void errors.push(e.message)));
+  const ev = switched(await app.upgrade(upgradeRequest("/e"))).accept(memory().transport);
+  ev.error(new Error("reset by peer"));
+  assert.deepEqual(errors, ["reset by peer"]);
+  ev.close(1006, "");
+});

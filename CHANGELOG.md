@@ -12,11 +12,14 @@
   (`{ response }`, an answer as `exchange` gives one, or none when the handshake ran out of
   time) or a 101 with the answer's headers and cookies, `accept(transport)` and `cancel()`.
   The transport is the platform's socket (`send(data, binary)`, `close(code, reason)`, and
-  optionally `ping()` and `bufferedAmount`); `accept` runs the route's handler and returns
-  the events the platform calls (`message`, `close`, `drain`, `pong`). The app keeps the
-  meaning: the message and send contracts, `maxMessage`, the close codes 1003, 1007, 1008,
-  1009 and 1011, 1001 on `stopped()`, backpressure through `drain`, and the heartbeat when
-  the transport can ping. Types: `WsUpgrade`, `WsRefusal`, `WsTransport`, `WsEvents`.
+  optionally `ping()`, `bufferedAmount`, `pause()` and `resume()`); `accept` runs the route's
+  handler and returns the events the platform calls (`message`, `close`, `drain`, `pong`,
+  `error`). The app keeps the meaning: the message and send contracts, `maxMessage`, the close
+  codes 1003, 1007, 1008, 1009 and 1011, 1001 on `stopped()`, backpressure through `drain`,
+  the heartbeat when the transport can ping, and paused reading while 16 messages wait unread
+  when it can pause. A transport that does not report the close within 3 s of the app's is cut
+  (1006) and counts as gone, so `stopped()` never waits for ever. Types: `WsUpgrade`,
+  `WsRefusal`, `WsTransport`, `WsEvents`.
 
 ### Changed
 

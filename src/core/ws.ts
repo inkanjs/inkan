@@ -350,6 +350,13 @@ export interface WsTransport {
   ping?(): void;
   /** Bytes the platform holds unsent. Past four times `maxMessage` (1 MiB at least) the socket is cut off with 1008. */
   readonly bufferedAmount?: number;
+  /**
+   * Stops reading from the peer: the app calls it once 16 messages wait unread (a handler
+   * that does not listen yet, or an iterator that falls behind), and `resume` once they are
+   * read. Without them nothing is paused.
+   */
+  pause?(): void;
+  resume?(): void;
 }
 
 /**
@@ -371,6 +378,8 @@ export interface WsEvents {
   drain(): void;
   /** A pong came: the peer is alive. */
   pong(): void;
+  /** The platform's socket failed: the route's `error` listeners hear it. The close still comes with `close`. */
+  error(err: Error): void;
 }
 
 /** @internal What the app's own framing (the Node transport) tells the socket besides. */
@@ -379,7 +388,6 @@ type Events = WsEvents & {
   maxMessage: number;
   /** The closing handshake began, by the peer's close frame or a protocol error, with this code. */
   closing(code: number, reason: string): void;
-  error(err: Error): void;
 };
 
 /** @internal */
@@ -435,6 +443,8 @@ export class Connection implements WsSocket<any, any> {
   private bufferCap: number;
   private alive = true;
   private pinger?: ReturnType<typeof setInterval>;
+  /** After a close of the app's, how long a transport has to say the connection is gone. */
+  private closer?: ReturnType<typeof setTimeout>;
   /** Set once nothing more is delivered: the peer broke the contract, or the closing began. */
   private stopped = false;
   private code = 1006;
@@ -472,7 +482,7 @@ export class Connection implements WsSocket<any, any> {
     this.pinger = setInterval(() => {
       if (!this.alive) {
         clearInterval(this.pinger);
-        return void this.t.close(1006, ""); // no pong since the last ping: 1006
+        return void this.shut(1006, ""); // no pong since the last ping: 1006
       }
       this.alive = false;
       if (this.readyState === 1 && !this.over()) ping.call(this.t);
@@ -524,7 +534,23 @@ export class Connection implements WsSocket<any, any> {
     this.code = code;
     this.reason = reason;
     this.readyState = 2;
+    this.shut(code, reason);
+  }
+
+  /**
+   * Closes the transport. The app's own framing cuts the socket itself when the peer does not
+   * answer; any other transport has CLOSE_WAIT to call `events.close`, then the connection is
+   * cut (1006) and counts as gone, so a shutdown never waits for ever.
+   */
+  private shut(code: number, reason: string) {
     this.t.close(code, reason);
+    if (this.node || this.closer || this.readyState === 3) return;
+    this.closer = setTimeout(() => {
+      if (this.readyState === 3) return;
+      if (code !== 1006) this.t.close(1006, "");
+      this.ended(this.code, this.reason);
+    }, CLOSE_WAIT);
+    this.closer.unref();
   }
 
   /** A message out; resolves once the transport can take more. */
@@ -539,7 +565,7 @@ export class Connection implements WsSocket<any, any> {
     this.code = 1008;
     this.reason = "too much is waiting to be written";
     this.readyState = 2;
-    this.t.close(1006, "");
+    this.shut(1006, "");
     return true;
   }
 
@@ -555,7 +581,7 @@ export class Connection implements WsSocket<any, any> {
     if (this.readyState === 3) return;
     this.closing(code, reason);
     if (this.node) this.node.fail(code, reason);
-    else this.t.close(code, reason);
+    else this.shut(code, reason);
   }
 
   private closing(code: number, reason: string) {
@@ -576,6 +602,7 @@ export class Connection implements WsSocket<any, any> {
     this.readyState = 3;
     this.stopped = true;
     clearInterval(this.pinger);
+    clearTimeout(this.closer);
     this.drained();
     this.done();
     this.o.ended?.();
@@ -638,15 +665,15 @@ export class Connection implements WsSocket<any, any> {
   }
 
   private pause() {
-    if (this.paused || !this.node) return;
+    if (this.paused || !this.t.pause) return;
     this.paused = true;
-    this.node.pause();
+    this.t.pause();
   }
 
   private resume() {
     if (!this.paused) return;
     this.paused = false;
-    this.node!.resume();
+    this.t.resume?.();
   }
 
   private deliver(value: unknown) {
