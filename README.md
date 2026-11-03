@@ -1,39 +1,19 @@
-<picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/inkanjs/inkan/main/assets/wordmark-dark.svg"><img src="https://raw.githubusercontent.com/inkanjs/inkan/main/assets/wordmark-light.svg" alt="inkan" width="340"></picture>
+<picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/inkanjs/inkan/main/assets/wordmark-dark.svg"><img src="https://raw.githubusercontent.com/inkanjs/inkan/main/assets/wordmark-light.svg" alt="inkan" width="300"></picture>
 
-**An API framework for Node where the docs can't lie.** It runs on `node:http`, and on Bun, Deno and serverless through `app.fetch`.
+An API framework for Node where the docs can't lie.
 
-**[Docs](https://inkan-dev.vercel.app/docs)** · [API](https://inkan-dev.vercel.app/docs/api/app) · [Benchmarks](https://inkan-dev.vercel.app/benchmarks) · [Changelog](CHANGELOG.md)
-
-[![docs](https://img.shields.io/badge/docs-inkan--dev.vercel.app-c4381f?labelColor=2b2420)](https://inkan-dev.vercel.app/docs)
 [![npm](https://img.shields.io/npm/v/@vxnsin/inkan?color=c4381f&labelColor=2b2420&label=npm)](https://www.npmjs.com/package/@vxnsin/inkan)
-[![CI](https://img.shields.io/github/actions/workflow/status/inkanjs/inkan/ci.yml?branch=main&color=3d7a4b&labelColor=2b2420&label=ci)](https://github.com/inkanjs/inkan/actions/workflows/ci.yml)
-[![dependencies](https://img.shields.io/badge/dependencies-0-ece1cf?labelColor=2b2420)](package.json)
-[![License](https://img.shields.io/badge/license-MIT-a87fe0?labelColor=2b2420)](LICENSE)
-[![supports warden](https://raw.githubusercontent.com/vxnsin/warden/main/assets/supports-warden.svg)](https://github.com/vxnsin/warden)
+[![ci](https://img.shields.io/github/actions/workflow/status/inkanjs/inkan/ci.yml?branch=main&color=3d7a4b&labelColor=2b2420&label=ci)](https://github.com/inkanjs/inkan/actions/workflows/ci.yml)
+[![license](https://img.shields.io/badge/license-MIT-ece1cf?labelColor=2b2420)](LICENSE)
 
-<p align="center"><img src="https://raw.githubusercontent.com/inkanjs/inkan/main/assets/demo.svg" width="840" alt="A route with its contract, a request that breaks it and gets a 400 naming the field, and inkan check passing every example"></p>
+[Docs](https://inkan-dev.vercel.app/docs) · [Benchmarks](https://inkan-dev.vercel.app/benchmarks) · [Hanko](https://inkan-dev.vercel.app/hanko) · [Changelog](CHANGELOG.md)
 
-<!-- cozy:cards -->
-<div align="center">
+<img src="https://raw.githubusercontent.com/inkanjs/inkan/main/assets/demo.svg" width="840" alt="A route with its contract, a request that breaks it and gets a 400 naming the field, and inkan check passing every example">
 
-<a href="https://github.com/inkanjs/inkan"><picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/inkanjs/inkan/output/repo-dark.svg?v=bc9e6d47dd"><img src="https://raw.githubusercontent.com/inkanjs/inkan/output/repo-light.svg?v=bc9e6d47dd" width="840" alt="inkanjs/inkan: An API server for Node where the docs can't lie: one contract per route gives you validation, types, OpenAPI, docs and tests."></picture></a>
-
-<a href="https://github.com/inkanjs/inkan#install"><picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/inkanjs/inkan/output/nav-start-dark.svg?v=c2e08cb92e"><img src="https://raw.githubusercontent.com/inkanjs/inkan/output/nav-start-light.svg?v=c2e08cb92e" width="95" alt="install →"></picture></a><a href="https://www.npmjs.com/package/@vxnsin/inkan"><picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/inkanjs/inkan/output/nav-npm-dark.svg?v=513902168b"><img src="https://raw.githubusercontent.com/inkanjs/inkan/output/nav-npm-light.svg?v=513902168b" width="50" alt="npm"></picture></a><a href="https://github.com/vxnsin/warden"><picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/inkanjs/inkan/output/nav-warden-dark.svg?v=0e950205da"><img src="https://raw.githubusercontent.com/inkanjs/inkan/output/nav-warden-light.svg?v=0e950205da" width="69" alt="warden"></picture></a>
-
-<a href="https://github.com/inkanjs/inkan/commits"><picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/inkanjs/inkan/output/commits-dark.svg?v=99e4e63d62"><img src="https://raw.githubusercontent.com/inkanjs/inkan/output/commits-light.svg?v=99e4e63d62" width="840" alt="latest commits of inkanjs/inkan"></picture></a>
-
-<a href="https://github.com/inkanjs/inkan/releases"><picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/inkanjs/inkan/output/releases-dark.svg?v=7f6a92f9e0"><img src="https://raw.githubusercontent.com/inkanjs/inkan/output/releases-light.svg?v=7f6a92f9e0" width="840" alt="releases: v0.8.1, v0.8.0, v0.7.0, v0.6.0"></picture></a>
-
-<a href="https://github.com/inkanjs/inkan/graphs/contributors"><picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/inkanjs/inkan/output/contributors-dark.svg?v=1ee5f307cd"><img src="https://raw.githubusercontent.com/inkanjs/inkan/output/contributors-light.svg?v=1ee5f307cd" width="840" alt="contributors: vxnsin, AndrewCMD, RinZ27"></picture></a>
-
-</div>
-<!-- /cozy:cards -->
-
-An *inkan* (印鑑) is the seal a Japanese contract gets stamped with. Here every
-route carries one: params, query, body, responses and a few examples, written
-once. From that one definition inkan checks what comes in, types your handler,
-checks what goes out, writes OpenAPI 3.1, serves the docs, and runs every
-example as a test.
+An *inkan* (印鑑) is the seal a Japanese contract gets stamped with. In inkan every route
+has one: its params, query, body, responses and a few examples, written once. From that
+inkan checks what comes in, types your handler, trims what goes out, writes OpenAPI 3.1,
+serves a docs page and runs the examples as tests.
 
 ```ts
 import { inkan, problem, t } from "@vxnsin/inkan";
@@ -54,21 +34,21 @@ app.get(
     ],
   },
   ({ params }) => {
-    const tea = teas.find((x) => x.id === params.id); // params.id is a number, not a string
+    const tea = teas.find((x) => x.id === params.id); // params.id is a number here
     if (!tea) throw problem(404, "tea-not-found", `There is no tea with id ${params.id}`);
-    return tea; // has to be a Tea, or it does not compile
+    return tea; // has to be a Tea, or it doesn't compile
   },
 );
 
-app.listen();
+app.listen({ port: 3000 }); // docs on /docs
 ```
 
-The examples are what the docs show, and they are what this runs. Say the 404 got lost in a refactor:
+The examples are what the docs page shows, and they are what `inkan check` runs. If the
+404 gets lost in a refactor, the check says so before anyone reads the docs and believes
+them:
 
 ```sh
 $ npx inkan check src/app.ts
-
-  印 inkan check  ·  Tea Shop 1.0.0
 
   GET    /teas/:id
     ✓ found                              200  0.8ms
@@ -78,118 +58,76 @@ $ npx inkan check src/app.ts
   2 examples · 1 sealed · 1 broken
 ```
 
-A docs page that is tested is a docs page you can trust. When the handler
-drifts, the check goes red before anyone reads something false.
-
-## Why another one
-
-Express gets out of the way, Fastify is fast, Hono runs everywhere. inkan wants to be
-easy to start and deep when you need it, plus the one thing none of them does: holding the
-server to what its docs say.
-
-| | Express | Fastify | Hono | inkan |
-| --- | :-: | :-: | :-: | :-: |
-| Handler types come from the schema | – | with a type provider | with a validator | ✓ |
-| OpenAPI document | plugin | plugin | plugin | ✓ |
-| Docs page | plugin | plugin | plugin | ✓ no CDN, works offline |
-| Answers trimmed to the contract | – | ✓ | – | ✓ and checked in dev |
-| **Examples run as tests** | – | – | – | ✓ `inkan check` |
-| **Live request inspector** | – | – | – | ✓ `/_inkan` |
-| Every error in one shape ([RFC 9457](https://www.rfc-editor.org/rfc/rfc9457)) | – | – | – | ✓ |
-| Credentials in the contract, refused with a 401 when missing | middleware | plugin | middleware | ✓ `security`, in OpenAPI too |
-| Contracts as compiled code | – | at runtime, with `new Function` | – | ✓ ahead of time, `inkan seal`, no eval |
-| Hooks, plugins, decorators | middleware | ✓ | middleware | ✓ |
-| Bun, Deno, serverless | – | – | ✓ | ✓ `app.fetch` |
-| **A tutorial in the terminal** | – | – | – | ✓ `inkan learn` |
-| Runtime dependencies | several | several | none | **none** |
-
-## Install
+## Getting started
 
 ```sh
 npm install @vxnsin/inkan
 ```
 
-The package is scoped because npm keeps the plain name `inkan` free of look-alikes. The command it installs is `inkan` either way.
+You need Node 22 or newer. From 22.18 on, `.ts` files run as they are, without a build step.
+The package is scoped because npm keeps the plain name `inkan` free of look-alikes; the
+command is `inkan` either way.
 
-Node 22 or newer. On Node 22.18 and newer, `.ts` files run as they are,
-with no build step and no loader.
-
-**New here? Start with the tutorial.** It runs in your terminal, offline:
+If you'd rather learn by doing, there is a tutorial that runs in your terminal, offline. It
+sets up a small tea shop and walks you through twelve short tasks, checking your code every
+time you save:
 
 ```sh
 npx @vxnsin/inkan learn
 ```
 
-It sets up a small tea shop and gives you twelve quests, one idea each: a first
-route, typed params, rules for a body, examples as tests, problems, groups,
-security, hooks, the docs page, changes that break clients, the seal and plugins.
-inkan checks your work every time you save, says what is still missing, and
-gives a hint (then a clearer one) when you press `h`. It keeps your progress, so
-`npx @vxnsin/inkan learn` again goes on where you stopped.
+`npx @vxnsin/inkan examples` gives you six explained projects to start from instead.
 
-## What it does
+## What's in it
 
-| | |
-| --- | --- |
-| **Checks what comes in** | `params`, `query`, `headers` and `body` are validated together. Path and query strings become the numbers and booleans the schema asks for. Bad input is one 400 that lists every issue, not just the first. |
-| **Types the handler** | No generics to write. `params.id` is what the schema says, and so is the return value. Without a schema, `:id` in the path is still typed. |
-| **Checks what goes out** | In development, an answer that breaks its contract is a 500 that says where, not a silent surprise for the frontend. Keys the contract does not list are dropped, so a `passwordHash` never leaves by accident. |
-| **Writes OpenAPI 3.1** | At `/openapi.json`, from the same schemas. Named schemas land in `components` once. |
-| **Serves the docs** | At `/docs`. Every example has a send button, and a route gets its seal 印 when all of its examples answer as promised. |
-| **Runs examples as tests** | `inkan check` or `app.check()`, in-process, no port. Routes without examples are listed, so nothing hides. |
-| **Shows what happened** | `/_inkan` is a live log of the last 200 requests and what broke the contract. Development only, loopback only, secret headers hidden. |
-| **Speaks WebSocket** | `app.ws(path, { message, send }, handler)`: the upgrade goes through the same hooks, security and checks as a GET, messages both ways are JSON checked against their contract, and `client.ws` is typed from it. Only pages of the app's own origin may open it unless `origins` says otherwise, and every socket has limits: `maxMessage` (1 MiB), 1024 frames per message, a bounded write buffer, `maxConnections`, a 10 s handshake. No dependency, no permessage-deflate. |
-| **Errors in one shape** | `throw problem(404, "tea-not-found", "…")` gives an RFC 9457 document. Every built-in error has the same shape, with a stable `type` to switch on. |
+The core has no dependencies. Besides the contracts, it comes with:
 
-## Learn more
+- a typed client for the frontend, built from the app itself, with no generated code
+- the docs page at `/docs` and the OpenAPI document at `/openapi.json`
+- a live request inspector at `/_inkan` while you develop
+- one error format for everything, [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) problems
+- server-sent events, streams, file uploads and CSV, all under the contract
+- WebSockets with a contract per message, and background jobs with progress and schedules
+- hooks, plugins and decorators, and `inkan diff` to tell which changes break clients
+- `inkan seal`, which compiles contracts to plain code ahead of time, without `eval`
 
-Everything else lives on **[the website](https://inkan-dev.vercel.app/docs)**:
+It runs on `node:http`, and on Bun, Deno and serverless through `app.fetch`. Auth,
+sessions, stores for Redis, Postgres, MongoDB and MySQL, and the other official plugins
+live in [inkanjs/middleware](https://github.com/inkanjs/middleware); the Next.js, Vite,
+TanStack Query and uWebSockets.js integrations in
+[inkanjs/integrations](https://github.com/inkanjs/integrations).
 
-| | |
-| --- | --- |
-| [Routes](https://inkan-dev.vercel.app/docs/routes) and [Schemas](https://inkan-dev.vercel.app/docs/schemas) | the contract: params, query, body, responses, examples |
-| [Examples are tests](https://inkan-dev.vercel.app/docs/examples) | `inkan check`, examples that build on each other |
-| [Streams, events and uploads](https://inkan-dev.vercel.app/docs/streams) | server-sent events, rows as they come, CSV, files, bodies larger than memory |
-| [Typed client](https://inkan-dev.vercel.app/docs/client) | a client typed from the app itself, no code generation |
-| [Middleware](https://inkan-dev.vercel.app/docs/middleware) and [Hooks](https://inkan-dev.vercel.app/docs/hooks) | groups, credentials, CORS, plugins, decorators |
-| [API](https://inkan-dev.vercel.app/docs/api/app) | the app, routing, the context (text, html, cookies, redirects), schemas and problems |
-| [Sealed contracts](https://inkan-dev.vercel.app/docs/seal) | contracts compiled ahead of time, no `eval` |
-| [Running it](https://inkan-dev.vercel.app/docs/deploy) | node, systemd, pm2, containers, workers, Bun, Deno, serverless |
-| [Integrations](https://inkan-dev.vercel.app/docs/integrations) | Next.js, Vite, TanStack Query, uWebSockets.js |
-| [CLI](https://inkan-dev.vercel.app/docs/cli) | `inkan check`, `inkan seal`, `inkan learn`, `inkan examples`, `inkan create plugin` |
+Everything else is in [the docs](https://inkan-dev.vercel.app/docs).
+
+## Compared to the others
+
+Express gets out of your way, Fastify is fast, Hono runs everywhere. inkan is closest to
+Fastify in spirit, with schemas on every route, but it keeps the docs and the tests in the
+same place as the code, and it gets its speed without generating code at runtime.
+
+On the benchmark (twelve scenarios on a GitHub runner, plain `node:http` as 100) inkan
+scores 91.0, Fastify 89.9, Hono 84.5 and Express 46.0. That puts inkan level with Fastify
+or a little ahead, not in every scenario. The numbers, how they are measured and how to run
+the bench yourself are on [the benchmarks page](https://inkan-dev.vercel.app/benchmarks).
+I wrote the other frameworks' apps myself, so if you know a faster way to write one of
+them, please open a pull request.
 
 ## Stability
 
-From 0.8.0 the API is frozen: what is marked stable is not removed or changed in meaning
-in a minor release. A rename ships as a deprecated alias first, with a one-time warning in
-development, for at least two minor releases and six months. What is marked
-`@experimental` (jobs, WebSockets, seals, a few hooks) may still change, and the CHANGELOG
-says when. The lists and the full policy are on
-**[the stability page](https://inkan-dev.vercel.app/docs/stability)** and in
-[`docs/STABILITY.md`](docs/STABILITY.md); plugins declare `inkan: ">=0.8.0 <1.0.0"`.
-
-## How fast
-
-Twelve scenarios, every server doing the same work and every answer checked before it is
-measured, with a bare `node:http` server as 100:
-
-| | node:http | **inkan** | Fastify | Hono | Express |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| score | 100 | **91.0** | 89.9 | 84.5 | 46.0 |
-
-inkan and Fastify are level to inkan slightly ahead: in front in two of three runs, level in
-the third, and not in every scenario. Every scenario, how it is measured
-and how to run it yourself are on **[the benchmarks page](https://inkan-dev.vercel.app/benchmarks)**;
-how 0.8.0 got there is in [`bench/reports/0.8.0.md`](bench/reports/0.8.0.md), and the bench
-itself in [`bench/`](bench).
+Since 0.8 the API is stable. What is marked stable won't be removed or change meaning in a
+minor release; a rename keeps the old name working, with a warning, for at least two minor
+releases and six months. A few newer parts, like jobs and WebSockets, are still marked
+experimental. The details are in [docs/STABILITY.md](docs/STABILITY.md).
 
 ## How inkan is made
 
-inkan is designed and maintained by Vensin. Much of the code is written together with an AI
-assistant (Claude Code), and none of it goes in unchecked: I read every change, run it on my
-own hardware and put it through a full security review before it is merged. Every change
-lands with tests, over 200 of them, run on every commit, and every example in the docs is
-one of them. I make mistakes too; this process is there to catch them before you do.
+I'm Vensin, and I design and maintain inkan on my own. A lot of the code is written
+together with an AI assistant (Claude Code). None of it goes in unchecked: I read every
+change, run it on my own hardware and put it through a security review before it's merged.
+Every change comes with tests, close to 400 of them, and every example in the docs is one
+of them. I make mistakes too, and this is how I try to catch them before you do.
+
+Issues and pull requests are welcome.
 
 ## License
 
