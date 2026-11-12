@@ -15,6 +15,7 @@ import { writeSeal } from "./seal/seal.ts";
 import { createPlugin, CreateError } from "./cli/create.ts";
 import { runCreateApp } from "./cli/app.ts";
 import { banner, Cancelled, select } from "./cli/prompt.ts";
+import { runHanko } from "./cli/hanko.ts";
 
 const version = (): string => JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 
@@ -119,6 +120,8 @@ const HELP = `
                 ${c.dim("asks what it needs, or see inkan create app --help")}
   ${c.bold("inkan create plugin")} ${c.dim("<name> [folder]")}
                 ${c.dim("a package for a plugin of your own: tests, types, CI, ready for npm")}
+  ${c.bold("inkan hanko")}   ${c.dim("[query] [--kind <k>] [--json]")}
+                ${c.dim("find plugins, middleware and stores by kind or by search, and install one")}
 
   ${c.dim("<entry>")} is the file that builds the app and exports it,
   as ${c.link("`export default app`")} or ${c.link("`export const app`")}.
@@ -274,6 +277,10 @@ switch (command) {
       if (err instanceof CreateError) fail(err.message);
       throw err;
     }
+  }
+  case "hanko":
+  case "plugins": {
+    process.exit(await runHanko(args, { color, fail }));
   }
   case "-v":
   case "--version": {

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { PassThrough } from "node:stream";
 import test from "node:test";
-import { banner, Cancelled, confirm, gradient, select, text, type Io } from "../src/cli/prompt.ts";
+import { banner, Cancelled, clip, confirm, gradient, select, text, type Io } from "../src/cli/prompt.ts";
 
 const UP = "\x1b[A";
 const DOWN = "\x1b[B";
@@ -45,13 +45,23 @@ test("select: wraps around, a digit jumps, the initial value is where it starts"
   assert.equal(await jumped, "c");
 });
 
-test("select: hints go when the terminal is too narrow", async () => {
+test("select: a long hint is cut with …, and no drawn line reaches the last column", async () => {
   const t = terminal();
-  t.io.output.columns = 30;
-  const answer = select(t.io, "pick", [{ value: "memory", hint: "in this process, nothing to install" }]);
-  await t.type(ENTER);
+  t.io.output.columns = 40;
+  const long = "One Store for jobs, rate limits, logins and sessions, shared by every process.";
+  const answer = select(t.io, "what are you looking for?", [{ value: "stores", hint: long }, { value: "memory" }]);
+  await t.type(DOWN, UP, DOWN, ENTER);
   await answer;
-  assert.doesNotMatch(plain(t.out()), /nothing to install/);
+  const lines = plain(t.out()).split(/\n|\r|\x1b\[J/);
+  assert.match(plain(t.out()), /stores +One Store for jobs, r…/);
+  for (const line of lines) assert.ok([...line].length <= 38, `"${line}" is ${[...line].length} wide`);
+});
+
+test("clip: counts columns, not characters, and keeps colour codes", () => {
+  assert.equal(clip("abcdef", 4), "abcd");
+  assert.equal(clip("印印印", 4), "印印");
+  assert.equal(clip("\x1b[31mabcdef\x1b[0m", 3), "\x1b[31mabc\x1b[0m");
+  assert.equal(clip("short", 10), "short");
 });
 
 test("confirm: the default, arrows to switch, y and n answer at once", async () => {

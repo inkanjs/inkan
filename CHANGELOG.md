@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.9.4
+
+### New
+
+- **`inkan hanko [query]`** (or `inkan plugins`): what https://inkan-dev.vercel.app/hanko lists, in the
+  terminal. Pick a kind (built-in, middleware, stores, integrations, recipes, community), then
+  search as you type; a plugin shows its card (version, weekly downloads, tags, the import or
+  the install line, the docs) and installs into the project you are in with the package
+  manager that ran it. Without a terminal it prints the matches grouped by kind; `--kind <k>`
+  narrows, `--json` gives them as data. When inkan.dev does not answer, npm's list stands in.
+
 ## 0.9.3
 
 ### Changed

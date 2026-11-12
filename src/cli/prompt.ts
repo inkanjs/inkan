@@ -53,13 +53,38 @@ const styles = (on: boolean) => {
   return { bold: c("1"), dim: c("2"), ok: c("32"), seal: c("31"), cyan: c("36"), active: (s: string) => gradient(s, on) };
 };
 
+const wide = (cp: number) => (cp >= 0x1100 && cp <= 0x115f) || (cp >= 0x2e80 && cp <= 0xa4cf) || (cp >= 0xac00 && cp <= 0xd7a3) || (cp >= 0xf900 && cp <= 0xfaff) || (cp >= 0xfe30 && cp <= 0xfe4f) || (cp >= 0xff00 && cp <= 0xff60) || (cp >= 0x1f300 && cp <= 0x1faff);
+
+/** `line` cut to `width` columns, colour codes kept: a line that wraps would break the redraw. */
+export function clip(line: string, width: number): string {
+  let out = "";
+  let used = 0;
+  for (let i = 0; i < line.length; ) {
+    const esc = /^\x1b\[[0-9;?]*[A-Za-z]/.exec(line.slice(i));
+    if (esc) {
+      out += esc[0];
+      i += esc[0].length;
+      continue;
+    }
+    const cp = line.codePointAt(i)!;
+    const w = wide(cp) ? 2 : 1;
+    if (used + w > width) return out + (out.includes("\x1b[") ? "\x1b[0m" : "");
+    out += String.fromCodePoint(cp);
+    used += w;
+    i += cp > 0xffff ? 2 : 1;
+  }
+  return out;
+}
+
 /** Draws `frame()` in place after every key until `onKey` settles, then leaves `done()` behind. */
 function ask<T>(io: Io, frame: () => string[], onKey: (key: Key, ch: string | undefined) => { value: T } | void, done: (value: T) => string): Promise<T> {
   const { input, output } = io;
   return new Promise<T>((resolve, reject) => {
     let drawn = 0;
+    // Windows wraps a line that reaches the last column, so stay two short of it
+    const width = () => Math.max(10, (output.columns ?? 80) - 2);
     const draw = (lines: string[]) => {
-      output.write(`\r${drawn > 1 ? `\x1b[${drawn - 1}A` : ""}\x1b[J${lines.join("\n")}`);
+      output.write(`\r${drawn > 1 ? `\x1b[${drawn - 1}A` : ""}\x1b[J${lines.map((l) => clip(l, width())).join("\n")}`);
       drawn = lines.length;
     };
     const wasRaw = input.isRaw ?? false;
@@ -95,15 +120,16 @@ export function select<T extends string>(io: Io, message: string, choices: reado
   const s = styles(io.color);
   let i = Math.max(0, choices.findIndex((c) => c.value === initial));
   const pad = Math.max(...choices.map((c) => (c.label ?? c.value).length)) + 2;
-  // hints go when the terminal is too narrow for them
-  const room = (io.output.columns ?? 80) - pad - 8;
+  // hints are cut to the terminal, and left out when there is hardly room for them
+  const room = (io.output.columns ?? 80) - pad - 10;
+  const fit = (hint: string) => (room < 8 ? "" : hint.length > room ? hint.slice(0, room - 1).trimEnd() + "…" : hint);
   return ask(
     io,
     () => [
       `  ${s.seal("◆")} ${s.bold(message)}  ${s.dim("↑↓ enter")}`,
       ...choices.map((c, k) => {
         const label = (c.label ?? c.value).padEnd(pad);
-        const hint = c.hint && c.hint.length <= room ? s.dim(c.hint) : "";
+        const hint = c.hint ? s.dim(fit(c.hint)) : "";
         return k === i ? `  ${s.dim("│")} ${s.active("❯ " + label)}${hint}` : `  ${s.dim("│")}   ${label}${hint}`;
       }),
       `  ${s.dim("└")}`,
@@ -158,6 +184,52 @@ export function text(io: Io, message: string, opts: { placeholder?: string; vali
       else if (ch && !key.ctrl && ch >= " " && ch !== "\x7f") value += ch;
     },
     (v) => `  ${s.ok("✔")} ${message} ${s.dim("·")} ${s.cyan(v)}`,
+  );
+}
+
+export type Found<T> = { value: T; label: string; hint?: string; badge?: string };
+
+/** A list that narrows while you type: ↑↓ to move, enter to pick. `find` gets the query. */
+export function search<T>(io: Io, message: string, find: (query: string) => Found<T>[], opts: { rows?: number; query?: string } = {}): Promise<T> {
+  const s = styles(io.color);
+  const rows = opts.rows ?? 8;
+  let query = opts.query ?? "";
+  let found = find(query);
+  let i = 0;
+  let picked: Found<T> | undefined;
+  return ask(
+    io,
+    () => {
+      const top = Math.max(0, Math.min(i - rows + 1, found.length - rows));
+      const shown = found.slice(top, top + rows);
+      const pad = Math.max(0, ...shown.map((f) => f.label.length)) + 2;
+      const room = (io.output.columns ?? 80) - pad - 16;
+      const line = (f: Found<T>, k: number) => {
+        const badge = f.badge ? s.dim(`${f.badge.padEnd(11)} `) : "";
+        const hint = f.hint ? s.dim(f.hint.length > room ? f.hint.slice(0, Math.max(0, room - 1)) + "…" : f.hint) : "";
+        return top + k === i ? `  ${s.dim("│")} ${s.active("❯ " + f.label.padEnd(pad))}${badge}${hint}` : `  ${s.dim("│")}   ${f.label.padEnd(pad)}${badge}${hint}`;
+      };
+      return [
+        `  ${s.seal("◆")} ${s.bold(message)}  ${query}${s.active("▏")}${query ? "" : s.dim("type to search")}`,
+        ...(found.length ? shown.map(line) : [`  ${s.dim("│")}   ${s.dim("nothing matches")}`]),
+        `  ${s.dim("└")} ${s.dim(`${found.length} found · ↑↓ enter · esc`)}`,
+      ];
+    },
+    (key, ch) => {
+      if (key.name === "up") i = (i - 1 + found.length) % Math.max(1, found.length);
+      else if (key.name === "down" || key.name === "tab") i = (i + 1) % Math.max(1, found.length);
+      else if (isEnter(key)) {
+        if ((picked = found[i])) return { value: picked.value };
+      } else {
+        if (key.name === "backspace") query = [...query].slice(0, -1).join("");
+        else if (key.ctrl && key.name === "u") query = "";
+        else if (ch && !key.ctrl && ch >= " " && ch !== "\x7f") query += ch;
+        else return;
+        found = find(query);
+        i = 0;
+      }
+    },
+    () => `  ${s.ok("✔")} ${message} ${s.dim("·")} ${s.cyan(picked?.label ?? "")}`,
   );
 }
 
