@@ -53,13 +53,38 @@ const styles = (on: boolean) => {
   return { bold: c("1"), dim: c("2"), ok: c("32"), seal: c("31"), cyan: c("36"), active: (s: string) => gradient(s, on) };
 };
 
+const wide = (cp: number) => (cp >= 0x1100 && cp <= 0x115f) || (cp >= 0x2e80 && cp <= 0xa4cf) || (cp >= 0xac00 && cp <= 0xd7a3) || (cp >= 0xf900 && cp <= 0xfaff) || (cp >= 0xfe30 && cp <= 0xfe4f) || (cp >= 0xff00 && cp <= 0xff60) || (cp >= 0x1f300 && cp <= 0x1faff);
+
+/** `line` cut to `width` columns, colour codes kept: a line that wraps would break the redraw. */
+export function clip(line: string, width: number): string {
+  let out = "";
+  let used = 0;
+  for (let i = 0; i < line.length; ) {
+    const esc = /^\x1b\[[0-9;?]*[A-Za-z]/.exec(line.slice(i));
+    if (esc) {
+      out += esc[0];
+      i += esc[0].length;
+      continue;
+    }
+    const cp = line.codePointAt(i)!;
+    const w = wide(cp) ? 2 : 1;
+    if (used + w > width) return out + (out.includes("\x1b[") ? "\x1b[0m" : "");
+    out += String.fromCodePoint(cp);
+    used += w;
+    i += cp > 0xffff ? 2 : 1;
+  }
+  return out;
+}
+
 /** Draws `frame()` in place after every key until `onKey` settles, then leaves `done()` behind. */
 function ask<T>(io: Io, frame: () => string[], onKey: (key: Key, ch: string | undefined) => { value: T } | void, done: (value: T) => string): Promise<T> {
   const { input, output } = io;
   return new Promise<T>((resolve, reject) => {
     let drawn = 0;
+    // Windows wraps a line that reaches the last column, so stay two short of it
+    const width = () => Math.max(10, (output.columns ?? 80) - 2);
     const draw = (lines: string[]) => {
-      output.write(`\r${drawn > 1 ? `\x1b[${drawn - 1}A` : ""}\x1b[J${lines.join("\n")}`);
+      output.write(`\r${drawn > 1 ? `\x1b[${drawn - 1}A` : ""}\x1b[J${lines.map((l) => clip(l, width())).join("\n")}`);
       drawn = lines.length;
     };
     const wasRaw = input.isRaw ?? false;
@@ -95,15 +120,16 @@ export function select<T extends string>(io: Io, message: string, choices: reado
   const s = styles(io.color);
   let i = Math.max(0, choices.findIndex((c) => c.value === initial));
   const pad = Math.max(...choices.map((c) => (c.label ?? c.value).length)) + 2;
-  // hints go when the terminal is too narrow for them
-  const room = (io.output.columns ?? 80) - pad - 8;
+  // hints are cut to the terminal, and left out when there is hardly room for them
+  const room = (io.output.columns ?? 80) - pad - 10;
+  const fit = (hint: string) => (room < 8 ? "" : hint.length > room ? hint.slice(0, room - 1).trimEnd() + "…" : hint);
   return ask(
     io,
     () => [
       `  ${s.seal("◆")} ${s.bold(message)}  ${s.dim("↑↓ enter")}`,
       ...choices.map((c, k) => {
         const label = (c.label ?? c.value).padEnd(pad);
-        const hint = c.hint && c.hint.length <= room ? s.dim(c.hint) : "";
+        const hint = c.hint ? s.dim(fit(c.hint)) : "";
         return k === i ? `  ${s.dim("│")} ${s.active("❯ " + label)}${hint}` : `  ${s.dim("│")}   ${label}${hint}`;
       }),
       `  ${s.dim("└")}`,
