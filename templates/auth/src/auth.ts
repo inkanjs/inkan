@@ -1,4 +1,4 @@
-import { problem, type Middleware } from "@vxnsin/inkan";
+import { problem, type Middleware } from "@inkanjs/inkan";
 
 export type User = { name: string; role: "reader" | "admin" };
 

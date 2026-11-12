@@ -51,4 +51,4 @@ black 240 s at 95 °C. Give it an example for each kind and one for a missing te
 
 ## Next
 
-`npx @vxnsin/inkan examples auth`: middleware that knows who is asking.
+`npx @inkanjs/inkan examples auth`: middleware that knows who is asking.

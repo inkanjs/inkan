@@ -1,4 +1,4 @@
-import type { Plugin } from "@vxnsin/inkan";
+import type { Plugin } from "@inkanjs/inkan";
 
 export type MyPluginOptions = {
   /** The header to read. Default `"x-tenant"`. */

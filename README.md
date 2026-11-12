@@ -2,7 +2,7 @@
 
 An API framework for Node where the docs can't lie.
 
-[![npm](https://img.shields.io/npm/v/@vxnsin/inkan?color=c4381f&labelColor=2b2420&label=npm)](https://www.npmjs.com/package/@vxnsin/inkan)
+[![npm](https://img.shields.io/npm/v/@inkanjs/inkan?color=c4381f&labelColor=2b2420&label=npm)](https://www.npmjs.com/package/@inkanjs/inkan)
 [![ci](https://img.shields.io/github/actions/workflow/status/inkanjs/inkan/ci.yml?branch=main&color=3d7a4b&labelColor=2b2420&label=ci)](https://github.com/inkanjs/inkan/actions/workflows/ci.yml)
 [![license](https://img.shields.io/badge/license-MIT-ece1cf?labelColor=2b2420)](LICENSE)
 
@@ -16,7 +16,7 @@ inkan checks what comes in, types your handler, trims what goes out, writes Open
 serves a docs page and runs the examples as tests.
 
 ```ts
-import { inkan, problem, t } from "@vxnsin/inkan";
+import { inkan, problem, t } from "@inkanjs/inkan";
 
 const Tea = t.object({ id: t.int(), name: t.string(), kind: t.enum(["green", "black", "oolong"]) });
 const teas = [{ id: 1, name: "Sencha", kind: "green" as const }];
@@ -61,14 +61,14 @@ $ npx inkan check src/app.ts
 ## Getting started
 
 ```sh
-npm install @vxnsin/inkan
+npm install @inkanjs/inkan
 ```
 
 You need Node 22 or newer. From 22.18 on, `.ts` files run as they are, without a build step.
 The package is scoped because npm keeps the plain name `inkan` free of look-alikes; the
 command is `inkan` either way.
 
-`npx @vxnsin/inkan examples` gives you six explained projects to look at and start from.
+`npx @inkanjs/inkan examples` gives you six explained projects to look at and start from.
 
 To start a project of your own:
 
@@ -79,7 +79,7 @@ npm create inkan@latest my-api -- --store postgres --auth --frontend next
 
 It asks where the data lives (memory, Postgres, Redis, MongoDB or MySQL), whether you want
 logins, and whether a Next.js or Vite frontend goes with it, then writes a project that
-passes `inkan check` and its own tests, with a CI workflow. `npx @vxnsin/inkan create app`
+passes `inkan check` and its own tests, with a CI workflow. `npx @inkanjs/inkan create app`
 is the same command; `--help` lists the options.
 
 ## What's in it

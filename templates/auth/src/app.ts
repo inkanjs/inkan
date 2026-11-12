@@ -1,4 +1,4 @@
-import { inkan, problem, routes, t } from "@vxnsin/inkan";
+import { inkan, problem, routes, t } from "@inkanjs/inkan";
 import { authenticate, requireRole, userOf } from "./auth.ts";
 
 export const app = inkan({ title: "Notes", version: "1.0.0", description: "Notes behind a token. Try demo-reader and demo-admin." });

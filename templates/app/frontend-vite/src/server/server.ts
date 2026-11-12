@@ -1,4 +1,4 @@
-import { serveStatic } from "@vxnsin/inkan";
+import { serveStatic } from "@inkanjs/inkan";
 import { app } from "./app.ts";
 
 // In production one process serves both: the API under /api, and the frontend that

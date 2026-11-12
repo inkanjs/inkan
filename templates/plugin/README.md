@@ -5,7 +5,7 @@ header, answers 400 without it, and puts it on the context as `ctx.tenant`; the 
 document says so for every route. (An example to replace with what your plugin does.)
 
 ```sh
-npm install @vxnsin/inkan {{name}}
+npm install @inkanjs/inkan {{name}}
 ```
 
 Works with inkan `{{range}}`. On any other version `register()` throws and says which
@@ -14,7 +14,7 @@ one it needs.
 ## Usage
 
 ```ts
-import { inkan } from "@vxnsin/inkan";
+import { inkan } from "@inkanjs/inkan";
 import { myPlugin } from "{{name}}";
 
 const app = inkan()

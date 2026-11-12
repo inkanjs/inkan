@@ -71,9 +71,9 @@ jobs:
       - name: same version as the core
         run: |
           core="$(node -p "require('./package.json').version")"
-          create="$(node -p "require('./create/package.json').version + ' ' + require('./create/package.json').dependencies['@vxnsin/inkan']")"
+          create="$(node -p "require('./create/package.json').version + ' ' + require('./create/package.json').dependencies['@inkanjs/inkan']")"
           if [ "$create" != "$core $core" ]; then
-            echo "::error::create/package.json ($create) has to be at $core and depend on @vxnsin/inkan $core"
+            echo "::error::create/package.json ($create) has to be at $core and depend on @inkanjs/inkan $core"
             exit 1
           fi
       - run: npm publish --access public --ignore-scripts
@@ -95,8 +95,6 @@ jobs:
           scope: "@inkanjs"
       - run: npm ci
       - run: npm run build
-      # GitHub Packages only takes packages named after the repository's owner
-      - run: npm pkg set name=@inkanjs/inkan
       - run: npm publish --ignore-scripts
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

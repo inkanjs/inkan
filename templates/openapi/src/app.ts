@@ -1,4 +1,4 @@
-import { inkan, problem, t } from "@vxnsin/inkan";
+import { inkan, problem, t } from "@inkanjs/inkan";
 
 // 1. Everything here ends up in the OpenAPI document: title, version, description, servers.
 export const app = inkan({

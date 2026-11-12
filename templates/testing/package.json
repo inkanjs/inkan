@@ -9,7 +9,7 @@
     "test": "node --test \"test/**/*.test.ts\""
   },
   "dependencies": {
-    "@vxnsin/inkan": "^{{version}}"
+    "@inkanjs/inkan": "^{{version}}"
   },
   "devDependencies": {
     "@types/node": "^24.0.0"

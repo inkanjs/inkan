@@ -46,4 +46,4 @@ user's name. Examples: as a reader, as nobody, with an empty text.
 
 ## Next
 
-`npx @vxnsin/inkan examples testing`: examples as tests inside node:test, and in CI.
+`npx @inkanjs/inkan examples testing`: examples as tests inside node:test, and in CI.

@@ -3,7 +3,7 @@
 // of the server, so it runs in a browser, in Node, anywhere fetch does.
 //
 //   import type { api } from "./server.ts";
-//   import { client } from "@vxnsin/inkan/client";
+//   import { client } from "@inkanjs/inkan/client";
 //
 //   const shop = client<typeof api>(baseUrl);
 //   const res = await shop.get("/teas/:id", { params: { id: 1 } });

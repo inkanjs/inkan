@@ -250,7 +250,7 @@ export type PluginOptions = {
    * against one version does not half-work on another. A range that is not one throws
    * right here. A prerelease of inkan is in the range only when the range names a
    * prerelease of the same version (`>=0.8.0-rc.1`), as npm reads it. Keep it the same
-   * as the `peerDependencies` entry for `@vxnsin/inkan`.
+   * as the `peerDependencies` entry for `@inkanjs/inkan`.
    * @experimental
    */
   inkan?: string;

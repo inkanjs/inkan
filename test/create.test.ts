@@ -16,14 +16,14 @@ function inkan(cwd: string, ...args: string[]) {
 }
 
 /**
- * Makes `@vxnsin/inkan` (and @types/node) resolve to this checkout, offline: a package.json
+ * Makes `@inkanjs/inkan` (and @types/node) resolve to this checkout, offline: a package.json
  * whose export is src/index.ts, next to a link to src/. Node follows the link to the real
  * path, outside node_modules, so it strips the types there as it does for the repo's tests.
  */
 function linkInkan(dir: string) {
-  const pkg = join(dir, "node_modules", "@vxnsin", "inkan");
+  const pkg = join(dir, "node_modules", "@inkanjs", "inkan");
   mkdirSync(pkg, { recursive: true });
-  writeFileSync(join(pkg, "package.json"), JSON.stringify({ name: "@vxnsin/inkan", type: "module", exports: { ".": "./src/index.ts" } }));
+  writeFileSync(join(pkg, "package.json"), JSON.stringify({ name: "@inkanjs/inkan", type: "module", exports: { ".": "./src/index.ts" } }));
   symlinkSync(join(root, "src"), join(pkg, "src"), "junction");
   mkdirSync(join(dir, "node_modules", "@types"), { recursive: true });
   symlinkSync(join(root, "node_modules", "@types", "node"), join(dir, "node_modules", "@types", "node"), "junction");
@@ -50,8 +50,8 @@ test("create plugin: a package that installs, typechecks and passes its own test
     assert.deepEqual(pkg.exports, { ".": { types: "./index.d.ts", default: "./index.js" } });
     assert.deepEqual(pkg.files, ["index.js", "index.d.ts"]);
     assert.deepEqual(pkg.keywords, ["inkan-plugin"]);
-    assert.deepEqual(pkg.peerDependencies, { "@vxnsin/inkan": range });
-    assert.equal(pkg.devDependencies["@vxnsin/inkan"], `^${version}`);
+    assert.deepEqual(pkg.peerDependencies, { "@inkanjs/inkan": range });
+    assert.equal(pkg.devDependencies["@inkanjs/inkan"], `^${version}`);
     assert.ok(pkg.devDependencies.typescript && pkg.devDependencies["@types/node"]);
     assert.equal(pkg.scripts.test, "node --test test.ts");
     assert.equal(pkg.scripts.typecheck, "tsc");

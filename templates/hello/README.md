@@ -17,7 +17,7 @@ npm run check      # every example, run as a test
 
 Open [src/app.ts](src/app.ts). The numbers in the comments are the reading order:
 
-1. **the import**: everything comes from `@vxnsin/inkan`
+1. **the import**: everything comes from `@inkanjs/inkan`
 2. **the app**: title and version land on the docs page
 3. **the route**: path, contract, handler
    - **3a** what may come in, and how strings become booleans
@@ -49,4 +49,4 @@ The new example is a test now, and the docs page shows it.
 
 ## Next
 
-`npx @vxnsin/inkan examples tea-shop`: a whole API with named schemas, groups and a store.
+`npx @inkanjs/inkan examples tea-shop`: a whole API with named schemas, groups and a store.

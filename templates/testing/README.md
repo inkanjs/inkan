@@ -46,4 +46,4 @@ that deletes a todo and checks that the list got shorter.
 
 ## Next
 
-`npx @vxnsin/inkan examples openapi`: the document, a generated client, and keeping them in sync.
+`npx @inkanjs/inkan examples openapi`: the document, a generated client, and keeping them in sync.

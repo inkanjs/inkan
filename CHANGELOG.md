@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.9.2
+
+### Changed
+
+- The package moved to the inkanjs organisation: it is now **`@inkanjs/inkan`**, next to
+  @inkanjs/auth, @inkanjs/redis and the rest. Install it with `npm i @inkanjs/inkan` and import
+  from `@inkanjs/inkan`; nothing else changed. `@vxnsin/inkan` stays at 0.9.1 and is deprecated.
+
 ## 0.9.1
 
 ### Removed

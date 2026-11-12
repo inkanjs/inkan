@@ -12,13 +12,13 @@ const root = fileURLToPath(new URL("..", import.meta.url));
 const scratch = mkdtempSync(join(tmpdir(), "inkan-examples-"));
 after(() => rmSync(scratch, { recursive: true, force: true }));
 
-// The templates import "@vxnsin/inkan". Here that has to be this checkout, not a release.
+// The templates import "@inkanjs/inkan". Here that has to be this checkout, not a release.
 const source = pathToFileURL(join(root, "src/index.ts")).href;
 function pointAtSource(dir: string) {
   for (const entry of readdirSync(dir, { recursive: true, withFileTypes: true })) {
     if (!entry.isFile() || !entry.name.endsWith(".ts")) continue;
     const file = join(entry.parentPath, entry.name);
-    writeFileSync(file, readFileSync(file, "utf8").replaceAll('"@vxnsin/inkan"', JSON.stringify(source)));
+    writeFileSync(file, readFileSync(file, "utf8").replaceAll('"@inkanjs/inkan"', JSON.stringify(source)));
   }
 }
 
@@ -33,7 +33,7 @@ test("copying fills in the name and version and brings the dotfiles back", () =>
   assert.ok(files.includes(".gitignore") && !files.includes("_gitignore"));
   const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
   assert.equal(pkg.name, "my-tea");
-  assert.equal(pkg.dependencies["@vxnsin/inkan"], "^9.9.9");
+  assert.equal(pkg.dependencies["@inkanjs/inkan"], "^9.9.9");
   assert.ok(!readFileSync(join(dir, "README.md"), "utf8").includes("{{"), "no placeholder left");
 
   const testing = copyExample("testing", join(scratch, "t"), { version: "1.0.0" });

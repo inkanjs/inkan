@@ -7,7 +7,7 @@
 //   app.register(rateLimit({ max: 100, store }));
 //
 // `memoryStore()` is the one inkan has: this process only. Adapter authors run
-// `storeConformance` from "@vxnsin/inkan/testing" against theirs.
+// `storeConformance` from "@inkanjs/inkan/testing" against theirs.
 
 /**
  * A key-value store with a time to live, shared by whatever needs one. What an adapter must

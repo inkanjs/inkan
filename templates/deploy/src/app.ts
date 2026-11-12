@@ -1,4 +1,4 @@
-import { inkan, t } from "@vxnsin/inkan";
+import { inkan, t } from "@inkanjs/inkan";
 
 // 1. In production (NODE_ENV=production) inkan logs one JSON line per request, keeps the
 //    inspector off, and does not check answers against the contract on every request.

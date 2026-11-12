@@ -1,4 +1,4 @@
-import { problem, routes, t } from "@vxnsin/inkan";
+import { problem, routes, t } from "@inkanjs/inkan";
 import { Kind, NewTea, Tea, TeaChange } from "./schemas.ts";
 import { store } from "./store.ts";
 

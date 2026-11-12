@@ -17,7 +17,7 @@ export function inkanVersion(): string | undefined {
   if (known === undefined) {
     try {
       const pkg = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8"));
-      known = pkg.name === "@vxnsin/inkan" && typeof pkg.version === "string" ? pkg.version : null;
+      known = pkg.name === "@inkanjs/inkan" && typeof pkg.version === "string" ? pkg.version : null;
     } catch {
       known = null;
     }
