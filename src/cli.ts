@@ -5,7 +5,6 @@
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
-import { createInterface } from "node:readline/promises";
 import { pathToFileURL } from "node:url";
 import type { App } from "./core/app.ts";
 import { formatReport, formatReportMarkdown } from "./testing/check.ts";
@@ -15,6 +14,7 @@ import { copyExample, EXAMPLES, ExampleError } from "./cli/examples.ts";
 import { writeSeal } from "./seal/seal.ts";
 import { createPlugin, CreateError } from "./cli/create.ts";
 import { runCreateApp } from "./cli/app.ts";
+import { banner, Cancelled, select } from "./cli/prompt.ts";
 
 const version = (): string => JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 
@@ -221,11 +221,14 @@ switch (command) {
       process.exit(0);
     }
     if (!name) {
-      printList();
-      const rl = createInterface({ input: process.stdin, output: process.stdout });
-      const answer = (await rl.question(`  which one? ${c.dim(`(1-${EXAMPLES.length} or a name)`)} `)).trim();
-      rl.close();
-      name = EXAMPLES[Number(answer) - 1]?.name ?? answer;
+      console.log(banner(color, "inkan examples", "explained projects, in reading order"));
+      const io = { input: process.stdin, output: process.stdout, color };
+      try {
+        name = await select(io, "which one?", EXAMPLES.map((e) => ({ value: e.name, hint: e.blurb })));
+      } catch (err) {
+        if (!(err instanceof Cancelled)) throw err;
+        process.exit(130);
+      }
     }
     const target = args[1] ?? name;
     try {

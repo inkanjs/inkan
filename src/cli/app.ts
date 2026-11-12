@@ -6,8 +6,8 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
-import { createInterface } from "node:readline/promises";
 import { paint } from "../core/color.ts";
+import { banner, Cancelled, confirm, gradient, select, text } from "./prompt.ts";
 import { RENAME, templatesDir, walk } from "./examples.ts";
 import { npmNameProblem } from "./create.ts";
 
@@ -432,30 +432,22 @@ export async function runCreateApp(args: string[], ctx: CommandContext): Promise
   const ask = !yes && process.stdin.isTTY && process.stdout.isTTY;
   let choices: AppChoices = { ...DEFAULT_CHOICES, ...given };
   if (ask) {
-    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    const io = { input: process.stdin, output: process.stdout, color: ctx.color };
+    const options = <T extends string>(values: readonly T[], info: Record<T, string>) => values.map((value) => ({ value, hint: info[value] }));
+    console.log(banner(ctx.color, "create inkan", `v${ctx.version} · a new app`));
     try {
-      console.log(`\n  ${c.seal("印")} ${c.bold("a new inkan app")}\n`);
-      folder ??= (await rl.question(`  folder? ${c.dim("(inkan-app)")} `)).trim() || "inkan-app";
-      const choose = async <T extends string>(what: string, options: readonly T[], info: Record<T, string>, fallback: T): Promise<T> => {
-        console.log(`\n  ${c.bold(what)}`);
-        options.forEach((o, i) => console.log(`  ${c.dim(String(i + 1) + ".")} ${o.padEnd(9)} ${c.dim(info[o])}`));
-        for (;;) {
-          const answer = (await rl.question(`  ${c.dim(`(1-${options.length} or a name, enter for ${fallback})`)} `)).trim();
-          if (!answer) return fallback;
-          const found = options[Number(answer) - 1] ?? options.find((o) => o === answer);
-          if (found) return found;
-        }
-      };
-      const store = given.store ?? (await choose("where does the data live?", STORES, STORE_INFO, DEFAULT_CHOICES.store));
-      let auth = given.auth;
-      while (auth === undefined) {
-        const answer = (await rl.question(`\n  ${c.bold("logins and sessions")} ${c.dim("(@inkanjs/auth)")}? ${c.dim("(y/N)")} `)).trim().toLowerCase();
-        auth = !answer || answer === "n" || answer === "no" ? false : answer === "y" || answer === "yes" ? true : undefined;
-      }
-      const frontend = given.frontend ?? (await choose("a frontend?", FRONTENDS, FRONTEND_INFO, DEFAULT_CHOICES.frontend));
+      folder ??= await text(io, "folder", {
+        placeholder: "inkan-app",
+        validate: (f) => (!force && existsSync(f) && readdirSync(f).length ? `${f} is not empty: another name, or --force` : undefined),
+      });
+      const store = given.store ?? (await select(io, "where does the data live?", options(STORES, STORE_INFO), DEFAULT_CHOICES.store));
+      const auth = given.auth ?? (await confirm(io, `logins and sessions ${c.dim("(@inkanjs/auth)")}?`, DEFAULT_CHOICES.auth));
+      const frontend = given.frontend ?? (await select(io, "a frontend?", options(FRONTENDS, FRONTEND_INFO), DEFAULT_CHOICES.frontend));
       choices = { store, auth, frontend };
-    } finally {
-      rl.close();
+    } catch (err) {
+      if (!(err instanceof Cancelled)) throw err;
+      console.log(`  ${c.dim("Nothing written.")}\n`);
+      return 130;
     }
   }
   const target = folder ?? "inkan-app";
@@ -470,7 +462,7 @@ export async function runCreateApp(args: string[], ctx: CommandContext): Promise
   }
   const rel = relative(process.cwd(), made.dir) || ".";
   const what = [choices.store, ...(choices.auth ? ["auth"] : []), ...(choices.frontend === "none" ? [] : [choices.frontend])].join(" + ");
-  console.log(`\n  ${c.seal("印")} ${c.bold(made.name)} ${c.dim("→")} ${rel}  ${c.dim(`(${what}, ${made.files.length} files)`)}\n`);
+  console.log(`\n  ${c.ok("✔")} ${gradient(made.name, ctx.color)} ${c.dim("→")} ${rel}  ${c.dim(`${what} · ${made.files.length} files`)}\n`);
 
   let installed = false;
   if (install) {
@@ -481,12 +473,17 @@ export async function runCreateApp(args: string[], ctx: CommandContext): Promise
     if (!installed) console.log(`\n  ${c.warn(`${manager} install did not finish.`)} ${c.dim("The files are there; run it again yourself.")}\n`);
   }
   const r = (s: string) => runScript(manager, s);
-  if (rel !== ".") console.log(`  cd ${rel}`);
-  if (!installed) console.log(`  ${manager} install`);
-  if (choices.store !== "memory") console.log(`  ${c.dim(`cp .env.example .env, and point it at your database (${choices.store})`)}`);
-  console.log(`  ${r("dev")}`);
-  console.log(`  ${r("check")}   ${c.dim("every example, run as a test")}`);
-  console.log(`  ${r("test")}\n`);
-  console.log(`  ${c.dim(`Start with README.md and ${serverDir(choices.frontend)}/app.ts.`)}\n`);
+  const steps: [string, string?][] = [
+    ...(rel !== "." ? [[`cd ${rel}`] as [string]] : []),
+    ...(!installed ? [[`${manager} install`] as [string]] : []),
+    ...(choices.store !== "memory" ? [["cp .env.example .env", `then point it at your database (${choices.store})`] as [string, string]] : []),
+    [r("dev")],
+    [r("check"), "every example, run as a test"],
+    [r("test")],
+  ];
+  const pad = Math.max(...steps.filter(([, note]) => note).map(([cmd]) => cmd.length)) + 3;
+  console.log(`  ${c.bold("next")}`);
+  for (const [cmd, note] of steps) console.log(`  ${c.dim("│")} ${note ? c.link(cmd.padEnd(pad)) + c.dim(note) : c.link(cmd)}`);
+  console.log(`  ${c.dim("└")} ${c.dim(`Start with README.md and ${serverDir(choices.frontend)}/app.ts.`)}\n`);
   return install && !installed ? 1 : 0;
 }
