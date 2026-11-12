@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.9.3
+
+### Changed
+
+- `npm create inkan` (`inkan create app`) and `inkan examples` ask with arrow keys: a list to
+  move through with ↑↓ (or j/k, or a digit), yes/no with ←→ or y/n, a folder name with its
+  default shown, and an answer that shrinks to one line once given. A folder that is not empty
+  is caught while you type. Esc or Ctrl-C stops with nothing written (exit code 130). Still no
+  dependencies, and still no questions without a terminal or with `--yes`.
+- The seal and the name open in a red-to-amber gradient, and the steps at the end come as a
+  short list. `NO_COLOR` keeps all of it, without colour.
+
 ## 0.9.2
 
 ### Changed

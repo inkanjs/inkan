@@ -145,14 +145,14 @@ function cli(cwd: string, ...args: string[]) {
 test("create app: the CLI takes flags, and without a terminal the defaults", () => {
   const plain = cli(scratch, "plain", "--no-install");
   assert.equal(plain.code, 0, plain.err);
-  assert.match(plain.out, /plain → plain {2}\(memory, 10 files\)/);
-  assert.match(plain.out, /cd plain\n {2}npm install\n {2}npm run dev/);
+  assert.match(plain.out, /✔ plain → plain {2}memory · 10 files/);
+  assert.match(plain.out, /│ cd plain\n {2}│ npm install\n {2}│ npm run dev\n/);
   assert.ok(existsSync(join(scratch, "plain", "src", "store.ts")));
 
   const full = cli(scratch, "full", "--store=redis", "--auth", "--frontend", "next", "--pm", "pnpm", "--no-install", "--yes");
   assert.equal(full.code, 0, full.err);
-  assert.match(full.out, /\(redis \+ auth \+ next, 14 files\)/);
-  assert.match(full.out, /pnpm install\n.*\n {2}pnpm dev/);
+  assert.match(full.out, /redis \+ auth \+ next · 14 files/);
+  assert.match(full.out, /│ pnpm install\n.*\n {2}│ pnpm dev\n/);
   assert.ok(existsSync(join(scratch, "full", "server", "auth.ts")));
 
   const fallback = cli(join(scratch, "plain"), "--no-install", "--force"); // no folder: inkan-app
