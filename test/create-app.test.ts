@@ -62,7 +62,7 @@ test("create app: every combination has its files, its dependencies, and nothing
     const pkg = JSON.parse(files["package.json"]!);
     assert.equal(pkg.name, "my-api");
     assert.equal(pkg.type, "module");
-    assert.equal(pkg.dependencies["@vxnsin/inkan"], "^9.9.9");
+    assert.equal(pkg.dependencies["@inkanjs/inkan"], "^9.9.9");
     const deps = Object.keys(pkg.dependencies);
     for (const d of STORE_DEPS[choices.store]!) assert.ok(deps.includes(d), `${name} depends on ${d}`);
     for (const other of Object.keys(STORE_DEPS).filter((s) => s !== choices.store)) {
@@ -131,7 +131,7 @@ test("create app: names, package managers and the create package", () => {
   const pkg = JSON.parse(readFileSync(join(root, "create", "package.json"), "utf8"));
   assert.equal(pkg.name, CREATE_PACKAGE);
   assert.equal(pkg.version, version);
-  assert.deepEqual(pkg.dependencies, { "@vxnsin/inkan": version });
+  assert.deepEqual(pkg.dependencies, { "@inkanjs/inkan": version });
   assert.deepEqual(Object.keys(pkg.bin), [CREATE_PACKAGE.replace(/^@[^/]+\//, "")]);
   assert.equal(CREATE_COMMAND, CREATE_PACKAGE.startsWith("@") ? "npm init @inkanjs" : "npm create inkan");
   assert.ok(readFileSync(join(root, "create", "index.js"), "utf8").includes('"create", "app"'));
@@ -185,7 +185,7 @@ const STUBS: Record<string, { exports?: Record<string, string>; files: Record<st
   mysql2: { exports: { "./promise": "./promise.d.ts" }, files: { "promise.d.ts": "declare const mysql: { createPool(uri: string): { end(): Promise<void> } };\nexport default mysql;\n" } },
   "@inkanjs/auth": {
     files: {
-      "index.d.ts": `import type { Plugin, Security, Store } from "@vxnsin/inkan";
+      "index.d.ts": `import type { Plugin, Security, Store } from "@inkanjs/inkan";
 type Awaitable<T> = T | Promise<T>;
 export interface AuthUser { id: string | number; roles?: readonly string[]; passwordHash?: string | null }
 export declare function hashPassword(password: string): Promise<string>;
@@ -195,15 +195,15 @@ export declare function auth<U extends AuthUser>(options: { secret: string; user
   },
 };
 for (const db of ["postgres", "redis", "mongo", "mysql"]) {
-  STUBS[`@inkanjs/${db}`] = { files: { "index.d.ts": `import type { Store } from "@vxnsin/inkan";\nexport declare function ${db}Store(db: unknown, options?: { prefix?: string }): Store & { close(): Promise<void> };\n` } };
+  STUBS[`@inkanjs/${db}`] = { files: { "index.d.ts": `import type { Store } from "@inkanjs/inkan";\nexport declare function ${db}Store(db: unknown, options?: { prefix?: string }): Store & { close(): Promise<void> };\n` } };
 }
 
-/** @vxnsin/inkan as this checkout (its sources stand in for the .d.ts), @types/node from here, and the stubs. */
+/** @inkanjs/inkan as this checkout (its sources stand in for the .d.ts), @types/node from here, and the stubs. */
 function linkPackages(dir: string) {
-  const inkan = join(dir, "node_modules", "@vxnsin", "inkan");
+  const inkan = join(dir, "node_modules", "@inkanjs", "inkan");
   mkdirSync(inkan, { recursive: true });
   const exports = { ".": "./src/index.ts", "./client": "./src/client.ts", "./testing": "./src/testing.ts" };
-  writeFileSync(join(inkan, "package.json"), JSON.stringify({ name: "@vxnsin/inkan", type: "module", exports }));
+  writeFileSync(join(inkan, "package.json"), JSON.stringify({ name: "@inkanjs/inkan", type: "module", exports }));
   symlinkSync(join(root, "src"), join(inkan, "src"), "junction");
   mkdirSync(join(dir, "node_modules", "@types"), { recursive: true });
   symlinkSync(join(root, "node_modules", "@types", "node"), join(dir, "node_modules", "@types", "node"), "junction");
@@ -249,13 +249,13 @@ test("create app: the TypeScript of every combination compiles", async () => {
 
 // ----- the projects keep their promises -----
 
-/** A memory project, with @vxnsin/inkan linked to this checkout: it runs without installing anything. */
+/** A memory project, with @inkanjs/inkan linked to this checkout: it runs without installing anything. */
 function runnable(choices: AppChoices, name: string) {
   const dir = join(scratch, "run", name);
   createApp(dir, choices, { version });
-  const inkan = join(dir, "node_modules", "@vxnsin", "inkan");
+  const inkan = join(dir, "node_modules", "@inkanjs", "inkan");
   mkdirSync(inkan, { recursive: true });
-  writeFileSync(join(inkan, "package.json"), JSON.stringify({ name: "@vxnsin/inkan", type: "module", exports: { ".": "./src/index.ts" } }));
+  writeFileSync(join(inkan, "package.json"), JSON.stringify({ name: "@inkanjs/inkan", type: "module", exports: { ".": "./src/index.ts" } }));
   symlinkSync(join(root, "src"), join(inkan, "src"), "junction");
   return dir;
 }

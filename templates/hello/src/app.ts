@@ -1,5 +1,5 @@
 // 1. One import: the app, the schema builder `t`, and `problem` for errors.
-import { inkan, problem, t } from "@vxnsin/inkan";
+import { inkan, problem, t } from "@inkanjs/inkan";
 
 // 2. An app. The title and version show up on the docs page and in the OpenAPI document.
 export const app = inkan({ title: "Hello", version: "0.1.0" });

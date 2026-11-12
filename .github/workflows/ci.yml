@@ -111,14 +111,14 @@ jobs:
       - run: npm ci
       - run: npm run build
       - name: pack the core
-        run: npm pack --pack-destination "$RUNNER_TEMP" && mv "$RUNNER_TEMP"/vxnsin-inkan-*.tgz "$RUNNER_TEMP/inkan.tgz"
+        run: npm pack --pack-destination "$RUNNER_TEMP" && mv "$RUNNER_TEMP"/inkanjs-inkan-*.tgz "$RUNNER_TEMP/inkan.tgz"
       - name: create the app
         run: node dist/cli.js create app "$RUNNER_TEMP/app" --store ${{ matrix.store }} --${{ matrix.auth }} --frontend ${{ matrix.frontend }} --no-install
       - name: install it, with the packed core
         working-directory: ${{ runner.temp }}/app
         # the packed version may not be on npm yet: the tarball stands in for it
         run: |
-          npm pkg set "dependencies.@vxnsin/inkan=file:$RUNNER_TEMP/inkan.tgz"
+          npm pkg set "dependencies.@inkanjs/inkan=file:$RUNNER_TEMP/inkan.tgz"
           npm install --no-audit --no-fund
       - run: npm run typecheck
         working-directory: ${{ runner.temp }}/app

@@ -282,8 +282,8 @@ export function appSource(name: string, { auth, frontend }: AppChoices): string 
   ];
   const options = [`title: ${JSON.stringify(name)}`, `version: "0.1.0"`, ...(p ? [`docs: "${p}/docs"`, `openapi: "${p}/openapi.json"`, `inspector: "${p}/_inkan"`] : [])];
   const who = frontend === "next" ? "the tests and Next.js (app/api/[...path]/route.ts)" : `the tests and ${serverDir(frontend)}/server.ts`;
-  return `import { inkan, problem, t } from "@vxnsin/inkan";
-import type { Infer } from "@vxnsin/inkan";
+  return `import { inkan, problem, t } from "@inkanjs/inkan";
+import type { Infer } from "@inkanjs/inkan";
 ${auth ? `import { login } from "./auth.ts";\n` : ""}import { closeStore, store } from "./store.ts";
 
 // 1. This file builds the app and exports it. It does not listen: \`inkan check\`,

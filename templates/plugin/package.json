@@ -24,11 +24,11 @@
     "node": ">=22.18"
   },
   "peerDependencies": {
-    "@vxnsin/inkan": "{{range}}"
+    "@inkanjs/inkan": "{{range}}"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
-    "@vxnsin/inkan": "^{{version}}",
+    "@inkanjs/inkan": "^{{version}}",
     "typescript": "^7.0.2"
   },
   "scripts": {

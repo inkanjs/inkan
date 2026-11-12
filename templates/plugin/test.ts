@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { inkan } from "@vxnsin/inkan";
+import { inkan } from "@inkanjs/inkan";
 import { myPlugin } from "./index.js";
 
 const quiet = { log: false as const };
@@ -38,5 +38,5 @@ test("says so in the OpenAPI document", async () => {
 
 test("names the inkan versions it works with, the same as peerDependencies", () => {
   const pkg = JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8"));
-  assert.equal(myPlugin().inkan, pkg.peerDependencies["@vxnsin/inkan"]);
+  assert.equal(myPlugin().inkan, pkg.peerDependencies["@inkanjs/inkan"]);
 });

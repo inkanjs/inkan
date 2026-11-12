@@ -6,7 +6,7 @@ the types, plus a one-time `console.warn` in development) for at least two minor
 and at least 6 months, and only then is removed in a later minor, listed under "Removed" in
 the CHANGELOG. Changing a default or a type in a way that breaks code follows the same rule.
 Exports marked `@experimental` may change in any minor; the CHANGELOG names every such
-change. Anything not exported from `@vxnsin/inkan` or `@vxnsin/inkan/client`, anything named
+change. Anything not exported from `@inkanjs/inkan` or `@inkanjs/inkan/client`, anything named
 `_x`, and anything marked `@internal` is not API. Security fixes may break behaviour
 immediately; they are announced in the CHANGELOG. Plugins should declare
 `inkan: ">=0.8.0 <1.0.0"`.
@@ -40,7 +40,7 @@ being updated (`npm run api:update`), so every change to the API shows in review
   `AdapterRequest`, `AdapterResponse`, `bodyFor`, `logRequest`, `listen`, `ListenOptions`,
   `RequestLog`, `RegisterOptions`, `joinPath`
 - `Layout`, `TrustProxy`, `CacheRule`, `fileExample`, `env`, `Store`, `memoryStore`
-- from `@vxnsin/inkan/client`: `client`, `Client`, `ClientOptions`, `Answer`, `Input`,
+- from `@inkanjs/inkan/client`: `client`, `Client`, `ClientOptions`, `Answer`, `Input`,
   `Jsonify`, `StreamError`
 
 ## Stable: the command line

@@ -1,4 +1,4 @@
-import { inkan, t } from "@vxnsin/inkan";
+import { inkan, t } from "@inkanjs/inkan";
 import { store } from "./store.ts";
 import { teas } from "./teas.ts";
 

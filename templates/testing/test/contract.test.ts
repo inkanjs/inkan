@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { formatReport } from "@vxnsin/inkan";
+import { formatReport } from "@inkanjs/inkan";
 import { app, resetTodos } from "../src/app.ts";
 
 // 1. One test for every example in the app. `strict` also fails when the contract

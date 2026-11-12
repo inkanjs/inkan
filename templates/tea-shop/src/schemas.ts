@@ -1,4 +1,4 @@
-import { t, type Infer } from "@vxnsin/inkan";
+import { t, type Infer } from "@inkanjs/inkan";
 
 // 1. Schemas live in their own file, so routes, tests and other code can share them.
 export const Kind = t.enum(["green", "black", "oolong", "white", "herbal"]);

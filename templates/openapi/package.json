@@ -10,7 +10,7 @@
     "client": "npx openapi-typescript openapi.json -o client/api.d.ts"
   },
   "dependencies": {
-    "@vxnsin/inkan": "^{{version}}"
+    "@inkanjs/inkan": "^{{version}}"
   },
   "devDependencies": {
     "@types/node": "^24.0.0"

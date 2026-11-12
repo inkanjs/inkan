@@ -48,7 +48,7 @@ export type Security = "bearer" | "basic" | { apiKey: string; in?: "header" | "q
  * Free-form facts about a route for plugins to read in their hooks, as `ctx.route.meta`
  * (and as `route.meta` in `describe`). A plugin names what it reads by adding to this interface:
  *
- *   declare module "@vxnsin/inkan" {
+ *   declare module "@inkanjs/inkan" {
  *     interface RouteMeta { auth?: { roles: string[] } }
  *   }
  *

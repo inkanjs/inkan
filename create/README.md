@@ -22,5 +22,5 @@ It asks what it needs. Options skip the questions:
 | `--yes` | the defaults for everything the options leave open |
 | `--force` | write into a folder that is not empty |
 
-This package is `inkan create app` of `@vxnsin/inkan` at the same version; with inkan
+This package is `inkan create app` of `@inkanjs/inkan` at the same version; with inkan
 installed, `npx inkan create app` does the same.

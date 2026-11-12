@@ -1,4 +1,4 @@
-import { client } from "@vxnsin/inkan/client";
+import { client } from "@inkanjs/inkan/client";
 import type { app } from "./server/app.ts";
 
 // The typed client: every path, parameter and answer is checked against the API by the

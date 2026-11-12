@@ -67,4 +67,4 @@ Add `DELETE /bookmarks/:id` with an `operationId` of `removeBookmark`. Run `npm 
 
 ## Next
 
-`npx @vxnsin/inkan examples deploy`: a container, JSON logs and a clean shutdown.
+`npx @inkanjs/inkan examples deploy`: a container, JSON logs and a clean shutdown.

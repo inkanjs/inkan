@@ -1,6 +1,6 @@
 // The tests every `Store` has to pass, for adapter authors (Redis, a database, …):
 //
-//   import { storeConformance } from "@vxnsin/inkan/testing";
+//   import { storeConformance } from "@inkanjs/inkan/testing";
 //   storeConformance(() => redisStore(client, { prefix: `test:${randomUUID()}:` }), { close: () => … });
 //
 // Run it with `node --test`. Each test makes its own store; keys carry a random part of their

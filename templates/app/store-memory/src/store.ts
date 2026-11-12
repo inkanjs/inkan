@@ -1,4 +1,4 @@
-import { memoryStore } from "@vxnsin/inkan";
+import { memoryStore } from "@inkanjs/inkan";
 
 // Kept in this process: gone on a restart and not shared with other processes, which is
 // fine to start with. Redis, Postgres, MongoDB and MySQL take the same place later: one

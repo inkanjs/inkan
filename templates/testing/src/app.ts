@@ -1,4 +1,4 @@
-import { inkan, problem, t } from "@vxnsin/inkan";
+import { inkan, problem, t } from "@inkanjs/inkan";
 
 // 1. This file builds the app and exports it. It does not listen: src/server.ts does.
 //    Tests can import it without a port, and so can `inkan check`.

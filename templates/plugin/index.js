@@ -10,7 +10,7 @@
 // Plain JavaScript with its types in index.d.ts: no build step, and what is in the
 // repository is what npm installs.
 
-import { plugin, problem } from "@vxnsin/inkan";
+import { plugin, problem } from "@inkanjs/inkan";
 
 /**
  * @param {import("./index.d.ts").MyPluginOptions} [options]
