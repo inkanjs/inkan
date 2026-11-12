@@ -161,6 +161,52 @@ export function text(io: Io, message: string, opts: { placeholder?: string; vali
   );
 }
 
+export type Found<T> = { value: T; label: string; hint?: string; badge?: string };
+
+/** A list that narrows while you type: ↑↓ to move, enter to pick. `find` gets the query. */
+export function search<T>(io: Io, message: string, find: (query: string) => Found<T>[], opts: { rows?: number; query?: string } = {}): Promise<T> {
+  const s = styles(io.color);
+  const rows = opts.rows ?? 8;
+  let query = opts.query ?? "";
+  let found = find(query);
+  let i = 0;
+  let picked: Found<T> | undefined;
+  return ask(
+    io,
+    () => {
+      const top = Math.max(0, Math.min(i - rows + 1, found.length - rows));
+      const shown = found.slice(top, top + rows);
+      const pad = Math.max(0, ...shown.map((f) => f.label.length)) + 2;
+      const room = (io.output.columns ?? 80) - pad - 16;
+      const line = (f: Found<T>, k: number) => {
+        const badge = f.badge ? s.dim(`${f.badge.padEnd(11)} `) : "";
+        const hint = f.hint ? s.dim(f.hint.length > room ? f.hint.slice(0, Math.max(0, room - 1)) + "…" : f.hint) : "";
+        return top + k === i ? `  ${s.dim("│")} ${s.active("❯ " + f.label.padEnd(pad))}${badge}${hint}` : `  ${s.dim("│")}   ${f.label.padEnd(pad)}${badge}${hint}`;
+      };
+      return [
+        `  ${s.seal("◆")} ${s.bold(message)}  ${query}${s.active("▏")}${query ? "" : s.dim("type to search")}`,
+        ...(found.length ? shown.map(line) : [`  ${s.dim("│")}   ${s.dim("nothing matches")}`]),
+        `  ${s.dim("└")} ${s.dim(`${found.length} found · ↑↓ enter · esc`)}`,
+      ];
+    },
+    (key, ch) => {
+      if (key.name === "up") i = (i - 1 + found.length) % Math.max(1, found.length);
+      else if (key.name === "down" || key.name === "tab") i = (i + 1) % Math.max(1, found.length);
+      else if (isEnter(key)) {
+        if ((picked = found[i])) return { value: picked.value };
+      } else {
+        if (key.name === "backspace") query = [...query].slice(0, -1).join("");
+        else if (key.ctrl && key.name === "u") query = "";
+        else if (ch && !key.ctrl && ch >= " " && ch !== "\x7f") query += ch;
+        else return;
+        found = find(query);
+        i = 0;
+      }
+    },
+    () => `  ${s.ok("✔")} ${message} ${s.dim("·")} ${s.cyan(picked?.label ?? "")}`,
+  );
+}
+
 /** The opening line: the seal, a name in the gradient, a quiet subtitle. */
 export function banner(on: boolean, title: string, subtitle?: string): string {
   const seal = on ? "\x1b[41;97;1m 印 \x1b[0m" : "[印]";
