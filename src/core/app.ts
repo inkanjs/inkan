@@ -28,6 +28,7 @@ import { Connection, NodeTransport, originAllowed, switchHeaders, UPGRADING, wri
 import { deprecate } from "./deprecate.ts";
 import { Gauge, type PressureOptions, type PressureSample } from "./pressure.ts";
 import { contextStorage, type Cell } from "./request-context.ts";
+import { answer, buildTools, requestFor, resultOf, type McpOptions, type McpServer, type RpcAnswer, type ToolEntry } from "../mcp/mcp.ts";
 import { Buffer } from "node:buffer"; // explicit, for runtimes without a global Buffer
 
 // ---------- the app ----------
@@ -119,6 +120,13 @@ export type AppOptions = OpenAPIInfo & {
    * @experimental
    */
   context?: boolean;
+  /**
+   * Serves the app as an MCP server, `true` on `/mcp`: every documented route is a tool made
+   * from its contract, and a tool call is a request to the route, with the caller's
+   * credentials, through its security, hooks, checks and log. Default off.
+   * @experimental
+   */
+  mcp?: boolean | McpOptions;
 };
 
 export type InjectOptions = {
@@ -289,6 +297,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     if (options.pressure) this._gauge = new Gauge(options.pressure);
     if (options.wsOrigins !== undefined) deprecate("the wsOrigins option", "ws: { origins }");
     this.wsDefaults = { ...options.ws, origins: options.ws?.origins ?? options.wsOrigins };
+    if (options.mcp) this.mcpConf = { path: "/mcp", ...(options.mcp === true ? {} : options.mcp) };
     if (options.context) {
       const als = contextStorage();
       const handle = this.handle.bind(this);
@@ -321,6 +330,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     if (gauge.exempt.has(path)) return;
     const { docs, openapi, inspector } = this.options;
     if (path === openapi || path === docs || (docs && path === docs + "/") || (inspector && (path === inspector || path.startsWith(inspector + "/")))) return;
+    if (path === this.mcpConf?.path) return; // its tool calls are shed one by one, as requests
     const p = problem(503, "under-pressure", "The server is too busy right now; try again shortly");
     return {
       status: 503,
@@ -353,6 +363,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     this._records.push(r);
     this.spec = undefined;
     this.views = undefined;
+    this.tools = undefined;
     this.built = false;
     this.sealState = undefined; // a new route: its contracts get sealed on the next request
   }
@@ -446,6 +457,119 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     return (this.spec ??= openAPIDocument(this._records, this.options));
   }
 
+  /** The `mcp` option with its defaults; undefined while it is off. */
+  private mcpConf?: McpOptions & { path: string };
+  private tools?: ReturnType<typeof buildTools>;
+  private toolTable() {
+    return (this.tools ??= buildTools(this._records));
+  }
+
+  /**
+   * The tools an MCP client is shown, made from the routes, and the routes that are none, with
+   * the reason. Answers with `mcp` off too, to see what it would serve.
+   * @experimental
+   */
+  mcp(): McpServer {
+    const { server } = this.toolTable();
+    return { path: this.mcpConf?.path ?? "/mcp", tools: server.tools, skipped: server.skipped };
+  }
+
+  /** @internal The tool a route is, if it is one. */
+  _toolFor(r: { method: string; path: string }): ToolEntry | undefined {
+    for (const e of this.toolTable().entries.values()) if (e.route.method === r.method && e.route.path === r.path) return e;
+  }
+
+  /**
+   * @internal One JSON-RPC message for the MCP endpoint, sent as `raw`: over HTTP its headers are
+   * held against the message (`checked`); on stdio they only carry the credentials for the tools.
+   */
+  _mcpMessage(msg: unknown, raw?: RawRequest, url?: Target, checked = raw !== undefined): Promise<RpcAnswer> {
+    const from: RawRequest = raw ?? { method: "POST", url: this.mcpConf?.path ?? "/mcp", headers: {}, local: true };
+    const at = url ?? target(from.url);
+    return answer(
+      {
+        tools: () => this.toolTable().entries,
+        info: {
+          name: this.options.title ?? "API",
+          version: this.options.version ?? "0.0.0",
+          instructions: this.mcpConf?.instructions ?? this.options.description,
+          ttlMs: this.dev ? 0 : 300_000, // in development the routes change with every restart
+        },
+        call: (entry, args) => this.callTool(entry, args, from, at),
+      },
+      msg,
+      checked ? from.headers : undefined,
+    );
+  }
+
+  private async callTool(entry: ToolEntry, args: Record<string, unknown>, raw: RawRequest, url: Target): Promise<Record<string, unknown>> {
+    const req = requestFor(entry, args, { headers: raw.headers, query: url.searchParams });
+    if (typeof req === "string") return { content: [{ type: "text", text: req }], isError: true };
+    const { limit } = this.bodyFor(req.method, req.url);
+    if (req.body && req.body.byteLength > limit) {
+      return resultOf(entry, { status: 413, headers: {}, bytes: Buffer.from(tooLargeAnswer(req.url, limit).body as string) });
+    }
+    const res = await this.handle({
+      ...req,
+      remote: raw.remote ?? raw.req?.socket.remoteAddress,
+      secure: raw.secure ?? (raw.req?.socket as { encrypted?: boolean } | undefined)?.encrypted === true,
+      httpVersion: raw.httpVersion,
+      local: raw.local,
+      via: `MCP tool ${entry.tool.name}`,
+    });
+    return resultOf(entry, { status: res.status, headers: res.headers, bytes: await this.drain(res) });
+  }
+
+  /** `POST <path>` on the MCP endpoint: the origin, the JSON, then the message. */
+  private mcpAnswer(raw: RawRequest, url: Target): RawResponse | Promise<RawResponse> {
+    if (raw.method !== "POST") return { status: 405, headers: { allow: "POST" }, body: undefined };
+    const h = raw.headers;
+    const rule = this.mcpConf!.origins;
+    if (rule !== "*" && (h.origin !== undefined || typeof rule === "function")) {
+      let ctx: Context<any, any, any, any, any> | undefined;
+      const early = () =>
+        (ctx ??= new this._box.Ctx({ method: raw.method, url: raw.url, headers: h, req: raw.req, remote: raw.remote, secure: raw.secure, httpVersion: raw.httpVersion }, url, "", h as Record<string, string>, fresh()) as Context<
+          any,
+          any,
+          any,
+          any,
+          any
+        >);
+      const own = () => `${early().protocol}://${h.host ?? ""}`;
+      if (!originAllowed(rule, h.origin as string | undefined, own, early)) return rpcHttp({ status: 403, message: { jsonrpc: "2.0", id: null, error: { code: -32600, message: "This origin may not call the MCP endpoint" } } });
+    }
+    let msg: unknown;
+    try {
+      msg = JSON.parse(raw.body?.toString() ?? "");
+    } catch {
+      return rpcHttp({ status: 400, message: { jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error: the body is not JSON" } } });
+    }
+    return this._mcpMessage(msg, raw, url).then(rpcHttp);
+  }
+
+  /** An answer read whole; synchronous without a stream, so `inject` pays no extra turn for it. */
+  private drain(res: RawResponse): Buffer | Promise<Buffer> {
+    if (!res.stream) {
+      res.done?.();
+      return res.body === undefined ? Buffer.alloc(0) : Buffer.from(res.body);
+    }
+    return this.drainStream(res);
+  }
+
+  /** A stream that breaks midway keeps what came and is reported. */
+  private async drainStream(res: RawResponse): Promise<Buffer> {
+    const parts: Buffer[] = res.body === undefined ? [] : [Buffer.from(res.body)];
+    try {
+      for await (const chunk of res.stream!) parts.push(Buffer.from(chunk));
+    } catch (err) {
+      if (this.options.onError) this.options.onError(err, undefined);
+      else console.error(err);
+    }
+    res.abort?.abort();
+    res.done?.();
+    return Buffer.concat(parts);
+  }
+
   /**
    * Runs every route's examples against the app, without a socket.
    * @experimental
@@ -489,21 +613,11 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
       res.done?.();
       return { status: res.status, headers: res.headers, cookies: res.cookies ?? [], text, body: parseEvents(text) as T };
     }
-    const parts: Buffer[] = res.body === undefined ? [] : [Buffer.from(res.body)];
-    if (res.stream) {
-      try {
-        for await (const chunk of res.stream) parts.push(Buffer.from(chunk));
-      } catch (err) {
-        // as over a socket: what was written stays, the answer ends there, and the error is reported
-        if (this.options.onError) this.options.onError(err, undefined);
-        else console.error(err);
-      }
-      res.abort?.abort();
-    }
-    res.done?.();
+    // as over a socket: what was written stays, a stream that breaks ends there and is reported
+    const drained = this.drain(res);
+    const bytes = drained instanceof Promise ? await drained : drained;
     // unpacked as fetch would, so a test reads what was sent; the header still says how it went
     const encoding = res.headers["content-encoding"];
-    const bytes = Buffer.concat(parts);
     text = (encoding === "br" ? brotliDecompressSync(bytes) : encoding === "gzip" ? gunzipSync(bytes) : bytes).toString();
     const json = /(^|\/|\+)json\b/.test(type); // application/json, problem+json; not NDJSON, which is lines
     return { status: res.status, headers: res.headers, cookies: res.cookies ?? [], text, body: (json && text ? parsedOr(text) : text) as T };
@@ -548,6 +662,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     // notes are only read by the log, the inspector and onResponse
     const notes: string[] | undefined = timed || hooks.onResponse.length ? [] : undefined;
     if (notes && headers["x-inkan-replay"]) notes.push(`replay of #${headers["x-inkan-replay"].slice(0, 12)}`);
+    if (notes && raw.via) notes.push(raw.via);
     // the route decides the context: its scope's decorations live on that context's class.
     // A request no route takes never reads one on the plain path, so it gets none there.
     const ctx = (route || !plain ? new (route ? route.box! : this._box).Ctx(raw, url, id, headers, out) : undefined) as Context<any, any, any, any, any>;
@@ -971,13 +1086,14 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     return res;
   }
 
-  private builtin(raw: RawRequest, url: Target): RawResponse | undefined {
+  private builtin(raw: RawRequest, url: Target): RawResponse | Promise<RawResponse> | undefined {
+    if (this.mcpConf && url.pathname === this.mcpConf.path) return this.mcpAnswer(raw, url);
     if (raw.method !== "GET" && raw.method !== "HEAD") return;
     const { docs, openapi, inspector } = this.options;
     const p = url.pathname;
     if (openapi && p === openapi) return encode(fresh(), 200, this.openapi());
     if (docs && (p === docs || p === this.docsSlash)) {
-      const page = docsPage({ title: this.options.title ?? "API", specUrl: openapi || "", inspector: inspector || "" });
+      const page = docsPage({ title: this.options.title ?? "API", specUrl: openapi || "", inspector: inspector || "", mcp: this.mcpConf?.path });
       return encode(fresh({ "content-type": "text/html; charset=utf-8" }), 200, page);
     }
     if (inspector && (p === inspector || p.startsWith(inspector + "/"))) {
@@ -1581,6 +1697,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     const lines = [`  ${c.seal("印")} ${c.bold("inkan")}${name ? c.dim("  ·  ") + name : ""}`, `  ${c.dim("├")} ${c.link(base)}`];
     if (this.options.docs) lines.push(`  ${c.dim("├")} docs       ${c.link(base + this.options.docs)}`);
     if (this.options.inspector) lines.push(`  ${c.dim("├")} inspector  ${c.link(base + this.options.inspector)}`);
+    if (this.mcpConf) lines.push(`  ${c.dim("├")} mcp        ${c.link(base + this.mcpConf.path)}`);
     lines.push(`  ${c.dim("└")} ${n} route${n === 1 ? "" : "s"}, ${ex} example${ex === 1 ? "" : "s"}`);
     console.log("\n" + lines.join("\n") + "\n");
   }
@@ -1683,6 +1800,12 @@ function parsedOr(text: string): unknown {
 
 /** The headers to write, with every cookie as a Set-Cookie of its own. */
 const withCookies = (out: RawResponse): Record<string, string | string[]> => (out.cookies?.length ? { ...out.headers, "set-cookie": out.cookies } : out.headers);
+
+/** A JSON-RPC answer over HTTP; 202 has no body. */
+const rpcHttp = (a: RpcAnswer): RawResponse =>
+  a.message
+    ? { status: a.status, headers: { "content-type": "application/json", "cache-control": "no-store" }, body: JSON.stringify(a.message) }
+    : { status: a.status, headers: {}, body: undefined };
 
 /** An answer still to be written, with these headers. */
 const fresh = (headers: Record<string, string> = {}): RawResponse => ({ status: 0, headers, body: undefined });

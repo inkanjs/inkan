@@ -1,5 +1,45 @@
 # Changelog
 
+## 0.10.0 (unreleased)
+
+### New
+
+- **MCP** (experimental): `inkan({ mcp: true })` serves the app as an MCP server on `/mcp`
+  (`mcp: { path, origins, instructions }`). Every documented route is a tool, made from its
+  contract: the name is its `operationId`, the description its summary, description and up to
+  three examples as calls, the `inputSchema` its params and query (flat, or as `params` and
+  `query` where a name would be taken twice), declared `headers` and `body`; the `outputSchema`
+  its one 2xx answer when that is a JSON object; the hints come from the method (GET read-only,
+  DELETE destructive, PUT and DELETE idempotent). A route's `mcp: { name, description,
+  annotations }` changes what the client is told, `mcp: false` keeps it out. WebSocket routes,
+  event streams, raw, streamed and file bodies, and `hidden` routes are no tools;
+  `app.mcp()` lists the tools and the routes that are none, with the reason.
+  A tool call is a request to the route: with the caller's credentials (Authorization,
+  cookies, an API key header, or one in the endpoint's query) through its security, hooks,
+  input checks, middleware and log (`via MCP tool <name>`), each call counted once by
+  `rateLimit`. A 2xx answer is the tool's result, as `structuredContent` too where there is an
+  `outputSchema`; a problem is a tool error (`isError`) with the problem as its text, so a
+  model reads which field was wrong. The status is in `_meta["dev.inkan/status"]`.
+  The endpoint speaks MCP 2026-07-28, stateless, with the request headers checked against the
+  body (`-32020`), `server/discover`, `-32022` for a version it does not know, and cache hints on
+  the tool list (`cacheScope: "public"`, `ttlMs` 0 in development, 5 minutes otherwise); and, for
+  older clients, `initialize` back to 2025-03-26, without a session either way. It takes POST
+  only (405 otherwise), one message at a time, and calls from a browser only from the app's
+  own origin or `origins` (403 otherwise). Without `mcp` there is no endpoint and the request
+  path does not change. The docs page gets an `mcp` button that copies a client's config, and
+  the startup banner names the endpoint.
+- **`inkan mcp <entry> [-H "name: value"]…`**: the same server on stdin and stdout, for clients
+  that start it as a process; `-H` sends a header (a token a route asks for) with every call.
+  What the app logs goes to stderr.
+- **`inkan check --mcp`** (`app.check({ mcp: true })`): every example of a route that is a tool
+  runs a second time as a `tools/call`, held to the same contract, listed as `… via MCP`
+  (`CheckResult.via: "mcp"`). What a model gets is what the docs say.
+
+### Changed
+
+- `ctx.mcp` is reserved for a later release (docs/STABILITY.md): a decoration of that name
+  still works, with a warning in development.
+
 ## 0.9.4
 
 ### New

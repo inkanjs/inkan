@@ -373,18 +373,30 @@ function boot(spec) {
   if (!ROUTES.length) $("#all").remove();
 }
 $("#all").addEventListener("click", sendAll);
+// ----- the MCP endpoint, as a client's config -----
+if (CFG.mcp) $("#mcp").addEventListener("click", function () {
+  var name = ($("#title").textContent || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "api";
+  var servers = {};
+  servers[name] = { type: "http", url: location.origin + CFG.mcp };
+  var text = JSON.stringify({ mcpServers: servers }, null, 2);
+  var done = function (msg) { $("#intro").innerHTML = '<p class="mono muted" style="margin:0">' + msg + " · every route below is a tool there</p><pre>" + esc(text) + "</pre>"; };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(function () { done("MCP config copied to the clipboard"); }, function () { done("MCP config, copy it from here"); });
+  } else done("MCP config, copy it from here");
+});
 if (CFG.spec) fetch(CFG.spec).then(function (r) { return r.json(); }).then(boot);
 else $("#main").innerHTML = '<p class="empty">The OpenAPI document is switched off.</p>';
 `;
 
-export function docsPage(cfg: { title: string; specUrl: string; inspector?: string }) {
+export function docsPage(cfg: { title: string; specUrl: string; inspector?: string; mcp?: string }) {
   const body = `
 <header class="top"><span class="stamp">印</span><h1 id="title">${cfg.title.replace(/[<>&]/g, "")}</h1><span class="ver" id="ver"></span>
 <nav><span class="auth"><select id="authName" title="The header the token goes into"><option value="authorization">authorization</option><option value="x-api-key">x-api-key</option></select><input id="auth" type="password" autocomplete="off" spellcheck="false" placeholder="token, kept for this tab" title="Sent with every request from this page. Kept in sessionStorage, never in a URL."></span>
 <button class="btn seal" id="all" title="Sends every example. Examples that change data change it for real.">▶ send every example</button>
 ${cfg.specUrl ? `<a class="btn" href="${attr(cfg.specUrl)}">openapi.json</a>` : ""}
-${cfg.inspector ? `<a class="btn" href="${attr(cfg.inspector)}">inspector</a>` : ""}</nav></header>
+${cfg.inspector ? `<a class="btn" href="${attr(cfg.inspector)}">inspector</a>` : ""}
+${cfg.mcp ? `<button class="btn" id="mcp" title="Copies the config an MCP client (Claude Code, Cursor, …) needs to use this API as tools">mcp</button>` : ""}</nav></header>
 <div class="layout"><aside id="nav"></aside><main><p class="intro" id="intro">Every route below carries its contract. The examples are the same ones <code>inkan check</code> runs, so what you read here is what the server was tested to do.</p><div id="main"><p class="empty">loading…</p></div></main></div>`;
-  return page(cfg.title + " · docs", { spec: cfg.specUrl }, body, docsScript);
+  return page(cfg.title + " · docs", { spec: cfg.specUrl, mcp: cfg.mcp ?? "" }, body, docsScript);
 }
 

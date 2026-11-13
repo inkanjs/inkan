@@ -142,7 +142,7 @@ const RESERVED = new Set(["httpVersion", "method", "path", "id", "ip", "remote",
  * take one, with a warning in development: once inkan adds it, the decoration is refused.
  * The policy (docs/STABILITY.md) announces every new ctx member this way first.
  */
-const UPCOMING = new Set(["log", "startedAt"]);
+const UPCOMING = new Set(["log", "startedAt", "mcp"]);
 const warnedUpcoming = new Set<string>();
 function upcoming(name: string) {
   if (!UPCOMING.has(name) || warnedUpcoming.has(name)) return;

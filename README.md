@@ -88,6 +88,9 @@ The core has no dependencies. Besides the contracts, it comes with:
 
 - a typed client for the frontend, built from the app itself, with no generated code
 - the docs page at `/docs` and the OpenAPI document at `/openapi.json`
+- an MCP server with `mcp: true`: every route is a tool for Claude, Cursor and other AI
+  clients, made from the same contract, and a tool call goes through the route's security
+  and hooks like any request
 - a live request inspector at `/_inkan` while you develop
 - one error format for everything, [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) problems
 - server-sent events, streams, file uploads and CSV, all under the contract

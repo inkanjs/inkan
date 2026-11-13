@@ -13,7 +13,7 @@ immediately; they are announced in the CHANGELOG. Plugins should declare
 
 New members of the request context (`ctx`) are announced a release ahead: the name is
 reserved first, and a decoration that already uses it gets a warning in development. Reserved
-now: `ctx.log` and `ctx.startedAt` (`ctx.httpVersion` arrived in 0.8.0).
+now: `ctx.log`, `ctx.startedAt` and, since 0.10.0, `ctx.mcp` (`ctx.httpVersion` arrived in 0.8.0).
 
 The whole public surface, as its types say it, is committed in
 [`api/inkan.d.ts.txt`](../api/inkan.d.ts.txt). A test fails when it changes without that file
@@ -70,6 +70,9 @@ meaning. The terminal and Markdown text is for people and is not stable.
 
 ## Experimental
 
+- MCP: the app's `mcp` option, a route's `mcp`, `app.mcp()`, `McpOptions`, `McpRoute`,
+  `McpTool`, `McpServer`, `McpAnnotations`, `inkan mcp`, `inkan check --mcp` and
+  `CheckOptions.mcp`, `CheckResult.via`, and the tool results' `_meta["dev.inkan/status"]`
 - `untested` on a route, and `CheckOptions.untested` (with the CLI reading an entry's
   `export const untested`)
 - `formatDiffMarkdown`, `formatReportMarkdown`, `ChangeKind`

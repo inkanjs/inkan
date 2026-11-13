@@ -28,6 +28,8 @@ export type RawRequest = {
   res?: ServerResponse;
   /** Aborted when the client goes away, where the platform says so (`fetch`). */
   signal?: AbortSignal;
+  /** What sent it from inside the app, for the log: an MCP tool call. */
+  via?: string;
 };
 
 /** @internal */

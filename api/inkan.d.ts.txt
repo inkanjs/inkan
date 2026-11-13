@@ -174,6 +174,7 @@ import { type TrustProxy } from "./context.ts";
 import { Scope } from "./scope.ts";
 import { type Origins, type WsDefaults, type WsEvents, type WsTransport } from "./ws.ts";
 import { type PressureOptions, type PressureSample } from "./pressure.ts";
+import { type McpOptions, type McpServer } from "../mcp/mcp.ts";
 import { Buffer } from "node:buffer";
 export type AppOptions = OpenAPIInfo & {
     /** Where the docs page lives, or false. Default `/docs`. */
@@ -262,6 +263,13 @@ export type AppOptions = OpenAPIInfo & {
      * @experimental
      */
     context?: boolean;
+    /**
+     * Serves the app as an MCP server, `true` on `/mcp`: every documented route is a tool made
+     * from its contract, and a tool call is a request to the route, with the caller's
+     * credentials, through its security, hooks, checks and log. Default off.
+     * @experimental
+     */
+    mcp?: boolean | McpOptions;
 };
 export type InjectOptions = {
     method?: string;
@@ -431,6 +439,23 @@ export declare class App<Defs extends RouteDefs = any, Deco = any> extends Scope
     /** Every route of the app and of the scopes inside it, as written: method, path, security, meta and spec. Read-only. */
     routes(): readonly OperationRoute[];
     openapi(): Record<string, unknown>;
+    /** The `mcp` option with its defaults; undefined while it is off. */
+    private mcpConf?;
+    private tools?;
+    private toolTable;
+    /**
+     * The tools an MCP client is shown, made from the routes, and the routes that are none, with
+     * the reason. Answers with `mcp` off too, to see what it would serve.
+     * @experimental
+     */
+    mcp(): McpServer;
+    private callTool;
+    /** `POST <path>` on the MCP endpoint: the origin, the JSON, then the message. */
+    private mcpAnswer;
+    /** An answer read whole; synchronous without a stream, so `inject` pays no extra turn for it. */
+    private drain;
+    /** A stream that breaks midway keeps what came and is reported. */
+    private drainStream;
     /**
      * Runs every route's examples against the app, without a socket.
      * @experimental
@@ -1070,6 +1095,7 @@ import type { EventStream } from "./stream.ts";
 import type { App } from "./app.ts";
 import type { Scope } from "./scope.ts";
 import { type WsMethod } from "./ws.ts";
+import type { McpRoute } from "../mcp/mcp.ts";
 export type Responses = {
     [status: number]: Schema<any>;
 };
@@ -1188,6 +1214,12 @@ export type RouteSpec<P, Q, B, H, R extends Responses> = {
     cache?: CacheRule;
     /** Facts for plugins, read in hooks as `ctx.route.meta`: `{ auth: { roles: ["admin"] } }`. */
     meta?: RouteMeta;
+    /**
+     * The route as an MCP tool, when the app has `mcp`: `false` keeps it out, `{ name, description,
+     * annotations }` changes what the client is told. Without it the tool is made from the contract.
+     * @experimental
+     */
+    mcp?: McpRoute;
 };
 export type Simplify<T> = {
     [K in keyof T]: T[K];
@@ -2032,6 +2064,71 @@ export type { CompressOptions } from "./plugins/compress.ts";
 export { formatReport, formatReportMarkdown, partialMatch } from "./testing/check.ts";
 export type { CheckOptions, CheckReport, CheckResult, FormatOptions } from "./testing/check.ts";
 export type { Seal } from "./seal/compile.ts";
+export type { McpAnnotations, McpOptions, McpRoute, McpServer, McpTool } from "./mcp/mcp.ts";
+
+// ---- mcp/mcp.d.ts
+import type { Origins } from "../core/ws.ts";
+import { type JsonSchema } from "../schema/schema.ts";
+/**
+ * The app's MCP endpoint. `true` serves it on `/mcp`.
+ * @experimental
+ */
+export type McpOptions = {
+    /** Where the endpoint lives. Default `/mcp`. */
+    path?: string;
+    /**
+     * The pages that may call it from a browser: by default only the app's own origin, and
+     * clients without an Origin header (not browsers). A call from another origin is a 403.
+     */
+    origins?: Origins;
+    /** What a model is told about the server as a whole. Default: the app's `description`. */
+    instructions?: string;
+};
+/**
+ * What a client is told about a tool's behaviour. Hints only: clients treat them as untrusted.
+ * @experimental
+ */
+export type McpAnnotations = {
+    title?: string;
+    readOnlyHint?: boolean;
+    destructiveHint?: boolean;
+    idempotentHint?: boolean;
+    openWorldHint?: boolean;
+};
+/**
+ * A route's `mcp`: `false` keeps it out, an object renames or rewords its tool.
+ * @experimental
+ */
+export type McpRoute = false | {
+    /** The tool's name. Default: the route's `operationId`, as in the OpenAPI document. */
+    name?: string;
+    /** What the model reads. Default: the route's summary, description and examples. */
+    description?: string;
+    /** Merged over the hints inkan reads from the method. */
+    annotations?: McpAnnotations;
+};
+/** @experimental */
+export type McpTool = {
+    name: string;
+    title?: string;
+    description: string;
+    inputSchema: JsonSchema;
+    outputSchema?: JsonSchema;
+    annotations?: McpAnnotations;
+};
+/**
+ * What `app.mcp()` hands back: the tools, and the routes that are not one, with the reason.
+ * @experimental
+ */
+export type McpServer = {
+    path: string;
+    tools: McpTool[];
+    skipped: {
+        method: string;
+        path: string;
+        reason: string;
+    }[];
+};
 
 // ---- openapi/diff.d.ts
 import { type FormatOptions } from "../testing/check.ts";
@@ -2589,6 +2686,12 @@ export type CheckOptions = {
      * @experimental
      */
     untested?: Record<string, Record<number, string>>;
+    /**
+     * Runs every example of a route that is an MCP tool a second time, as a `tools/call`, and holds
+     * that answer to the same contract: what a model gets is what the docs say.
+     * @experimental
+     */
+    mcp?: boolean;
 };
 /** @experimental */
 export type CheckResult = {
@@ -2599,6 +2702,8 @@ export type CheckResult = {
     status: number;
     ms: number;
     problems: string[];
+    /** `"mcp"` for the run as an MCP tool call (`mcp: true`). */
+    via?: "mcp";
 };
 /** @experimental */
 export type CheckReport = {

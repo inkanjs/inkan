@@ -31,3 +31,12 @@ test("titles cannot break out of the page", () => {
   const html = docsPage({ title: '</h1><script>alert(1)</script>', specUrl: "" });
   assert.ok(!html.includes("<script>alert(1)"));
 });
+
+test("the docs page offers the MCP config only when the app serves MCP", () => {
+  const on = docsPage({ title: "API", specUrl: "/openapi.json", mcp: "/mcp" });
+  assert.ok(on.includes('id="mcp"'));
+  assert.ok(on.includes('"mcp":"/mcp"'));
+  const [js] = scripts(on);
+  assert.doesNotThrow(() => new Script(js!));
+  assert.ok(!docsPage({ title: "API", specUrl: "/openapi.json" }).includes('id="mcp"'));
+});
