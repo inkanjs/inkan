@@ -335,7 +335,8 @@ export type RpcAnswer = { status: number; message?: Record<string, unknown> };
 /** @internal What the endpoint needs from the app. */
 export type RpcHost = {
   tools: () => Map<string, ToolEntry>;
-  info: { name: string; version: string; instructions?: string };
+  /** `ttlMs`: how long a client may keep the tool list; the routes only change with a deploy. */
+  info: { name: string; version: string; instructions?: string; ttlMs: number };
   call: (entry: ToolEntry, args: Record<string, unknown>) => Promise<Record<string, unknown>>;
 };
 
@@ -394,17 +395,19 @@ export async function answer(host: RpcHost, msg: unknown, http?: Record<string, 
   }
 
   const instructions = host.info.instructions ? { instructions: host.info.instructions } : {};
+  // the same list for every caller: what a tool call may do is the route's to decide
+  const cache = modern ? { ttlMs: host.info.ttlMs, cacheScope: "public" } : {};
   switch (m.method) {
     case "initialize": {
       const asked = params.protocolVersion;
       return ok({ protocolVersion: LEGACY.includes(asked) ? asked : LEGACY[0], capabilities: { tools: { listChanged: false } }, serverInfo, ...instructions });
     }
     case "server/discover":
-      return ok({ supportedVersions: [...MODERN, ...LEGACY], capabilities: { tools: {} }, ...instructions });
+      return ok({ supportedVersions: [...MODERN, ...LEGACY], capabilities: { tools: {} }, ...instructions, ...cache });
     case "ping":
       return ok({});
     case "tools/list":
-      return ok({ tools: [...host.tools().values()].map((e) => e.tool) });
+      return ok({ tools: [...host.tools().values()].map((e) => e.tool), ...cache });
     case "tools/call": {
       const entry = typeof params.name === "string" ? host.tools().get(params.name) : undefined;
       if (!entry) return { status: 200, message: error(id, -32602, `Unknown tool: ${String(params.name)}`) };

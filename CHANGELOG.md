@@ -21,7 +21,8 @@
   `outputSchema`; a problem is a tool error (`isError`) with the problem as its text, so a
   model reads which field was wrong. The status is in `_meta["dev.inkan/status"]`.
   The endpoint speaks MCP 2026-07-28, stateless, with the request headers checked against the
-  body (`-32020`), `server/discover`, and `-32022` for a version it does not know; and, for
+  body (`-32020`), `server/discover`, `-32022` for a version it does not know, and cache hints on
+  the tool list (`cacheScope: "public"`, `ttlMs` 0 in development, 5 minutes otherwise); and, for
   older clients, `initialize` back to 2025-03-26, without a session either way. It takes POST
   only (405 otherwise), one message at a time, and calls from a browser only from the app's
   own origin or `origins` (403 otherwise). Without `mcp` there is no endpoint and the request

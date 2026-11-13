@@ -489,7 +489,12 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     return answer(
       {
         tools: () => this.toolTable().entries,
-        info: { name: this.options.title ?? "API", version: this.options.version ?? "0.0.0", instructions: this.mcpConf?.instructions ?? this.options.description },
+        info: {
+          name: this.options.title ?? "API",
+          version: this.options.version ?? "0.0.0",
+          instructions: this.mcpConf?.instructions ?? this.options.description,
+          ttlMs: this.dev ? 0 : 300_000, // in development the routes change with every restart
+        },
         call: (entry, args) => this.callTool(entry, args, from, at),
       },
       msg,

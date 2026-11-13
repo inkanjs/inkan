@@ -175,8 +175,17 @@ test("modern: per-request _meta, resultType, serverInfo and server/discover", as
   assert.deepEqual(discover.body.result.supportedVersions, ["2026-07-28", "2025-11-25", "2025-06-18", "2025-03-26"]);
   assert.deepEqual(discover.body.result._meta["io.modelcontextprotocol/serverInfo"], { name: "Tea Shop", version: "1.2.3" });
 
+  assert.equal(discover.body.result.cacheScope, "public");
+  assert.equal(typeof discover.body.result.ttlMs, "number");
+  const list = await modern(app, "tools/list");
+  assert.equal(list.body.result.cacheScope, "public");
+  assert.ok(list.body.result.ttlMs >= 0);
+  assert.equal((await modern(shop({ mcp: true, dev: false }), "tools/list")).body.result.ttlMs, 300_000);
+  assert.equal((await legacy(app, "tools/list")).body.result.cacheScope, undefined, "legacy lists carry no cache hints");
+
   const call = await modern(app, "tools/call", { name: "getTeasById", arguments: { id: 1 } });
   assert.equal(call.body.result.resultType, "complete");
+  assert.equal(call.body.result.cacheScope, undefined, "a call is never cached");
   assert.equal(call.body.result.structuredContent.name, "Sencha");
   assert.equal(call.body.result._meta["dev.inkan/status"], 200);
   assert.ok(call.body.result._meta["io.modelcontextprotocol/serverInfo"]);
