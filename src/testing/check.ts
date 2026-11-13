@@ -6,6 +6,7 @@ import { contractFor, type App, type AppOptions, type InjectResponse } from "../
 import type { Example, OperationRoute } from "../core/route.ts";
 import { paint } from "../core/color.ts";
 import { EventsSchema } from "../schema/schema.ts";
+import { argumentsOf } from "../mcp/mcp.ts";
 
 /** @experimental */
 export type CheckOptions = {
@@ -22,6 +23,12 @@ export type CheckOptions = {
    * @experimental
    */
   untested?: Record<string, Record<number, string>>;
+  /**
+   * Runs every example of a route that is an MCP tool a second time, as a `tools/call`, and holds
+   * that answer to the same contract: what a model gets is what the docs say.
+   * @experimental
+   */
+  mcp?: boolean;
 };
 
 /** @experimental */
@@ -33,6 +40,8 @@ export type CheckResult = {
   status: number;
   ms: number;
   problems: string[];
+  /** `"mcp"` for the run as an MCP tool call (`mcp: true`). */
+  via?: "mcp";
 };
 
 /** @experimental */
@@ -274,8 +283,43 @@ async function send(app: App, r: OperationRoute, ex: Example, jar: CookieJar) {
   return res;
 }
 
-async function runOne(app: App, r: OperationRoute, raw: Example, i: number, index: Map<string, Step>, beforeEach?: () => unknown): Promise<CheckResult> {
-  const name = raw.name ?? `example ${i + 1}`;
+const MCP_HEADERS = { "mcp-protocol-version": "2026-07-28", "mcp-method": "tools/call" };
+
+/** The example as a `tools/call`, its result read back into the answer the route gave. */
+async function sendMcp(app: App, r: OperationRoute, ex: Example, jar: CookieJar): Promise<InjectResponse> {
+  const entry = app._toolFor(r)!;
+  const cookie = jar.header(fill(r.path, ex.params));
+  const headers: Record<string, string> = { ...MCP_HEADERS, "mcp-name": entry.tool.name };
+  for (const [k, v] of Object.entries(ex.headers ?? {})) headers[k.toLowerCase()] = v;
+  if (cookie) headers.cookie = headers.cookie ? `${headers.cookie}; ${cookie}` : cookie;
+  const msg = {
+    jsonrpc: "2.0",
+    id: 1,
+    method: "tools/call",
+    params: {
+      name: entry.tool.name,
+      arguments: argumentsOf(ex, entry.layout),
+      _meta: { "io.modelcontextprotocol/protocolVersion": "2026-07-28", "io.modelcontextprotocol/clientCapabilities": {} },
+    },
+  };
+  const { message } = await app._mcpMessage(msg, { method: "POST", url: "/mcp", headers, local: true });
+  const result = message?.result as { content?: { type: string; text?: string }[]; structuredContent?: unknown; _meta?: Record<string, unknown> } | undefined;
+  if (!result) throw new Error(`the tool call failed: ${(message?.error as { message?: string })?.message ?? "no answer"}`);
+  const status = Number(result._meta?.["dev.inkan/status"]);
+  const text = status === 204 ? "" : (result.content?.[0]?.text ?? "");
+  let body: unknown = result.structuredContent;
+  if (body === undefined) {
+    try {
+      body = JSON.parse(text);
+    } catch {
+      body = text;
+    }
+  }
+  return { status, headers: {}, cookies: [], text, body };
+}
+
+async function runOne(app: App, r: OperationRoute, raw: Example, i: number, index: Map<string, Step>, beforeEach?: () => unknown, mcp = false): Promise<CheckResult> {
+  const name = (raw.name ?? `example ${i + 1}`) + (mcp ? " via MCP" : "");
   const started = performance.now();
   const problems: string[] = [];
   let status = 0;
@@ -284,7 +328,7 @@ async function runOne(app: App, r: OperationRoute, raw: Example, i: number, inde
     const jar = new CookieJar(); // one per chain: cookies never cross from one to another
     const kept = await runChain(app, chainOf(index, { r, ex: raw, label: stepLabel(r, raw, i) }), jar);
     const ex = substitute(raw, kept);
-    const res = await send(app, r, ex, jar);
+    const res = mcp ? await sendMcp(app, r, ex, jar) : await send(app, r, ex, jar);
     status = res.status;
     const want = expectedStatus(r, ex);
     if (want !== undefined ? status !== want : status >= 300) {
@@ -311,13 +355,16 @@ async function runOne(app: App, r: OperationRoute, raw: Example, i: number, inde
         const miss = partialMatch(ex.expect, res.body);
         if (miss) problems.push(miss);
       }
-      problems.push(...keepFrom(res, ex.keep).missing); // whatever comes after this example relies on it
+      // whatever comes after this example relies on it; a tool result has no headers or cookies to keep
+      if (!mcp) problems.push(...keepFrom(res, ex.keep).missing);
     }
   } catch (err) {
     problems.push((err as Error).message);
   }
   const ms = Math.round((performance.now() - started) * 10) / 10;
-  return { method: r.method, path: r.path, example: name, ok: problems.length === 0, status, ms, problems };
+  const result: CheckResult = { method: r.method, path: r.path, example: name, ok: problems.length === 0, status, ms, problems };
+  if (mcp) result.via = "mcp";
+  return result;
 }
 
 /** @internal */
@@ -347,6 +394,9 @@ export async function runChecks(app: App, opts: CheckOptions = {}): Promise<Chec
         }
       }
       for (const [i, ex] of examples.entries()) results.push(await runOne(app, r, ex, i, index, opts.beforeEach));
+      if (opts.mcp && app._toolFor(r)) {
+        for (const [i, ex] of examples.entries()) results.push(await runOne(app, r, ex, i, index, opts.beforeEach, true));
+      }
     }
   } finally {
     (app.options as AppOptions).log = log;

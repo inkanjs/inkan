@@ -40,3 +40,4 @@ export type { CompressOptions } from "./plugins/compress.ts";
 export { formatReport, formatReportMarkdown, partialMatch } from "./testing/check.ts";
 export type { CheckOptions, CheckReport, CheckResult, FormatOptions } from "./testing/check.ts";
 export type { Seal } from "./seal/compile.ts";
+export type { McpAnnotations, McpOptions, McpRoute, McpServer, McpTool } from "./mcp/mcp.ts";

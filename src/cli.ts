@@ -6,6 +6,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { createInterface } from "node:readline";
 import type { App } from "./core/app.ts";
 import { formatReport, formatReportMarkdown } from "./testing/check.ts";
 import { paint, useColor } from "./core/color.ts";
@@ -105,9 +106,13 @@ const c = paint(color);
 const HELP = `
   ${c.seal("印")} ${c.bold("inkan")}
 
-  ${c.bold("inkan check")}   ${c.dim("<entry> [--only <text>] [--strict] [--format <fmt>]")}
+  ${c.bold("inkan check")}   ${c.dim("<entry> [--only <text>] [--strict] [--mcp] [--format <fmt>]")}
                 ${c.dim("run every example against its contract;")}
-                ${c.dim("--strict fails on promised statuses no example covers")}
+                ${c.dim("--strict fails on promised statuses no example covers,")}
+                ${c.dim("--mcp runs them as MCP tool calls too")}
+  ${c.bold("inkan mcp")}     ${c.dim('<entry> [-H "name: value"]...')}
+                ${c.dim("the app as an MCP server on stdin and stdout, for Claude Code, Cursor and others;")}
+                ${c.dim("-H sends a header with every tool call, e.g. the token a route asks for")}
   ${c.bold("inkan openapi")} ${c.dim("<entry> [-o <file>]")}   ${c.dim("write the OpenAPI 3.1 document")}
   ${c.bold("inkan routes")}  ${c.dim("<entry>")}               ${c.dim("list the routes")}
   ${c.bold("inkan diff")}    ${c.dim("<before> <after> [--format <fmt>]")}
@@ -137,14 +142,48 @@ switch (command) {
     const only = value("--only");
     const as = format();
     const strict = has("--strict");
-    const [entry] = rest(1, "inkan check <entry> [--only <text>] [--strict] [--format terminal|json|markdown]");
+    const mcp = has("--mcp");
+    const [entry] = rest(1, "inkan check <entry> [--only <text>] [--strict] [--mcp] [--format terminal|json|markdown]");
     const { app, beforeEach, untested } = await load(entry);
-    const report = await app.check({ only, beforeEach, strict, untested });
+    const report = await app.check({ only, beforeEach, strict, untested, mcp });
     const title = [app.options.title, app.options.version].filter(Boolean).join(" ");
     if (as === "json") console.log(JSON.stringify(report, null, 2));
     else if (as === "markdown") console.log(formatReportMarkdown(report, { title }));
     else console.log(formatReport(report, { title, color }));
     process.exit(report.ok ? 0 : 1);
+  }
+  case "mcp": {
+    const headers: Record<string, string> = {};
+    for (let h = value("--header", "-H"); h !== undefined; h = value("--header", "-H")) {
+      const i = h.indexOf(":");
+      if (i < 1) fail(`--header takes "name: value", not "${h}".`);
+      headers[h.slice(0, i).trim().toLowerCase()] = h.slice(i + 1).trim();
+    }
+    const [entry] = rest(1, 'inkan mcp <entry> [-H "name: value"]...');
+    // stdout carries the protocol and nothing else: whatever the app logs goes to stderr
+    console.log = console.info = console.debug = console.error;
+    const { app } = await load(entry);
+    const write = (m: unknown) => process.stdout.write(JSON.stringify(m) + "\n");
+    const lines = createInterface({ input: process.stdin, crlfDelay: Infinity });
+    const pending = new Set<Promise<void>>();
+    lines.on("line", (line) => {
+      if (!line.trim()) return;
+      let msg: { id?: unknown };
+      try {
+        msg = JSON.parse(line);
+      } catch {
+        return write({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error: the line is not JSON" } });
+      }
+      const p = app._mcpMessage(msg, { method: "POST", url: "/mcp", headers, local: true }, undefined, false).then(
+        (a) => void (a.message && write(a.message)),
+        (err) => void write({ jsonrpc: "2.0", id: msg?.id ?? null, error: { code: -32603, message: (err as Error)?.message ?? String(err) } }),
+      );
+      pending.add(p);
+      void p.finally(() => pending.delete(p));
+    });
+    await new Promise((done) => lines.once("close", done));
+    await Promise.all(pending);
+    process.exit(0);
   }
   case "openapi": {
     const out = value("--out", "-o");

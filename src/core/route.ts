@@ -9,6 +9,7 @@ import type { EventStream } from "./stream.ts";
 import type { App } from "./app.ts";
 import type { Box, Hooks, Scope } from "./scope.ts";
 import { acceptor, type WsHandler, type WsMethod, type WsSpec } from "./ws.ts";
+import type { McpRoute } from "../mcp/mcp.ts";
 
 export type Responses = { [status: number]: Schema<any> };
 
@@ -125,6 +126,12 @@ export type RouteSpec<P, Q, B, H, R extends Responses> = {
   cache?: CacheRule;
   /** Facts for plugins, read in hooks as `ctx.route.meta`: `{ auth: { roles: ["admin"] } }`. */
   meta?: RouteMeta;
+  /**
+   * The route as an MCP tool, when the app has `mcp`: `false` keeps it out, `{ name, description,
+   * annotations }` changes what the client is told. Without it the tool is made from the contract.
+   * @experimental
+   */
+  mcp?: McpRoute;
 };
 
 export type Simplify<T> = { [K in keyof T]: T[K] } & {};

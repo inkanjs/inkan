@@ -28,9 +28,10 @@ export type OpenAPIInfo = {
 export const toOpenAPIPath = (path: string) =>
   path.replace(/:(\w+)/g, "{$1}").replace(/\*(\w*)$/, (_, n) => `{${n || "rest"}}`);
 
-const operationId = (r: RouteRecord) =>
-  r.method.toLowerCase() +
-  r.path
+/** @internal The operationId of a route that names none: `getTeasById`. */
+export const operationIdOf = (method: string, path: string) =>
+  method.toLowerCase() +
+  path
     .split("/")
     .filter(Boolean)
     .map((s) => {
@@ -109,7 +110,7 @@ export function openAPIDocument(records: RouteRecord[], info: OpenAPIInfo = {}) 
     const { spec } = r;
     const ws = r.method === "WS";
     if (spec.hidden) continue;
-    const op: Record<string, unknown> = { operationId: spec.operationId ?? operationId(r) };
+    const op: Record<string, unknown> = { operationId: spec.operationId ?? operationIdOf(r.method, r.path) };
     if (spec.summary) op.summary = spec.summary;
     if (spec.description) op.description = spec.description;
     if (spec.tags) op.tags = spec.tags;

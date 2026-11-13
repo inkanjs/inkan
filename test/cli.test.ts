@@ -154,3 +154,40 @@ test("cli check --strict: statuses not demonstrated on purpose, by the route or 
   const md = inkan("check", "test/fixtures/untested.ts", "--strict", "--format", "markdown");
   assert.ok(md.out.includes("- `GET /plugin` 503: too many at once"), md.out);
 });
+
+test("cli check --mcp: every example of a tool runs again as a tool call", () => {
+  const r = inkan("check", shop, "--mcp", "--json");
+  assert.equal(r.code, 0, r.err);
+  const report: CheckReport = JSON.parse(r.out);
+  const viaMcp = report.results.filter((x) => x.via === "mcp");
+  assert.ok(viaMcp.length > 0);
+  assert.equal(viaMcp.length * 2, report.results.length, "the shop's routes are all tools");
+  assert.ok(viaMcp.every((x) => x.ok && x.example.endsWith(" via MCP")));
+});
+
+test("cli mcp: JSON-RPC on stdin and stdout, the app's own output on stderr", () => {
+  const lines = [
+    { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "t", version: "1" } } },
+    { jsonrpc: "2.0", method: "notifications/initialized" },
+    { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "getTeasById", arguments: { id: 1 } } },
+  ];
+  const r = spawnSync(process.execPath, ["src/cli.ts", "mcp", shop], {
+    cwd: root,
+    encoding: "utf8",
+    input: lines.map((l) => JSON.stringify(l)).join("\n") + "\nnot json\n",
+    env: { ...process.env, NO_COLOR: "1" },
+  });
+  assert.equal(r.status, 0, r.stderr);
+  const out = r.stdout.trim().split("\n").map((l) => JSON.parse(l));
+  assert.equal(out.length, 3, "the notification gets no answer");
+  const byId = new Map(out.map((m) => [m.id, m]));
+  assert.equal(byId.get(1).result.serverInfo.name, "Tea Shop");
+  assert.equal(byId.get(2).result._meta["dev.inkan/status"], 200);
+  assert.equal(byId.get(null).error.code, -32700);
+});
+
+test("cli mcp: -H needs a name and a value", () => {
+  const r = inkan("mcp", shop, "-H", "nocolon");
+  assert.equal(r.code, 2);
+  assert.match(r.err, /--header takes "name: value"/);
+});
