@@ -1101,9 +1101,10 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
 
   private builtin(raw: RawRequest, url: Target): RawResponse | Promise<RawResponse> | undefined {
     if (this.mcpConf && url.pathname === this.mcpConf.path) return this.mcpAnswer(raw, url);
+    const get = raw.method === "GET" || raw.method === "HEAD";
+    if (!get && !this.options.inspector) return; // the hot path in production, as before the studio
     const { docs, openapi, inspector, protect } = this.options;
     const p = url.pathname;
-    const get = raw.method === "GET" || raw.method === "HEAD";
     let serve: () => RawResponse;
     if (get && openapi && p === openapi) serve = () => encode(fresh(), 200, this.openapi());
     else if (get && docs && (p === docs || p === this.docsSlash)) {
