@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.11.0 (unreleased)
+## 0.11.0
 
 ### New
 
@@ -28,6 +28,12 @@
 ### Changed
 
 - The docs page's link and the startup banner say `studio` instead of `inspector`.
+
+### Speed
+
+- The request path is the same as 0.10's: with the studio off, a request that is not GET or
+  HEAD leaves the built-in pages at once, as before, and the studio keeps its numbers only
+  while it is on. The bench against 0.10.0 is in `bench/reports/0.11.0.md`.
 
 ## 0.10.0
 
