@@ -114,7 +114,7 @@ Fastify in spirit, with schemas on every route, but it keeps the docs and the te
 same place as the code, and it gets its speed without generating code at runtime.
 
 On the benchmark (twelve scenarios on a GitHub runner, plain `node:http` as 100) inkan
-scores 89.4, Fastify 87.2, Hono 82.5 and Express 46.1. That puts inkan a little ahead of Fastify
+scores 89.8, Fastify 88.6, Hono 85.6 and Express 48.9. That puts inkan a little ahead of Fastify
 in every run, though not in every scenario. The numbers, how they are measured and how to run
 the bench yourself are on [the benchmarks page](https://inkan-dev.vercel.app/benchmarks).
 I wrote the other frameworks' apps myself, so if you know a faster way to write one of
