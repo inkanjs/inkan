@@ -394,7 +394,7 @@ export function docsPage(cfg: { title: string; specUrl: string; inspector?: stri
 <nav><span class="auth"><select id="authName" title="The header the token goes into"><option value="authorization">authorization</option><option value="x-api-key">x-api-key</option></select><input id="auth" type="password" autocomplete="off" spellcheck="false" placeholder="token, kept for this tab" title="Sent with every request from this page. Kept in sessionStorage, never in a URL."></span>
 <button class="btn seal" id="all" title="Sends every example. Examples that change data change it for real.">▶ send every example</button>
 ${cfg.specUrl ? `<a class="btn" href="${attr(cfg.specUrl)}">openapi.json</a>` : ""}
-${cfg.inspector ? `<a class="btn" href="${attr(cfg.inspector)}">inspector</a>` : ""}
+${cfg.inspector ? `<a class="btn" href="${attr(cfg.inspector)}">studio</a>` : ""}
 ${cfg.mcp ? `<button class="btn" id="mcp" title="Copies the config an MCP client (Claude Code, Cursor, …) needs to use this API as tools">mcp</button>` : ""}</nav></header>
 <div class="layout"><aside id="nav"></aside><main><p class="intro" id="intro">Every route below carries its contract. The examples are the same ones <code>inkan check</code> runs, so what you read here is what the server was tested to do.</p><div id="main"><p class="empty">loading…</p></div></main></div>`;
   return page(cfg.title + " · docs", { spec: cfg.specUrl, mcp: cfg.mcp ?? "" }, body, docsScript);

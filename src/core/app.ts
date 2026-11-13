@@ -9,7 +9,8 @@ import { EventsSchema, RawBodySchema, StreamSchema, t, type Infer, type Issue, t
 import { encodeEvents, EventStream, hasFiles, isStream, parseEvents, toFormData, type SseEvent } from "./stream.ts";
 import { openAPIDocument, routeView, type OpenAPIInfo } from "../openapi/openapi.ts";
 import { docsPage } from "../pages/docs.ts";
-import { inspectorPage } from "../pages/inspector.ts";
+import { studioPage } from "../pages/studio.ts";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { exampleFrom } from "../testing/record.ts";
 import { runChecks, type CheckOptions, type CheckReport } from "../testing/check.ts";
 import { paint, useColor } from "./color.ts";
@@ -19,12 +20,12 @@ import { Reply, type Context, type Example, type Middleware, type OperationRoute
 import { target, queryObject, trustingContext, type Exchange, type RawRequest, type RawResponse, type Target, type TrustProxy } from "./context.ts";
 import { NO_HOOKS, runHooks, Scope, type Hooks } from "./scope.ts";
 import { nextId } from "./request-id.ts";
-import { JobHub } from "./jobs.ts";
+import { JobHub, type JobRecord } from "./jobs.ts";
 import { jsonRows, SafeHtml } from "./helpers.ts";
 import { cached } from "./cache.ts";
 import { ArraySchema } from "../schema/schema.ts";
 import { readRequestBody, requestStream, TOO_LARGE, validateInput } from "./input.ts";
-import { Connection, NodeTransport, originAllowed, switchHeaders, UPGRADING, writeAnswer, writeSwitch, type Origins, type Upgrading, type WsDefaults, type WsEvents, type WsSpec, type WsTransport } from "./ws.ts";
+import { Connection, NodeTransport, originAllowed, switchHeaders, UPGRADING, writeAnswer, writeSwitch, type Origins, type PreContext, type Upgrading, type WsDefaults, type WsEvents, type WsSpec, type WsTransport } from "./ws.ts";
 import { deprecate } from "./deprecate.ts";
 import { Gauge, type PressureOptions, type PressureSample } from "./pressure.ts";
 import { contextStorage, type Cell } from "./request-context.ts";
@@ -127,6 +128,14 @@ export type AppOptions = OpenAPIInfo & {
    * @experimental
    */
   mcp?: boolean | McpOptions;
+  /**
+   * Who may open the pages inkan serves itself: the docs page, the OpenAPI document and the
+   * studio. `{ user, password }` asks with HTTP Basic auth (send it over HTTPS); a function
+   * decides alone, before any hook. With it the studio answers beyond this machine too, so it
+   * can run in production. Default: those pages are open, and the studio only answers loopback.
+   * @experimental
+   */
+  protect?: { user: string; password: string; realm?: string } | ((req: PreContext) => boolean | Promise<boolean>);
 };
 
 export type InjectOptions = {
@@ -390,7 +399,11 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
   _jobs?: JobHub;
   /** @internal */
   _jobHub(): JobHub {
-    return (this._jobs ??= new JobHub(this));
+    if (!this._jobs) {
+      this._jobs = new JobHub(this);
+      this._jobs.recent = Boolean(this.options.inspector); // the studio lists the jobs that ended
+    }
+    return this._jobs;
   }
 
   /** @internal A hook was added somewhere: the routes' joined hooks, and the document, are out of date. */
@@ -1088,22 +1101,127 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
 
   private builtin(raw: RawRequest, url: Target): RawResponse | Promise<RawResponse> | undefined {
     if (this.mcpConf && url.pathname === this.mcpConf.path) return this.mcpAnswer(raw, url);
-    if (raw.method !== "GET" && raw.method !== "HEAD") return;
-    const { docs, openapi, inspector } = this.options;
+    const { docs, openapi, inspector, protect } = this.options;
     const p = url.pathname;
-    if (openapi && p === openapi) return encode(fresh(), 200, this.openapi());
-    if (docs && (p === docs || p === this.docsSlash)) {
-      const page = docsPage({ title: this.options.title ?? "API", specUrl: openapi || "", inspector: inspector || "", mcp: this.mcpConf?.path });
-      return encode(fresh({ "content-type": "text/html; charset=utf-8" }), 200, page);
+    const get = raw.method === "GET" || raw.method === "HEAD";
+    let serve: () => RawResponse;
+    if (get && openapi && p === openapi) serve = () => encode(fresh(), 200, this.openapi());
+    else if (get && docs && (p === docs || p === this.docsSlash)) {
+      serve = () => {
+        const page = docsPage({ title: this.options.title ?? "API", specUrl: openapi || "", inspector: inspector || "", mcp: this.mcpConf?.path });
+        return encode(fresh({ "content-type": "text/html; charset=utf-8" }), 200, page);
+      };
+    } else if (inspector && (p === inspector || p.startsWith(inspector + "/"))) {
+      // without protect only this machine gets in; everybody else a plain 404
+      if (!protect && !raw.local && !isLoopback(raw.remote ?? raw.req?.socket.remoteAddress)) return;
+      serve = () => this.studioAnswer(raw, url, inspector);
+    } else return;
+    if (!protect) return serve();
+    const ok = this.allowed(protect, raw, url);
+    if (ok === true) return serve();
+    if (ok === false) return unauthorized(protect);
+    return ok.then((yes) => (yes ? serve() : unauthorized(protect)));
+  }
+
+  /** Whether `protect` lets this request in: Basic auth compared in constant time, or the function's say. */
+  private allowed(protect: NonNullable<AppOptions["protect"]>, raw: RawRequest, url: Target): boolean | Promise<boolean> {
+    if (typeof protect === "function") {
+      const said = protect(this.early(raw, url));
+      return said instanceof Promise ? said.then((v) => v === true, () => false) : said === true;
     }
-    if (inspector && (p === inspector || p.startsWith(inspector + "/"))) {
-      if (!raw.local && !isLoopback(raw.remote ?? raw.req?.socket.remoteAddress)) return; // a plain 404 for everybody else
-      if (p === inspector + "/log.json") {
-        const since = Number(url.searchParams.get("since") ?? 0);
-        return encode(fresh({ "cache-control": "no-store" }), 200, this.log.filter((e) => e.id > since));
-      }
-      return encode(fresh({ "content-type": "text/html; charset=utf-8" }), 200, inspectorPage({ title: this.options.title ?? "API", base: inspector, docs: docs || "" }));
+    const auth = raw.headers.authorization;
+    const m = typeof auth === "string" ? /^Basic\s+(.+)$/i.exec(auth) : null;
+    if (!m) return false;
+    const digest = (s: string) => createHash("sha256").update(s).digest();
+    return timingSafeEqual(digest(Buffer.from(m[1]!, "base64").toString()), digest(`${protect.user}:${protect.password}`));
+  }
+
+  /** The request as hooks before routing see it, for an `origins` or `protect` function. */
+  private early(raw: RawRequest, url: Target): Context<any, any, any, any, any> {
+    const h = raw.headers;
+    return new this._box.Ctx({ method: raw.method, url: raw.url, headers: h, req: raw.req, remote: raw.remote, secure: raw.secure, httpVersion: raw.httpVersion }, url, "", h as Record<string, string>, fresh()) as Context<
+      any,
+      any,
+      any,
+      any,
+      any
+    >;
+  }
+
+  /** The studio's page, its JSON, and cancelling a job, which needs the studio's own header. */
+  private studioAnswer(raw: RawRequest, url: Target, base: string): RawResponse {
+    const p = url.pathname;
+    const json = (body: unknown) => encode(fresh({ "cache-control": "no-store" }), 200, body);
+    if (raw.method === "POST" && p === base + "/jobs/cancel") {
+      // a page of another site cannot send this header without a preflight, which nothing here answers
+      if (raw.headers["x-inkan-studio"] !== "1") return { status: 403, headers: {}, body: undefined };
+      const kind = this._jobs?.kinds.find((k) => k.path === url.searchParams.get("kind"));
+      const id = url.searchParams.get("id") ?? "";
+      if (!kind) return { status: 404, headers: {}, body: undefined };
+      void kind._studioCancel(id).catch((err) => this.options.onError?.(err, undefined));
+      return { status: 202, headers: {}, body: undefined };
     }
+    if (raw.method !== "GET" && raw.method !== "HEAD") return { status: 405, headers: { allow: "GET" }, body: undefined };
+    if (p === base + "/log.json") {
+      const since = Number(url.searchParams.get("since") ?? 0);
+      return json(this.log.filter((e) => e.id > since));
+    }
+    if (p === base + "/studio.json") return json(this._studio());
+    if (p !== base && p !== base + "/") return { status: 404, headers: {}, body: undefined };
+    const page = studioPage({ title: this.options.title ?? "API", base, docs: this.options.docs || "", mcp: this.mcpConf?.path ?? "" });
+    return encode(fresh({ "content-type": "text/html; charset=utf-8" }), 200, page);
+  }
+
+  /** Per route, while the studio is on: how often it answered, how often with an error, and its last times. */
+  private stats = new Map<string, { n: number; errors: number; ms: number[]; last: number }>();
+
+  /** @internal What the studio shows: the app, its routes with their numbers, its tools and its jobs. */
+  _studio() {
+    const pct = (sorted: number[], q: number) => (sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))]! : undefined);
+    let mcp: { path: string | null; tools: { name: string; title?: string; description: string; route: string; inputSchema: unknown }[]; skipped: McpServer["skipped"]; error?: string };
+    let tools = new Map<string, string>();
+    try {
+      const table = this.toolTable();
+      tools = new Map([...table.entries.values()].map((e) => [`${e.route.method} ${e.route.path}`, e.tool.name]));
+      mcp = {
+        path: this.mcpConf?.path ?? null,
+        tools: [...table.entries.values()].map((e) => ({ name: e.tool.name, title: e.tool.title, description: e.tool.description, route: `${e.route.method} ${e.route.path}`, inputSchema: e.tool.inputSchema })),
+        skipped: table.server.skipped,
+      };
+    } catch (err) {
+      mcp = { path: this.mcpConf?.path ?? null, tools: [], skipped: [], error: (err as Error).message };
+    }
+    const routes = this.routes().map((r) => {
+      const key = `${r.method} ${r.path}`;
+      const s = this.stats.get(key);
+      const sorted = s ? [...s.ms].sort((a, b) => a - b) : [];
+      return {
+        method: r.method,
+        path: r.path,
+        summary: r.spec.summary,
+        tags: r.spec.tags,
+        deprecated: Boolean(r.spec.deprecated),
+        hidden: Boolean(r.spec.hidden),
+        secured: r.security.length > 0,
+        examples: r.spec.examples?.length ?? 0,
+        statuses: Object.keys(r.spec.response ?? {}).map(Number),
+        tool: tools.get(key),
+        stats: s && { n: s.n, errors: s.errors, p50: pct(sorted, 0.5), p95: pct(sorted, 0.95), last: s.last },
+      };
+    });
+    const brief = (v: unknown) => (v === undefined ? undefined : clip(JSON.stringify(v), 300));
+    const jobs = (this._jobs?.kinds ?? []).map((k) => {
+      const s = k._studio();
+      const rec = (j: JobRecord) => ({ ...j, input: undefined, progress: brief(j.progress), result: brief(j.result), error: j.error?.detail ?? j.error?.title });
+      return { ...s, live: s.live.map(rec), recent: s.recent.map(rec) };
+    });
+    const mem = process.memoryUsage();
+    return {
+      app: { title: this.options.title ?? "API", version: this.options.version, dev: this.dev, worker: WORKER, node: process.version, uptime: Math.round(process.uptime()), rss: mem.rss, heap: mem.heapUsed },
+      routes,
+      mcp,
+      jobs,
+    };
   }
 
   private remember(
@@ -1136,6 +1254,16 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     entry.example = exampleFrom(entry);
     this.log.push(entry);
     if (this.log.length > 200) this.log.shift();
+    if (route) {
+      const key = `${route.method} ${route.path}`;
+      let s = this.stats.get(key);
+      if (!s) this.stats.set(key, (s = { n: 0, errors: 0, ms: [], last: 0 }));
+      s.n++;
+      if (res.status >= 500 || notes.length) s.errors++;
+      s.ms.push(ms);
+      if (s.ms.length > 200) s.ms.shift();
+      s.last = res.status;
+    }
   }
 
   // ----- the socket -----
@@ -1696,7 +1824,7 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     const c = paint(useColor());
     const lines = [`  ${c.seal("印")} ${c.bold("inkan")}${name ? c.dim("  ·  ") + name : ""}`, `  ${c.dim("├")} ${c.link(base)}`];
     if (this.options.docs) lines.push(`  ${c.dim("├")} docs       ${c.link(base + this.options.docs)}`);
-    if (this.options.inspector) lines.push(`  ${c.dim("├")} inspector  ${c.link(base + this.options.inspector)}`);
+    if (this.options.inspector) lines.push(`  ${c.dim("├")} studio     ${c.link(base + this.options.inspector)}`);
     if (this.mcpConf) lines.push(`  ${c.dim("├")} mcp        ${c.link(base + this.mcpConf.path)}`);
     lines.push(`  ${c.dim("└")} ${n} route${n === 1 ? "" : "s"}, ${ex} example${ex === 1 ? "" : "s"}`);
     console.log("\n" + lines.join("\n") + "\n");
@@ -1800,6 +1928,14 @@ function parsedOr(text: string): unknown {
 
 /** The headers to write, with every cookie as a Set-Cookie of its own. */
 const withCookies = (out: RawResponse): Record<string, string | string[]> => (out.cookies?.length ? { ...out.headers, "set-cookie": out.cookies } : out.headers);
+
+/** No to a page `protect` guards: Basic auth asks the browser for a login, a function's no is just a 401. */
+const unauthorized = (protect: NonNullable<AppOptions["protect"]>): RawResponse => {
+  const p = problem(401, "unauthorized", "This page needs a login");
+  const headers: Record<string, string> = { "content-type": "application/problem+json", "cache-control": "no-store" };
+  if (typeof protect !== "function") headers["www-authenticate"] = `Basic realm="${(protect.realm ?? "inkan").replace(/["\\]/g, "")}", charset="UTF-8"`;
+  return { status: 401, headers, body: JSON.stringify(p.toJSON()) };
+};
 
 /** A JSON-RPC answer over HTTP; 202 has no body. */
 const rpcHttp = (a: RpcAnswer): RawResponse =>

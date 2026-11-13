@@ -2,14 +2,14 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Script } from "node:vm";
 import { docsPage } from "../src/pages/docs.ts";
-import { inspectorPage } from "../src/pages/inspector.ts";
+import { studioPage } from "../src/pages/studio.ts";
 
 const scripts = (html: string) => [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
 
 test("the page scripts are valid JavaScript", () => {
   const pages = [
     docsPage({ title: "API", specUrl: "/openapi.json", inspector: "/_inkan" }),
-    inspectorPage({ title: "API", base: "/_inkan", docs: "/docs" }),
+    studioPage({ title: "API", base: "/_inkan", docs: "/docs", mcp: "" }),
   ];
   for (const html of pages) {
     const [js] = scripts(html);

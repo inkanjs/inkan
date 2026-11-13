@@ -172,7 +172,7 @@ import { type SealState } from "../seal/seal.ts";
 import { type Context, type Middleware, type OperationRoute, type RouteDefs } from "./route.ts";
 import { type TrustProxy } from "./context.ts";
 import { Scope } from "./scope.ts";
-import { type Origins, type WsDefaults, type WsEvents, type WsTransport } from "./ws.ts";
+import { type Origins, type PreContext, type WsDefaults, type WsEvents, type WsTransport } from "./ws.ts";
 import { type PressureOptions, type PressureSample } from "./pressure.ts";
 import { type McpOptions, type McpServer } from "../mcp/mcp.ts";
 import { Buffer } from "node:buffer";
@@ -270,6 +270,18 @@ export type AppOptions = OpenAPIInfo & {
      * @experimental
      */
     mcp?: boolean | McpOptions;
+    /**
+     * Who may open the pages inkan serves itself: the docs page, the OpenAPI document and the
+     * studio. `{ user, password }` asks with HTTP Basic auth (send it over HTTPS); a function
+     * decides alone, before any hook. With it the studio answers beyond this machine too, so it
+     * can run in production. Default: those pages are open, and the studio only answers loopback.
+     * @experimental
+     */
+    protect?: {
+        user: string;
+        password: string;
+        realm?: string;
+    } | ((req: PreContext) => boolean | Promise<boolean>);
 };
 export type InjectOptions = {
     method?: string;
@@ -523,6 +535,14 @@ export declare class App<Defs extends RouteDefs = any, Deco = any> extends Scope
     /** A problem written as an RFC 9457 document. */
     private answer;
     private builtin;
+    /** Whether `protect` lets this request in: Basic auth compared in constant time, or the function's say. */
+    private allowed;
+    /** The request as hooks before routing see it, for an `origins` or `protect` function. */
+    private early;
+    /** The studio's page, its JSON, and cancelling a job, which needs the studio's own header. */
+    private studioAnswer;
+    /** Per route, while the studio is on: how often it answered, how often with an error, and its last times. */
+    private stats;
     private remember;
     /** A plain Node request listener, for `http.createServer` or anything that takes one. */
     get listener(): (req: IncomingMessage, res: ServerResponse) => undefined;

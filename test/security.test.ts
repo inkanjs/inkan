@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { inkan } from "../src/index.ts";
 import { docsPage } from "../src/pages/docs.ts";
-import { inspectorPage } from "../src/pages/inspector.ts";
+import { studioPage } from "../src/pages/studio.ts";
 
 const quiet = { log: false, gracefulShutdown: false } as const;
 
@@ -29,7 +29,7 @@ test("the pages only send requests to their own origin and escape configured lin
   const docs = docsPage({ title: "API", specUrl: '/o.json"><script>alert(1)</script>', inspector: "/_inkan" });
   assert.ok(!docs.includes("<script>alert(1)"), "a configured href cannot break out of its attribute");
   assert.ok((docs.match(/sameOrigin\(/g) ?? []).length >= 3, "send and chain check the origin");
-  const inspector = inspectorPage({ title: "API", base: "/_inkan", docs: '/docs"><b>' });
+  const inspector = studioPage({ title: "API", base: "/_inkan", docs: '/docs"><b>', mcp: "" });
   assert.ok(!inspector.includes('"><b>'));
   assert.ok(/if \(!sameOrigin\(e\.path\)\)/.test(inspector), "replay checks the origin");
 });

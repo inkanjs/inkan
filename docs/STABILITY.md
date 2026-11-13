@@ -70,6 +70,8 @@ meaning. The terminal and Markdown text is for people and is not stable.
 
 ## Experimental
 
+- `protect`, and the studio's page and JSON (`/_inkan`, `/_inkan/studio.json`): what they show
+  may change in any release; the `inspector` option that places them is stable
 - MCP: the app's `mcp` option, a route's `mcp`, `app.mcp()`, `McpOptions`, `McpRoute`,
   `McpTool`, `McpServer`, `McpAnnotations`, `inkan mcp`, `inkan check --mcp` and
   `CheckOptions.mcp`, `CheckResult.via`, and the tool results' `_meta["dev.inkan/status"]`
