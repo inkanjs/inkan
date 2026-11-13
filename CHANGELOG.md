@@ -35,6 +35,13 @@
   runs a second time as a `tools/call`, held to the same contract, listed as `… via MCP`
   (`CheckResult.via: "mcp"`). What a model gets is what the docs say.
 
+### Speed
+
+- As fast as 0.9: MCP is off the request path. On the runner inkan scores 89.8 against
+  0.9.4's 89.7 and Fastify's 88.6 (median of three runs), ahead of Fastify in all three, not
+  in every scenario. `app.inject` no longer takes an extra turn per request. The numbers are
+  in [`bench/reports/0.10.0.md`](bench/reports/0.10.0.md).
+
 ### Changed
 
 - `ctx.mcp` is reserved for a later release (docs/STABILITY.md): a decoration of that name
