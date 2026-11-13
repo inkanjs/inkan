@@ -452,8 +452,10 @@ export declare class App<Defs extends RouteDefs = any, Deco = any> extends Scope
     private callTool;
     /** `POST <path>` on the MCP endpoint: the origin, the JSON, then the message. */
     private mcpAnswer;
-    /** An answer read whole; a stream that breaks midway keeps what came and is reported. */
+    /** An answer read whole; synchronous without a stream, so `inject` pays no extra turn for it. */
     private drain;
+    /** A stream that breaks midway keeps what came and is reported. */
+    private drainStream;
     /**
      * Runs every route's examples against the app, without a socket.
      * @experimental

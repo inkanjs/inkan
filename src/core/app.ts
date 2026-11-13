@@ -547,18 +547,25 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
     return this._mcpMessage(msg, raw, url).then(rpcHttp);
   }
 
-  /** An answer read whole; a stream that breaks midway keeps what came and is reported. */
-  private async drain(res: RawResponse): Promise<Buffer> {
-    const parts: Buffer[] = res.body === undefined ? [] : [Buffer.from(res.body)];
-    if (res.stream) {
-      try {
-        for await (const chunk of res.stream) parts.push(Buffer.from(chunk));
-      } catch (err) {
-        if (this.options.onError) this.options.onError(err, undefined);
-        else console.error(err);
-      }
-      res.abort?.abort();
+  /** An answer read whole; synchronous without a stream, so `inject` pays no extra turn for it. */
+  private drain(res: RawResponse): Buffer | Promise<Buffer> {
+    if (!res.stream) {
+      res.done?.();
+      return res.body === undefined ? Buffer.alloc(0) : Buffer.from(res.body);
     }
+    return this.drainStream(res);
+  }
+
+  /** A stream that breaks midway keeps what came and is reported. */
+  private async drainStream(res: RawResponse): Promise<Buffer> {
+    const parts: Buffer[] = res.body === undefined ? [] : [Buffer.from(res.body)];
+    try {
+      for await (const chunk of res.stream!) parts.push(Buffer.from(chunk));
+    } catch (err) {
+      if (this.options.onError) this.options.onError(err, undefined);
+      else console.error(err);
+    }
+    res.abort?.abort();
     res.done?.();
     return Buffer.concat(parts);
   }
@@ -607,7 +614,8 @@ export class App<Defs extends RouteDefs = any, Deco = any> extends Scope<Defs, D
       return { status: res.status, headers: res.headers, cookies: res.cookies ?? [], text, body: parseEvents(text) as T };
     }
     // as over a socket: what was written stays, a stream that breaks ends there and is reported
-    const bytes = await this.drain(res);
+    const drained = this.drain(res);
+    const bytes = drained instanceof Promise ? await drained : drained;
     // unpacked as fetch would, so a test reads what was sent; the header still says how it went
     const encoding = res.headers["content-encoding"];
     text = (encoding === "br" ? brotliDecompressSync(bytes) : encoding === "gzip" ? gunzipSync(bytes) : bytes).toString();
