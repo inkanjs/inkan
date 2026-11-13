@@ -18,7 +18,7 @@ on:
         description: Rounds (the median is shown)
         default: "3"
       servers:
-        description: Servers, comma separated (node, fastify, hono, inkan, inkan-base, inkan-sealed, inkan-cluster, inkan-uws, inkan-dev, express)
+        description: Servers, comma separated (node, fastify, hono, inkan, inkan-base, inkan-sealed, inkan-cluster, inkan-uws, inkan-dev, express, koa, hapi, h3, elysia, nest)
         default: "node,fastify,hono,inkan,express"
       base:
         description: "A ref to measure against, as the server inkan-base (e.g. main); empty for none"

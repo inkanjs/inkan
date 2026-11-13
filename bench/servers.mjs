@@ -1,6 +1,7 @@
 // The same routes in every server, doing the same work, so the numbers compare like
-// with like. Fastify and inkan check input and shape output with schemas; Express,
-// Hono and bare node:http do the same checks by hand (see data.mjs).
+// with like. Fastify and inkan check input and shape output with schemas, Elysia checks
+// input with its own; Express, Hono, Koa, hapi, h3, NestJS and bare node:http do the same
+// checks by hand (see data.mjs).
 //
 //   GET  /hello                     a fixed JSON answer
 //   GET  /users/:id?fields=…        a typed path param and a query
@@ -12,7 +13,10 @@
 //   GET  /async/:id                 a handler that waits one event-loop hop
 //   anything else                   404
 //
-//   node servers.mjs <node|express|fastify|hono|inkan|inkan-sealed|inkan-cluster|inkan-uws|inkan-dev|inkan-base|inkan-noid> <port>
+//   node servers.mjs <node|express|fastify|hono|koa|hapi|h3|elysia|nest|inkan|inkan-sealed|
+//                     inkan-cluster|inkan-uws|inkan-dev|inkan-base|inkan-noid> <port>
+//
+// nest is NestJS on its default platform (Express); elysia runs on Node through @elysiajs/node.
 //
 // inkan-noid is a diagnostic: inkan without request ids (requestId: false), which no other
 // server makes. PIN=<mask> (Windows) keeps the server on those logical CPUs, for a noisy machine.
@@ -222,6 +226,278 @@ if (name === "fastify") {
     );
   }
   await app.listen({ port: Number(port), host: "127.0.0.1" });
+  ready();
+}
+
+if (name === "koa") {
+  const { default: Koa } = await import("koa");
+  const { default: Router } = await import("@koa/router");
+  const { bodyParser } = await import("@koa/bodyparser");
+  const app = new Koa();
+  const router = new Router();
+  app.use(bodyParser());
+  const stamp = (h) => async (ctx, next) => {
+    ctx.set(`x-${h}`, "1");
+    ctx.state.n = (ctx.state.n ?? 0) + 1;
+    await next();
+  };
+  const send = (ctx, status, body) => {
+    ctx.status = status;
+    ctx.body = body;
+  };
+  router.get("/hello", (ctx) => (ctx.body = { hello: "world" }));
+  router.get("/users/:id", (ctx) => {
+    const id = int(ctx.params.id);
+    Number.isNaN(id) ? send(ctx, 400, { error: "id" }) : send(ctx, 200, user(id, ctx.query.fields));
+  });
+  router.post("/users", (ctx) => {
+    const b = ctx.request.body;
+    isUser(b) ? send(ctx, 201, { id: 1, name: b.name, age: b.age }) : send(ctx, 400, { error: "body" });
+  });
+  router.get("/teas", (ctx) => (ctx.body = LIST));
+  router.post("/teas/bulk", (ctx) => {
+    const b = ctx.request.body;
+    isBulk(b) ? send(ctx, 201, { count: b.items.length }) : send(ctx, 400, { error: "body" });
+  });
+  router.get("/mw", stamp("a"), stamp("b"), stamp("c"), (ctx) => (ctx.body = { n: ctx.state.n }));
+  router.get("/async/:id", async (ctx) => {
+    await tick();
+    ctx.body = { id: int(ctx.params.id) };
+  });
+  for (let i = 0; i < ROUTE_COUNT; i++) {
+    router.get(`/static/s${i}`, (ctx) => (ctx.body = { i }));
+    router.get(`/p${i}/:id/items/:item`, (ctx) => (ctx.body = { id: int(ctx.params.id), item: int(ctx.params.item) }));
+  }
+  app.use(router.routes());
+  app.use((ctx) => send(ctx, 404, { error: "not found" }));
+  app.listen(Number(port), "127.0.0.1", ready);
+}
+
+if (name === "hapi") {
+  const Hapi = await import("@hapi/hapi");
+  const server = Hapi.server({ port: Number(port), host: "127.0.0.1" });
+  // a route's own onPreHandler extensions are hapi's middlewares; the response does not exist yet there
+  const stamp = (h) => (request, t) => {
+    (request.app.stamps ??= []).push(`x-${h}`);
+    request.app.n = (request.app.n ?? 0) + 1;
+    return t.continue;
+  };
+  const route = (method, path, handler, options) => server.route({ method, path, handler, options });
+  route("GET", "/hello", () => ({ hello: "world" }));
+  route("GET", "/users/{id}", (request, h) => {
+    const id = int(request.params.id);
+    return Number.isNaN(id) ? h.response({ error: "id" }).code(400) : user(id, request.query.fields);
+  });
+  route("POST", "/users", (request, h) => {
+    const b = request.payload;
+    return isUser(b) ? h.response({ id: 1, name: b.name, age: b.age }).code(201) : h.response({ error: "body" }).code(400);
+  });
+  route("GET", "/teas", () => LIST);
+  route("POST", "/teas/bulk", (request, h) =>
+    isBulk(request.payload) ? h.response({ count: request.payload.items.length }).code(201) : h.response({ error: "body" }).code(400),
+  );
+  route(
+    "GET",
+    "/mw",
+    (request, h) => {
+      const res = h.response({ n: request.app.n });
+      for (const s of request.app.stamps) res.header(s, "1");
+      return res;
+    },
+    { ext: { onPreHandler: [{ method: stamp("a") }, { method: stamp("b") }, { method: stamp("c") }] } },
+  );
+  route("GET", "/async/{id}", async (request) => {
+    await tick();
+    return { id: int(request.params.id) };
+  });
+  for (let i = 0; i < ROUTE_COUNT; i++) {
+    route("GET", `/static/s${i}`, () => ({ i }));
+    route("GET", `/p${i}/{id}/items/{item}`, (request) => ({ id: int(request.params.id), item: int(request.params.item) }));
+  }
+  route("*", "/{any*}", (request, h) => h.response({ error: "not found" }).code(404));
+  await server.start();
+  ready();
+}
+
+if (name === "h3") {
+  const { H3, serve, readBody, getQuery, getRouterParam } = await import("h3");
+  const app = new H3();
+  const stamp = (h) => (event, next) => {
+    event.res.headers.set(`x-${h}`, "1");
+    event.context.n = (event.context.n ?? 0) + 1;
+    return next();
+  };
+  const send = (event, status, body) => {
+    event.res.status = status;
+    return body;
+  };
+  const body = (event) => readBody(event).catch(() => undefined);
+  app.get("/hello", () => ({ hello: "world" }));
+  app.get("/users/:id", (event) => {
+    const id = int(getRouterParam(event, "id"));
+    return Number.isNaN(id) ? send(event, 400, { error: "id" }) : user(id, getQuery(event).fields);
+  });
+  app.post("/users", async (event) => {
+    const b = await body(event);
+    return isUser(b) ? send(event, 201, { id: 1, name: b.name, age: b.age }) : send(event, 400, { error: "body" });
+  });
+  app.get("/teas", () => LIST);
+  app.post("/teas/bulk", async (event) => {
+    const b = await body(event);
+    return isBulk(b) ? send(event, 201, { count: b.items.length }) : send(event, 400, { error: "body" });
+  });
+  app.get("/mw", (event) => ({ n: event.context.n }), { middleware: [stamp("a"), stamp("b"), stamp("c")] });
+  app.get("/async/:id", async (event) => {
+    await tick();
+    return { id: int(getRouterParam(event, "id")) };
+  });
+  for (let i = 0; i < ROUTE_COUNT; i++) {
+    app.get(`/static/s${i}`, () => ({ i }));
+    app.get(`/p${i}/:id/items/:item`, (event) => ({ id: int(getRouterParam(event, "id")), item: int(getRouterParam(event, "item")) }));
+  }
+  app.all("/**", (event) => send(event, 404, { error: "not found" }));
+  const server = serve(app, { port: Number(port), hostname: "127.0.0.1", silent: true });
+  await server.ready();
+  ready();
+}
+
+if (name === "elysia") {
+  const { Elysia, t } = await import("elysia");
+  const { node } = await import("@elysiajs/node");
+  const Tea = t.Object({
+    name: t.String({ minLength: 1 }),
+    kind: t.UnionEnum(["green", "black", "oolong"]),
+    grams: t.Integer({ minimum: 1 }),
+    price: t.Number({ minimum: 0 }),
+  });
+  const stamp = (h) => (ctx) => {
+    ctx.set.headers[`x-${h}`] = "1";
+    ctx.n = (ctx.n ?? 0) + 1;
+  };
+  const app = new Elysia({ adapter: node() })
+    // Elysia answers a failed schema with 422; the others say 400
+    .onError(({ code, set }) => {
+      if (code === "VALIDATION" || code === "PARSE") {
+        set.status = 400;
+        return { error: "body" };
+      }
+      if (code === "NOT_FOUND") {
+        set.status = 404;
+        return { error: "not found" };
+      }
+    })
+    .get("/hello", () => ({ hello: "world" }))
+    .get("/users/:id", ({ params, query }) => user(params.id, query.fields), {
+      params: t.Object({ id: t.Integer() }),
+      query: t.Object({ fields: t.Optional(t.String()) }),
+    })
+    .post(
+      "/users",
+      ({ body, set }) => {
+        set.status = 201;
+        return { id: 1, name: body.name, age: body.age };
+      },
+      { body: t.Object({ name: t.String({ minLength: 1 }), age: t.Integer() }) },
+    )
+    .get("/teas", () => LIST)
+    .post(
+      "/teas/bulk",
+      ({ body, set }) => {
+        set.status = 201;
+        return { count: body.items.length };
+      },
+      { body: t.Object({ items: t.Array(Tea, { maxItems: 500 }) }) },
+    )
+    .get("/mw", (ctx) => ({ n: ctx.n }), { beforeHandle: [stamp("a"), stamp("b"), stamp("c")] })
+    .get(
+      "/async/:id",
+      async ({ params }) => {
+        await tick();
+        return { id: params.id };
+      },
+      { params: t.Object({ id: t.Integer() }) },
+    );
+  const pair = t.Object({ id: t.Integer(), item: t.Integer() });
+  for (let i = 0; i < ROUTE_COUNT; i++) {
+    app.get(`/static/s${i}`, () => ({ i }));
+    app.get(`/p${i}/:id/items/:item`, ({ params }) => ({ id: params.id, item: params.item }), { params: pair });
+  }
+  app.listen({ port: Number(port), hostname: "127.0.0.1" });
+  // the Node adapter calls back before the socket listens, so wait for it
+  const { connect } = await import("node:net");
+  const open = () =>
+    new Promise((resolve) => {
+      const socket = connect(Number(port), "127.0.0.1");
+      socket.on("connect", () => resolve(true) || socket.destroy()).on("error", () => resolve(false));
+    });
+  while (!(await open())) await new Promise((r) => setTimeout(r, 20));
+  ready();
+}
+
+if (name === "nest") {
+  // NestJS on its default platform, Express. Plain JS has no decorator syntax, so they are applied by hand.
+  await import("reflect-metadata");
+  const { Body, Controller, Get, HttpException, Module, Param, Post, Query, Req } = await import("@nestjs/common");
+  const { NestFactory } = await import("@nestjs/core");
+  const fail = (error) => {
+    throw new HttpException({ error }, 400);
+  };
+  class Api {
+    hello() {
+      return { hello: "world" };
+    }
+    user(raw, fields) {
+      const id = int(raw);
+      return Number.isNaN(id) ? fail("id") : user(id, fields);
+    }
+    create(b) {
+      return isUser(b) ? { id: 1, name: b.name, age: b.age } : fail("body");
+    }
+    teas() {
+      return LIST;
+    }
+    bulk(b) {
+      return isBulk(b) ? { count: b.items.length } : fail("body");
+    }
+    mw(req) {
+      return { n: req.n };
+    }
+    async later(id) {
+      await tick();
+      return { id: int(id) };
+    }
+  }
+  const route = (key, method, params = []) => {
+    params.forEach((p, i) => p(Api.prototype, key, i));
+    method(Api.prototype, key, Object.getOwnPropertyDescriptor(Api.prototype, key));
+  };
+  route("hello", Get("hello"));
+  route("user", Get("users/:id"), [Param("id"), Query("fields")]);
+  route("create", Post("users"), [Body()]);
+  route("teas", Get("teas"));
+  route("bulk", Post("teas/bulk"), [Body()]);
+  route("mw", Get("mw"), [Req()]);
+  route("later", Get("async/:id"), [Param("id")]);
+  for (let i = 0; i < ROUTE_COUNT; i++) {
+    Api.prototype[`s${i}`] = () => ({ i });
+    Api.prototype[`p${i}`] = (id, item) => ({ id: int(id), item: int(item) });
+    route(`s${i}`, Get(`static/s${i}`));
+    route(`p${i}`, Get(`p${i}/:id/items/:item`), [Param("id"), Param("item")]);
+  }
+  Controller()(Api);
+  const stamp = (h) => (req, res, next) => {
+    res.setHeader(`x-${h}`, "1");
+    req.n = (req.n ?? 0) + 1;
+    next();
+  };
+  class App {
+    configure(consumer) {
+      consumer.apply(stamp("a"), stamp("b"), stamp("c")).forRoutes("mw");
+    }
+  }
+  Module({ controllers: [Api] })(App);
+  const app = await NestFactory.create(App, { logger: false });
+  await app.listen(Number(port), "127.0.0.1");
   ready();
 }
 
