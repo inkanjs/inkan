@@ -10,9 +10,9 @@ const studioCss = /* css */ `
 .tab .n{font-weight:400;opacity:.7;margin-left:4px}
 .wrap{max-width:1180px;margin:0 auto;padding:22px}
 .kpis{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:12px;margin:0 0 22px}
-.kpi{background:var(--card);border:1px solid var(--ink);border-radius:4px;box-shadow:3px 3px 0 var(--line);padding:10px 12px;min-width:0}
-.kpi b{display:block;font:700 22px var(--mono);line-height:1.2}.kpi span{font:11px var(--mono);color:var(--ink-2);text-transform:uppercase;letter-spacing:.06em}
-.kpi svg{display:block;width:100%;height:28px;margin-top:4px}
+.kpi{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px 14px 10px;min-width:0}
+.kpi b{display:block;font:700 22px var(--mono);line-height:1.25;font-variant-numeric:tabular-nums}.kpi span{font:10px var(--mono);color:var(--ink-2);text-transform:uppercase;letter-spacing:.08em}
+.kpi svg{display:block;width:100%;height:30px;margin-top:6px;overflow:visible}
 .pane{animation:rise .35s cubic-bezier(.22,1,.36,1)}
 @keyframes rise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
 @keyframes flash{from{background:var(--seal-soft)}to{background:transparent}}
@@ -51,12 +51,23 @@ function statusTag(s) { return '<span class="status s' + esc(String(s)[0]) + '">
 function pretty(s) { if (s === undefined || s === "") return "—"; try { return JSON.stringify(JSON.parse(s), null, 2); } catch (x) { return s; } }
 function comparable(s) { try { var v = JSON.parse(s); if (v && typeof v === "object") delete v.requestId; return JSON.stringify(v); } catch (x) { return s || ""; } }
 function ago(ms) { var s = Math.max(0, Math.round((Date.now() - ms) / 1000)); return s < 60 ? s + "s" : s < 3600 ? Math.round(s / 60) + "m" : Math.round(s / 3600) + "h"; }
-function bytes(n) { return n > 1048576 ? (n / 1048576).toFixed(0) + " MB" : (n / 1024).toFixed(0) + " kB"; }
+function bytes(n) { return n > 1048576 ? (n / 1048576).toFixed(n < 104857600 ? 1 : 0) + " MB" : (n / 1024).toFixed(0) + " kB"; }
 function spark(values, color) {
+  values = values.filter(function (v) { return v != null; });
   if (values.length < 2) return '<svg viewBox="0 0 100 28"></svg>';
-  var max = Math.max.apply(null, values.concat([1])), step = 100 / (values.length - 1);
-  var pts = values.map(function (v, i) { return (i * step).toFixed(1) + "," + (26 - (v / max) * 24).toFixed(1); }).join(" ");
-  return '<svg viewBox="0 0 100 28" preserveAspectRatio="none"><polyline fill="none" stroke="' + color + '" stroke-width="1.5" vector-effect="non-scaling-stroke" points="' + pts + '"/></svg>';
+  var lo = Math.min.apply(null, values), hi = Math.max.apply(null, values), step = 100 / (values.length - 1);
+  var p = values.map(function (v, i) { return [i * step, hi === lo ? (hi ? 14 : 25) : 25 - ((v - lo) / (hi - lo)) * 21]; });
+  var f = function (n) { return n.toFixed(1); }, d = "M0," + f(p[0][1]);
+  for (var i = 1; i < p.length; i++) { // Catmull-Rom through the points, as cubic Béziers
+    var a = p[i - 2] || p[i - 1], b = p[i - 1], c = p[i], n = p[i + 1] || c;
+    d += " C" + f(b[0] + (c[0] - a[0]) / 6) + "," + f(b[1] + (c[1] - a[1]) / 6) + " " + f(c[0] - (n[0] - b[0]) / 6) + "," + f(c[1] - (n[1] - b[1]) / 6) + " " + f(c[0]) + "," + f(c[1]);
+  }
+  return '<svg viewBox="0 0 100 28" preserveAspectRatio="none"><path d="' + d + ' L100,28 L0,28Z" fill="' + color + '" opacity=".12"/><path d="' + d +
+    '" fill="none" stroke="' + color + '" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/></svg>';
+}
+function sample(at) {
+  var minute = rows.filter(function (e) { var t = Date.parse(e.at); return t <= at && at - t < 60000; }), t = minute.map(function (e) { return e.ms; }).sort(function (a, b) { return a - b; });
+  return { n: minute.length, e: minute.filter(function (e) { return e.status >= 500 || e.notes.length; }).length, p: t.length ? t[Math.floor(t.length * 0.95)] || t[t.length - 1] : 0 };
 }
 // ----- live -----
 var FORBIDDEN = /^(host|connection|content-length|accept-encoding|accept-charset|cookie|date|dnt|expect|keep-alive|origin|referer|te|trailer|transfer-encoding|upgrade|via|x-request-id|x-inkan-replay)$|^(sec-|proxy-)/;
@@ -220,8 +231,11 @@ function poll() {
 function pollStudio() {
   fetch(CFG.base + "/studio.json").then(function (r) { return r.json(); }).then(function (s) {
     S = s;
-    var now = Date.now(), minute = rows.filter(function (e) { return now - Date.parse(e.at) < 60000; }), t = minute.map(function (e) { return e.ms; }).sort(function (a, b) { return a - b; });
-    trend.push({ n: minute.length, e: minute.filter(function (e) { return e.status >= 500 || e.notes.length; }).length, p: t.length ? t[Math.floor(t.length * 0.95)] || t[t.length - 1] : 0, h: s.app.heap });
+    var now = Date.now(), point = sample(now);
+    // the first time, the log so far draws the lines back, so they do not start empty
+    if (!trend.length && rows.length) for (var k = 59; k > 0; k--) trend.push(sample(now - k * 2000));
+    point.h = s.app.heap;
+    trend.push(point);
     if (trend.length > 60) trend.shift();
     if (tab === "live" || tab === "map") $("#kpis").innerHTML = kpis();
     if (tab !== "live") draw();
