@@ -344,6 +344,8 @@ export class JobHub {
   host: JobHost;
   kinds: JobKind[] = [];
   closing = false;
+  /** Whether each kind keeps its last ended jobs for the studio; set while it is on. */
+  recent = false;
   private store?: JobStore;
   private boards = new WeakMap<Store, JobStore>();
   private sweeper?: ReturnType<typeof setInterval>;
@@ -807,6 +809,10 @@ export class JobKind {
     this.live.delete(l.rec.id);
     l.rec = { ...l.rec, ...patch, state, finishedAt: now, expiresAt: now + this.keep, input: undefined, position: undefined, cancelRequested: undefined };
     this.save(l.rec);
+    if (this.hub.recent) {
+      this.recent.unshift(l.rec);
+      if (this.recent.length > 20) this.recent.length = 20;
+    }
     if (wasRunning) {
       this.running--;
       this.pump();
@@ -826,6 +832,39 @@ export class JobKind {
 
   runs(): Promise<void>[] {
     return [...this.live.values()].flatMap((l) => (l.settled ? [l.settled] : []));
+  }
+
+  /** Jobs of this process that ended, newest first; kept only while the studio is on (`hub.recent`). */
+  recent: JobRecord[] = [];
+
+  /** What the studio shows of this kind: its slots, its queue, its schedule and its jobs. */
+  _studio() {
+    const s = this.schedule;
+    return {
+      path: this.path,
+      concurrency: this.concurrency,
+      queueLimit: this.limit,
+      running: this.running,
+      queued: this.queue.length,
+      schedule: s ? { cron: s.cron.source, zone: s.zone, next: s.at } : undefined,
+      live: [...this.live.values()].map((l) => l.rec),
+      recent: this.recent,
+    };
+  }
+
+  /** Cancels a job of this process from the studio, as `DELETE path/:id` would without an owner. */
+  async _studioCancel(id: string): Promise<boolean> {
+    const l = this.live.get(id);
+    if (!l) return false;
+    if (l.rec.state === "queued") {
+      this.queue.splice(this.queue.indexOf(id), 1);
+      this.finish(l, "canceled", {});
+      this.reposition();
+      return true;
+    }
+    l.ctl?.abort(new DOMException("The job was canceled", "AbortError"));
+    await this.store.cancel(id);
+    return true;
   }
 
   abortAll() {

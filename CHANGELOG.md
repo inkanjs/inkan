@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.11.0 (unreleased)
+
+### New
+
+- **inkan studio** at `/_inkan`, where the inspector was (the `inspector` option still places
+  it, on in development, loopback only). Tabs:
+  - **live**: the requests as they come, with replay and copy as example, as before, and above
+    them requests, broken answers and p95 of the last minute, and the heap, with sparklines.
+  - **routes**: every route with its calls, broken answers, p50, p95 and last status since the
+    studio opened, its MCP tool, whether it asks for credentials and how many examples it has;
+    sortable.
+  - **map**: the app as a tree of its paths, with the methods, tools and credentials at each.
+  - **mcp**: the tools (also with `mcp` off: what it would serve), the routes that are none with
+    the reason, a call form per tool, and the recent tool calls.
+  - **jobs**: every kind with its slots, its queue and its schedule's next run, the jobs running
+    and waiting, with cancel, and the last 20 that ended, with their results or errors.
+  Its numbers come from `/_inkan/studio.json`. Cancelling needs the studio's own header, so
+  a page of another site cannot do it.
+- **`protect`** (experimental): `inkan({ protect: { user, password } })` asks for HTTP Basic auth
+  (compared in constant time) on the docs page, the OpenAPI document and the studio;
+  `protect: (req) => boolean | Promise<boolean>` decides alone, and a function that throws is a
+  no. The routes and the MCP endpoint are not affected: they have `security`. With `protect` the
+  studio also answers beyond loopback, so `inspector: "/_inkan"` with a password can run in
+  production.
+
+### Changed
+
+- The docs page's link and the startup banner say `studio` instead of `inspector`.
+
 ## 0.10.0
 
 ### New
